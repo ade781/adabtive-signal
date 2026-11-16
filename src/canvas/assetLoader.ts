@@ -48,15 +48,28 @@ const ASSET_URLS = [
 const cache = new Map<string, HTMLImageElement>();
 const listeners = new Set<() => void>();
 let started = false;
+let notifyScheduled = false;
+
+function scheduleNotify(): void {
+  if (notifyScheduled) return;
+  notifyScheduled = true;
+  const flush = () => {
+    notifyScheduled = false;
+    for (const cb of listeners) cb();
+  };
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(flush);
+  } else {
+    setTimeout(flush, 16);
+  }
+}
 
 export function preloadSimulationAssets(): void {
   if (started || typeof Image === 'undefined') return;
   started = true;
   for (const url of ASSET_URLS) {
     const img = new Image();
-    img.onload = () => {
-      for (const cb of listeners) cb();
-    };
+    img.onload = scheduleNotify;
     img.src = url;
     cache.set(url, img);
   }

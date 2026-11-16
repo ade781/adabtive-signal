@@ -115,9 +115,11 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
       )}
 
       {/* Tabs */}
-      <div className="grid grid-cols-3 border-b border-slate-200 bg-slate-50">
+      <div role="tablist" aria-label="Kategori Parameter" className="grid grid-cols-3 border-b border-slate-200 bg-slate-50">
         <button
           type="button"
+          role="tab"
+          aria-selected={activeTab === 'geometry'}
           onClick={() => setActiveTab('geometry')}
           className={`py-2 px-2 text-xs font-medium flex items-center justify-center gap-1.5 border-b-2 transition-colors duration-100 ${
             activeTab === 'geometry'
@@ -130,6 +132,8 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
         </button>
         <button
           type="button"
+          role="tab"
+          aria-selected={activeTab === 'traffic'}
           onClick={() => setActiveTab('traffic')}
           className={`py-2 px-2 text-xs font-medium flex items-center justify-center gap-1.5 border-b-2 transition-colors duration-100 ${
             activeTab === 'traffic'
@@ -142,6 +146,8 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
         </button>
         <button
           type="button"
+          role="tab"
+          aria-selected={activeTab === 'signal'}
           onClick={() => setActiveTab('signal')}
           className={`py-2 px-2 text-xs font-medium flex items-center justify-center gap-1.5 border-b-2 transition-colors duration-100 ${
             activeTab === 'signal'
@@ -218,7 +224,7 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
               value={config.roadLength}
               unit="m"
               min={40}
-              max={140}
+              max={200}
               step={5}
               disabled={running}
               onChange={(v) => onChange({ roadLength: v })}
@@ -229,6 +235,9 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
 
         {activeTab === 'traffic' && (
           <>
+            <div className="text-[11px] text-slate-500">
+              Laju kedatangan total di seluruh 4 lengan simpang (kendaraan/menit).
+            </div>
             <SliderField
               label="Sepeda Motor"
               value={config.motorRate}
@@ -304,6 +313,46 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
 
         {activeTab === 'signal' && (
           <>
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-xs font-medium text-slate-700">Mode Kontrol Sinyal</span>
+                <span className="text-[11px] font-mono font-semibold text-slate-900">
+                  {config.adaptiveSignal ? 'Adaptif' : 'Fixed-Time'}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  disabled={running}
+                  onClick={() => onChange({ adaptiveSignal: true })}
+                  className={`py-1.5 rounded text-xs font-medium border transition-colors duration-100 ${
+                    config.adaptiveSignal
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                  } disabled:opacity-50 disabled:cursor-not-allowed`}
+                >
+                  Adaptif
+                </button>
+                <button
+                  type="button"
+                  disabled={running}
+                  onClick={() => onChange({ adaptiveSignal: false })}
+                  className={`py-1.5 rounded text-xs font-medium border transition-colors duration-100 ${
+                    !config.adaptiveSignal
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                  } disabled:opacity-50 disabled:cursor-not-allowed`}
+                >
+                  Fixed-Time
+                </button>
+              </div>
+              <p className="text-[10px] text-slate-500 mt-1">
+                {config.adaptiveSignal
+                  ? 'Hijau dapat diperpanjang/dipotong otomatis sesuai antrean.'
+                  : 'Durasi lampu mengikuti angka tetap di bawah ini.'}
+              </p>
+            </div>
+
             <SliderField
               label="Durasi Lampu Hijau"
               value={config.greenDuration}
@@ -338,7 +387,9 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
             />
 
             <div className="p-3 rounded-md bg-slate-50 border border-slate-200 space-y-1">
-              <div className="text-[11px] font-medium text-slate-500">Total Durasi 1 Siklus Penuh</div>
+              <div className="text-[11px] font-medium text-slate-500">
+                {config.adaptiveSignal ? 'Durasi Dasar 1 Siklus (Adaptif Aktif)' : 'Total Durasi 1 Siklus Penuh'}
+              </div>
               <div className="text-lg font-mono tabular-nums font-bold text-slate-900">
                 {((config.greenDuration + config.yellowDuration + config.allRedDuration) * 4).toFixed(1)}s
               </div>

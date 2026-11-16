@@ -20,6 +20,7 @@ export function App() {
 
   const [snapshot, setSnapshot] = useState<SimSnapshot>(() => simRef.current!.getSnapshot());
   const [uiSnapshot, setUiSnapshot] = useState<SimSnapshot>(() => snapshot);
+  const [inspectorConfig, setInspectorConfig] = useState<SimConfig>(() => snapshot.config);
   const lastUiSyncRef = useRef<number>(0);
 
   const [running, setRunning] = useState(true);
@@ -71,6 +72,7 @@ export function App() {
       const next = sim.getSnapshot();
       setSnapshot(next);
       setUiSnapshot(next);
+      setInspectorConfig(next.config);
     },
     [running]
   );
@@ -82,6 +84,7 @@ export function App() {
     const next = sim.getSnapshot();
     setSnapshot(next);
     setUiSnapshot(next);
+    setInspectorConfig(next.config);
   }, [running]);
 
   const handleReset = useCallback(() => {
@@ -95,8 +98,27 @@ export function App() {
   const handleToggleRun = useCallback(() => setRunning((r) => !r), []);
   const handlePause = useCallback(() => setRunning(false), []);
   const handleToggleGrid = useCallback(() => setShowGrid((g) => !g), []);
-  const handleZoomIn = useCallback(() => setZoom((z) => Math.min(2.2, +(z + 0.15).toFixed(2))), []);
-  const handleZoomOut = useCallback(() => setZoom((z) => Math.max(0.6, +(z - 0.15).toFixed(2))), []);
+  const handleZoomIn = useCallback(() => setZoom((z) => Math.min(2.2, +(z + 0.1).toFixed(1))), []);
+  const handleZoomOut = useCallback(() => setZoom((z) => Math.max(0.6, +(z - 0.1).toFixed(1))), []);
+  const handleZoomReset = useCallback(() => setZoom(1), []);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')) {
+        return;
+      }
+      if (e.code === 'Space') {
+        e.preventDefault();
+        setRunning((r) => !r);
+      } else if (e.key === 'r' || e.key === 'R') {
+        e.preventDefault();
+        handleReset();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [handleReset]);
 
   const phaseDuration =
     uiSnapshot.signal.activeColor === 'green'
@@ -121,6 +143,7 @@ export function App() {
         onToggleGrid={handleToggleGrid}
         onZoomIn={handleZoomIn}
         onZoomOut={handleZoomOut}
+        onZoomReset={handleZoomReset}
       />
 
       <main className="flex-1 min-h-0 p-2.5 flex flex-col gap-2.5 lg:overflow-hidden">
@@ -133,7 +156,7 @@ export function App() {
             />
           </div>
           <MemoParameterInspector
-            config={uiSnapshot.config}
+            config={inspectorConfig}
             running={running}
             onPause={handlePause}
             onChange={handleConfigChange}

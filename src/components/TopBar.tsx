@@ -16,6 +16,7 @@ interface TopBarProps {
   onToggleGrid: () => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
+  onZoomReset: () => void;
 }
 
 const ARM_LABELS: Record<string, string> = {
@@ -51,11 +52,12 @@ export const TopBar: React.FC<TopBarProps> = ({
   onToggleGrid,
   onZoomIn,
   onZoomOut,
+  onZoomReset,
 }) => {
   const pct = phaseDuration > 0 ? Math.max(0, Math.min(100, (signal.phaseRemaining / phaseDuration) * 100)) : 0;
 
   return (
-    <header className="h-13 py-2 px-4 bg-white border-b border-slate-200 flex items-center justify-between gap-3 shrink-0">
+    <header className="min-h-[52px] py-2 px-4 bg-white border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
       {/* Brand */}
       <div className="flex items-center gap-2.5">
         <img
@@ -126,23 +128,31 @@ export const TopBar: React.FC<TopBarProps> = ({
           ))}
         </div>
 
-        <div className="hidden md:flex items-center gap-1 ml-1 pl-2 border-l border-slate-200">
+        <div className="flex items-center gap-1 ml-1 pl-2 border-l border-slate-200">
           <button
             type="button"
             onClick={onZoomOut}
             disabled={zoom <= 0.6}
+            aria-label="Zoom Out"
             className="p-1.5 rounded text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-100"
             title="Zoom Out"
           >
             <ZoomOut className="w-3.5 h-3.5" />
           </button>
-          <span className="text-[11px] font-mono tabular-nums text-slate-600 w-10 text-center">
+          <button
+            type="button"
+            onClick={onZoomReset}
+            aria-label="Reset Zoom ke 100%"
+            title="Klik untuk reset ke 100%"
+            className="text-[11px] font-mono tabular-nums text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded px-1 py-0.5 w-11 text-center transition-colors duration-100"
+          >
             {Math.round(zoom * 100)}%
-          </span>
+          </button>
           <button
             type="button"
             onClick={onZoomIn}
             disabled={zoom >= 2.2}
+            aria-label="Zoom In"
             className="p-1.5 rounded text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors duration-100"
             title="Zoom In"
           >
@@ -151,6 +161,8 @@ export const TopBar: React.FC<TopBarProps> = ({
           <button
             type="button"
             onClick={onToggleGrid}
+            aria-label="Toggle Blueprint Grid"
+            aria-pressed={showGrid}
             className={`p-1.5 rounded transition-colors duration-100 ${
               showGrid ? 'bg-slate-100 text-slate-900' : 'text-slate-500 hover:bg-slate-100'
             }`}
@@ -181,7 +193,9 @@ export const TopBar: React.FC<TopBarProps> = ({
               <span className={`w-2 h-2 rounded-full ${PROGRESS_BAR[signal.activeColor]}`} />
               {ARM_LABELS[signal.activeArm]}
             </span>
-            <span>{Math.ceil(signal.phaseRemaining)}s</span>
+            <span>
+              {Math.ceil(signal.phaseRemaining)}s{signal.isExtended ? ' +EXT' : ''}
+            </span>
           </div>
           <div className="w-full h-1 rounded-full bg-white/70 overflow-hidden">
             <div

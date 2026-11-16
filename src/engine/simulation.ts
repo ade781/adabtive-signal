@@ -1,3 +1,4 @@
+import { shouldExtendGreenPhase } from './adaptiveController';
 import {
   assignReactionWave,
   effClearanceWidth,
@@ -59,6 +60,8 @@ export class TrafficSimulation {
   private activeColor: SignalColor = 'green';
   private phaseRemaining = 0;
   private phaseElapsed = 0;
+  private greenElapsed = 0;
+  private isGreenExtended = false;
   private isAllRed = false;
   private cycleNumber = 1;
   private phaseCounter = 0;
@@ -89,6 +92,8 @@ export class TrafficSimulation {
     this.isAllRed = false;
     this.phaseRemaining = Math.max(1, this.config.greenDuration);
     this.phaseElapsed = 0;
+    this.greenElapsed = 0;
+    this.isGreenExtended = false;
     this.cycleNumber = 1;
     this.phaseCounter = 0;
     this.spawnAccum = { motor: 0, car: 0, heavy: 0 };
@@ -142,18 +147,19 @@ export class TrafficSimulation {
           for (let lane = 0; lane < this.config.lanesPerDirection; lane++) {
             const laneVehs = this.vehicles.filter((v) => v.originArm === arm && v.laneIndex === lane).sort((a, b) => b.distanceAlongPath - a.distanceAlongPath);
             let prevAllowed = Infinity;
+            let lastLead: SimVehicle | null = null;
             for (let i = 0; i < laneVehs.length; i++) {
               const cur = laneVehs[i];
-              if (i > 0) {
-                const lead = laneVehs[i - 1];
-                const targetDist = Math.min(cur.distanceAlongPath, prevAllowed - ((lead.length + cur.length) * 0.5 + cur.minGap));
+              if (lastLead) {
+                const targetDist = Math.min(cur.distanceAlongPath, prevAllowed - ((lastLead.length + cur.length) * 0.5 + cur.minGap));
                 if (targetDist < 0) { overflowIds.add(cur.id); continue; }
                 cur.distanceAlongPath = targetDist;
-                cur.speed = Math.min(cur.speed, lead.speed);
+                cur.speed = Math.min(cur.speed, lastLead.speed);
                 const pt = sampleWithLateralOffset(cur.path, cur.distanceAlongPath, cur.lateralOffset, 0, cur.speed);
                 cur.x = pt.x; cur.y = pt.y; cur.heading = pt.heading;
               }
               prevAllowed = cur.distanceAlongPath;
+              lastLead = cur;
             }
           }
         }
@@ -179,14 +185,28 @@ export class TrafficSimulation {
   private advanceSignals(dt: number): void {
     this.phaseRemaining -= dt;
     this.phaseElapsed += dt;
+
+    if (this.activeColor === 'green') {
+      this.greenElapsed += dt;
+      if (
+        this.config.adaptiveSignal &&
+        shouldExtendGreenPhase(this.vehicles, ARM_ORDER[this.activeArmIndex], this.phaseElapsed, this.config)
+      ) {
+        if (this.phaseRemaining <= 0.25) {
+          this.isGreenExtended = true;
+        }
+        this.phaseRemaining = Math.max(0.25, this.phaseRemaining);
+        return;
+      }
+      this.isGreenExtended = false;
+      this.activeColor = 'yellow';
+      this.phaseRemaining = Math.max(0.5, this.config.yellowDuration);
+      return;
+    }
+
     if (this.phaseRemaining > 0) return;
 
     const overflow = this.phaseRemaining;
-    if (this.activeColor === 'green') {
-      this.activeColor = 'yellow';
-      this.phaseRemaining = Math.max(0.5, this.config.yellowDuration) + overflow;
-      return;
-    }
     if (this.activeColor === 'yellow' && !this.isAllRed && this.config.allRedDuration > 0.05) {
       this.activeColor = 'red';
       this.isAllRed = true;
@@ -200,7 +220,7 @@ export class TrafficSimulation {
       phaseIndex: this.phaseCounter,
       cycleNumber: this.cycleNumber,
       arm: ARM_ORDER[this.activeArmIndex],
-      greenDuration: Math.round(this.phaseElapsed * 10) / 10,
+      greenDuration: Math.round(this.greenElapsed * 10) / 10,
       exitedMotor: this.currentPhaseExited.motor,
       exitedCar: this.currentPhaseExited.car,
       exitedHeavy: this.currentPhaseExited.heavy,
@@ -234,6 +254,8 @@ export class TrafficSimulation {
     this.activeColor = 'green';
     this.phaseRemaining = Math.max(1, this.config.greenDuration) + overflow;
     this.phaseElapsed = 0;
+    this.greenElapsed = 0;
+    this.isGreenExtended = false;
     assignReactionWave(this.vehicles, ARM_ORDER[this.activeArmIndex], this.config.lanesPerDirection);
   }
 
@@ -411,8 +433,8 @@ export class TrafficSimulation {
         for (const other of this.vehicles) {
           if (other.id === v.id || other.originArm !== v.originArm || other.turn !== v.turn || other.laneIndex !== v.laneIndex) continue;
           if (other.distanceAlongPath <= v.distanceAlongPath) continue;
-          const taperLatSep = Math.abs(v.lateralOffset - other.lateralOffset) * 0.35;
-          const minLatNeed = (myEffW + effClearanceWidth(other)) * 0.5 + 0.06;
+          const taperLatSep = Math.abs(v.lateralOffset - other.lateralOffset) * 0.25;
+          const minLatNeed = (myEffW + effClearanceWidth(other)) * 0.5 + 0.35;
           if (taperLatSep < minLatNeed) {
             const gapAlong = other.distanceAlongPath - v.distanceAlongPath - (other.length + v.length) * 0.5;
             if (gapAlong < nearestGap) {
@@ -558,6 +580,7 @@ export class TrafficSimulation {
         phaseRemaining: Math.max(0, this.phaseRemaining),
         phaseElapsed: this.phaseElapsed,
         cycleNumber: this.cycleNumber,
+        isExtended: this.isGreenExtended,
         armLights: { north: this.getArmLight('north'), east: this.getArmLight('east'), south: this.getArmLight('south'), west: this.getArmLight('west') },
       },
       vehicles: this.vehicles.map(({ path: _p, targetLateralOffset: _t, lateralVelocity: _lv, speedFactor: _sf, accelFactor: _af, profile: _pr, reactionTimer: _rt, ...rest }) => rest),

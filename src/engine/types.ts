@@ -10,8 +10,8 @@ export interface SimConfig {
   roadLength: number;            // meters approach length (40 - 140m)
   lanesPerDirection: number;     // 1 - 4 lanes
 
-  // Traffic Mix (vehicles per hour per arm or target spawn rate)
-  motorRate: number;             // vehicles/min total across arms (or per arm)
+  // Traffic Mix (total arrival rate across all 4 arms in vehicles/min)
+  motorRate: number;             // vehicles/min total across all 4 arms
   carRate: number;
   heavyRate: number;
 
@@ -24,6 +24,7 @@ export interface SimConfig {
   greenDuration: number;         // seconds
   yellowDuration: number;        // seconds
   allRedDuration: number;        // seconds
+  adaptiveSignal: boolean;       // enable dynamic green extension
 }
 
 export interface Point2D {
@@ -87,6 +88,7 @@ export interface SignalState {
   phaseRemaining: number;        // seconds remaining in current sub-phase
   phaseElapsed: number;
   cycleNumber: number;
+  isExtended?: boolean;
   armLights: Record<ArmId, SignalColor>;
 }
 

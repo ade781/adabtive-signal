@@ -124,10 +124,10 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = ({ snapshot
     const activeSig = sigPositions.find((sp) => sp.arm === signal.activeArm);
     if (activeSig) {
       const sx = cx + activeSig.x * pxPerMeter;
-      const sy = activeSig.arm === 'north'
+      const sy = activeSig.arm === 'north' || activeSig.arm === 'west'
         ? cy + activeSig.y * pxPerMeter - Math.max(18, 4.0 * pxPerMeter)
         : cy + activeSig.y * pxPerMeter + Math.max(16, 3.8 * pxPerMeter);
-      const label = `${Math.ceil(signal.phaseRemaining)}s`;
+      const label = `${Math.ceil(signal.phaseRemaining)}s${signal.isExtended ? '+' : ''}`;
       ctx.font = '700 11px "JetBrains Mono", monospace';
       const tw = ctx.measureText(label).width + 10;
       ctx.fillStyle = '#0F172A';
@@ -179,7 +179,7 @@ function drawVehicle(ctx: CanvasRenderingContext2D, v: Vehicle, blinkOn: boolean
     ctx.fillRect(-v.width / 2, -v.length / 2, v.width, v.length);
   }
 
-  if (v.speed < 0.8 && v.distanceAlongPath < v.stopLineDist + 2.0) {
+  if (v.speed < 0.8) {
     ctx.fillStyle = 'rgba(239, 68, 68, 0.95)';
     if (v.vClass === 'motor') ctx.fillRect(-0.1, v.length * 0.4, 0.2, 0.12);
     else {

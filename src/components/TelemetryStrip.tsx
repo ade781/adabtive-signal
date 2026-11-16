@@ -135,7 +135,7 @@ export const TelemetryStrip: React.FC<TelemetryStripProps> = ({ stats, signal })
             Menunggu 1 fase lampu selesai...
           </div>
         ) : (
-          <div className="space-y-1 max-h-[82px] overflow-y-auto pr-1">
+          <div className="space-y-1 max-h-[120px] overflow-y-auto pr-1">
             {stats.cycleHistory.slice(0, 2).map((c) => (
               <div
                 key={`c-${c.cycleNumber}`}

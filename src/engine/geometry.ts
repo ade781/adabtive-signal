@@ -95,7 +95,7 @@ export function getTurnRadius(
   const clampedLane = Math.max(0, Math.min(config.lanesPerDirection - 1, laneIndex));
   const offset = getLaneOffset(clampedLane, 0, config);
   const rawR = turn === 'left' ? halfBox - offset : halfBox + offset;
-  return Math.max(3.2, 0.78 * rawR);
+  return Math.max(3.2, Math.SQRT1_2 * rawR);
 }
 
 /**

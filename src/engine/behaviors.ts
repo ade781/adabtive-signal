@@ -96,8 +96,10 @@ export function findBlockingLeader(
     ) {
       // Same-arm, same-turn curve following: arc-length gap remains exact even across 90-degree Bezier bends
       if (other.originArm === v.originArm && other.turn === v.turn && other.distanceAlongPath > v.distanceAlongPath) {
-        const latSep = Math.abs(myGlobalLat - getGlobalLat(other.laneIndex, other.lateralOffset, lw));
-        if (latSep < minLatNeed) {
+        const rawLatSep = Math.abs(myGlobalLat - getGlobalLat(other.laneIndex, other.lateralOffset, lw));
+        const isSameTurnLane = v.turn !== 'straight' && v.laneIndex === other.laneIndex;
+        const latSep = isSameTurnLane ? rawLatSep * 0.25 : rawLatSep;
+        if (latSep < minLatNeed + (isSameTurnLane ? 0.25 : 0)) {
           const arcGap = other.distanceAlongPath - v.distanceAlongPath - (other.length + v.length) * 0.5;
           if (arcGap < 45 && arcGap < nearestGap) {
             nearestGap = Math.max(0.05, arcGap);
@@ -167,7 +169,7 @@ export function updateMotorcycleSeepage(
   const myEffW = effClearanceWidth(v);
   const myGlobalLat = getGlobalLat(v.laneIndex, v.lateralOffset, lw);
 
-  const recenterDist = v.turn === 'straight' ? v.stopLineDist - 2.5 : v.stopLineDist - 6.0;
+  const recenterDist = v.turn === 'straight' ? v.stopLineDist - 2.5 : v.stopLineDist - 5.0;
   if (v.distanceAlongPath >= recenterDist) {
     for (const other of vehicles) {
       if (other.id === v.id || other.originArm !== v.originArm) continue;

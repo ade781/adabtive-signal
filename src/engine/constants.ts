@@ -14,6 +14,7 @@ export const DEFAULT_CONFIG: SimConfig = {
   greenDuration: 15,
   yellowDuration: 3,
   allRedDuration: 1.5,
+  adaptiveSignal: true,
 };
 
 export const ARM_ORDER: ArmId[] = ['north', 'east', 'south', 'west'];

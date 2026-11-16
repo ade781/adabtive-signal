@@ -175,8 +175,8 @@ assert(wideOut > narrowOut, `Expected wide 4.0m lane (${wideOut}) > narrow 2.8m 
   assert(updSnap.config.yellowDuration === 1, `Expected updated yellowDuration clamped to 1`);
   assert(updSnap.config.allRedDuration === 0, `Expected updated allRedDuration clamped to 0`);
 
-  // Step through > 1 full cycle (4 * (3 + 1) = 16s) and verify actual phase/cycle durations
-  for (let s = 0; s < 400; s++) cfgSim.step(0.05);
+  // Step through > 1 full adaptive cycle (4 * (~4-4.8s + 1s) <= 24s) and verify actual phase/cycle durations
+  for (let s = 0; s < 560; s++) cfgSim.step(0.05);
   const statSnap = cfgSim.getSnapshot();
   assert(statSnap.stats.phaseHistory.length >= 4, `Expected >=4 phaseHistory records`);
   assert(statSnap.stats.cycleHistory.length >= 1, `Expected >=1 cycleHistory records`);
