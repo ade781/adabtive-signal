@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 80" width="32" height="80" fill="none">
+  <defs>
+    <filter id="shadow-commuter" x="-25%" y="-10%" width="150%" height="125%">
+      <feDropShadow dx="0" dy="2" stdDeviation="1.4" flood-color="#0F172A" flood-opacity="0.16"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#shadow-commuter)">
+    <!-- Front & Rear Tires -->
+    <rect x="13.75" y="5" width="4.5" height="14" rx="2.25" fill="#1E293B"/>
+    <rect x="13.75" y="61" width="4.5" height="14" rx="2.25" fill="#1E293B"/>
+
+    <!-- Front Fender & Headlight -->
+    <rect x="13.5" y="11" width="5" height="7" rx="1.5" fill="#E2E8F0" stroke="#334155" stroke-width="1"/>
+    <path d="M13.5 11.5 C13.5 9.5, 18.5 9.5, 18.5 11.5 Z" fill="#FEF08A" stroke="#334155" stroke-width="0.9"/>
+
+    <!-- Mirrors -->
+    <line x1="7" y1="20" x2="5" y2="17" stroke="#334155" stroke-width="1.1" stroke-linecap="round"/>
+    <line x1="25" y1="20" x2="27" y2="17" stroke="#334155" stroke-width="1.1" stroke-linecap="round"/>
+    <rect x="3.5" y="15.5" width="3" height="2" rx="0.8" fill="#94A3B8" stroke="#1E293B" stroke-width="0.8"/>
+    <rect x="25.5" y="15.5" width="3" height="2" rx="0.8" fill="#94A3B8" stroke="#1E293B" stroke-width="0.8"/>
+
+    <!-- Handlebars & Grips -->
+    <path d="M5 22 L11 20 L21 20 L27 22" stroke="#334155" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="4" y="20.6" width="4" height="2.6" rx="1.2" transform="rotate(-18 6 21.9)" fill="#0F172A"/>
+    <rect x="24" y="20.6" width="4" height="2.6" rx="1.2" transform="rotate(18 26 21.9)" fill="#0F172A"/>
+
+    <!-- Chassis / Engine / Exhaust Hints -->
+    <rect x="12" y="22" width="8" height="38" rx="3" fill="#CBD5E1" stroke="#334155" stroke-width="1"/>
+    <rect x="20" y="45" width="2" height="17" rx="1" fill="#64748B" stroke="#334155" stroke-width="0.7"/>
+
+    <!-- Fuel Tank -->
+    <path d="M11.5 23 C11.5 20.5, 20.5 20.5, 20.5 23 L19.5 34 C19.5 35.5, 12.5 35.5, 12.5 34 Z" fill="#F8FAFC" stroke="#334155" stroke-width="1.1"/>
+    <rect x="15" y="22" width="2" height="12" rx="1" fill="#D97706"/>
+
+    <!-- Rear Seat & Tail -->
+    <rect x="12.5" y="46" width="7" height="17" rx="2.5" fill="#475569" stroke="#1E293B" stroke-width="1"/>
+    <rect x="13.5" y="62.5" width="5" height="2" rx="0.8" fill="#EF4444"/>
+
+    <!-- Rider Arms -->
+    <path d="M10.5 35 L7 23" stroke="#64748B" stroke-width="3.2" stroke-linecap="round"/>
+    <path d="M21.5 35 L25 23" stroke="#64748B" stroke-width="3.2" stroke-linecap="round"/>
+    <circle cx="6.8" cy="22.4" r="1.5" fill="#1E293B"/>
+    <circle cx="25.2" cy="22.4" r="1.5" fill="#1E293B"/>
+
+    <!-- Rider Shoulders / Jacket -->
+    <rect x="9" y="33.5" width="14" height="12" rx="5.5" fill="#475569" stroke="#1E293B" stroke-width="1.1"/>
+    <line x1="16" y1="34" x2="16" y2="45" stroke="#334155" stroke-width="0.9"/>
+
+    <!-- Rider Helmet -->
+    <circle cx="16" cy="38" r="5.3" fill="#F8FAFC" stroke="#1E293B" stroke-width="1.2"/>
+    <path d="M11.8 35.2 C13.2 33.4, 18.8 33.4, 20.2 35.2 L19.2 36.6 C17.8 35.6, 14.2 35.6, 12.8 36.6 Z" fill="#1E293B"/>
+    <rect x="15.3" y="37" width="1.4" height="5.5" rx="0.7" fill="#D97706"/>
+  </g>
+</svg>

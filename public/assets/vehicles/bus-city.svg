@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 62 240" width="62" height="240" fill="none">
+  <defs>
+    <linearGradient id="bc-windshield" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0F172A" />
+      <stop offset="55%" stop-color="#1E293B" />
+      <stop offset="100%" stop-color="#0284C7" />
+    </linearGradient>
+    <linearGradient id="bc-roof" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#E2E8F0" />
+      <stop offset="12%" stop-color="#F8FAFC" />
+      <stop offset="88%" stop-color="#F8FAFC" />
+      <stop offset="100%" stop-color="#E2E8F0" />
+    </linearGradient>
+  </defs>
+
+  <!-- Wheels -->
+  <g id="wheels" fill="#0F172A">
+    <rect x="5" y="28" width="4" height="18" rx="1.5" />
+    <rect x="53" y="28" width="4" height="18" rx="1.5" />
+    <rect x="5" y="182" width="4" height="20" rx="1.5" />
+    <rect x="53" y="182" width="4" height="20" rx="1.5" />
+  </g>
+
+  <!-- Side Mirrors -->
+  <g id="mirrors" stroke="#0F172A" stroke-width="1.2">
+    <path d="M7 14 L2 12 L2 19 L7 18 Z" fill="#1E3A8A" />
+    <path d="M55 14 L60 12 L60 19 L55 18 Z" fill="#1E3A8A" />
+  </g>
+
+  <!-- Main Bus Shell (Navy Base) -->
+  <rect x="7" y="5" width="48" height="230" rx="9" fill="#1E3A8A" stroke="#0F172A" stroke-width="1.5" />
+
+  <!-- Headlights -->
+  <rect x="11" y="6" width="8" height="3.2" rx="1.5" fill="#E0F2FE" stroke="#38BDF8" stroke-width="0.8" />
+  <rect x="43" y="6" width="8" height="3.2" rx="1.5" fill="#E0F2FE" stroke="#38BDF8" stroke-width="0.8" />
+
+  <!-- Panoramic Windshield -->
+  <path d="M10 11 Q31 7 52 11 L50 26 Q31 23 12 26 Z" fill="url(#bc-windshield)" stroke="#0F172A" stroke-width="1.2" />
+  <!-- Sky-blue Glass Reflection -->
+  <path d="M15 13 Q31 10 47 13" stroke="#38BDF8" stroke-width="1.2" stroke-opacity="0.65" />
+  <!-- Destination LED Bar -->
+  <rect x="19" y="26.5" width="24" height="3.5" rx="1" fill="#0F172A" />
+  <line x1="22" y1="28.2" x2="40" y2="28.2" stroke="#38BDF8" stroke-width="1.4" stroke-dasharray="2 1.5" />
+
+  <!-- Architectural Light Roof Deck -->
+  <rect x="10" y="33" width="42" height="190" rx="4" fill="url(#bc-roof)" stroke="#0F172A" stroke-width="1.1" />
+
+  <!-- Sky-Blue Transit Livery Stripes -->
+  <rect x="11" y="34" width="3" height="188" rx="1" fill="#38BDF8" />
+  <rect x="48" y="34" width="3" height="188" rx="1" fill="#38BDF8" />
+
+  <!-- Front Emergency Roof Hatch -->
+  <rect x="22" y="38" width="18" height="12" rx="2" fill="#E2E8F0" stroke="#64748B" stroke-width="1" />
+  <line x1="25" y1="44" x2="37" y2="44" stroke="#94A3B8" stroke-width="1" />
+
+  <!-- Roof AC Unit 1 (Front) -->
+  <g id="ac-unit-1">
+    <rect x="16" y="56" width="30" height="36" rx="3" fill="#CBD5E1" stroke="#475569" stroke-width="1.2" />
+    <rect x="19" y="59" width="24" height="3" rx="1" fill="#0EA5E9" />
+    <!-- Twin Fan Grilles -->
+    <circle cx="24.5" cy="74" r="6" fill="#475569" stroke="#334155" stroke-width="1" />
+    <circle cx="24.5" cy="74" r="2.2" fill="#94A3B8" />
+    <circle cx="37.5" cy="74" r="6" fill="#475569" stroke="#334155" stroke-width="1" />
+    <circle cx="37.5" cy="74" r="2.2" fill="#94A3B8" />
+    <line x1="19" y1="86" x2="43" y2="86" stroke="#64748B" stroke-width="1" />
+  </g>
+
+  <!-- Roof Panel Seam -->
+  <line x1="14" y1="101" x2="48" y2="101" stroke="#CBD5E1" stroke-width="1" />
+
+  <!-- Roof AC Unit 2 (Mid/Rear) -->
+  <g id="ac-unit-2">
+    <rect x="16" y="110" width="30" height="40" rx="3" fill="#CBD5E1" stroke="#475569" stroke-width="1.2" />
+    <rect x="19" y="113" width="24" height="3" rx="1" fill="#0EA5E9" />
+    <!-- Twin Fan Grilles -->
+    <circle cx="24.5" cy="130" r="6.5" fill="#475569" stroke="#334155" stroke-width="1" />
+    <circle cx="24.5" cy="130" r="2.4" fill="#94A3B8" />
+    <circle cx="37.5" cy="130" r="6.5" fill="#475569" stroke="#334155" stroke-width="1" />
+    <circle cx="37.5" cy="130" r="2.4" fill="#94A3B8" />
+    <line x1="19" y1="144" x2="43" y2="144" stroke="#64748B" stroke-width="1" />
+  </g>
+
+  <!-- Roof Panel Seam -->
+  <line x1="14" y1="160" x2="48" y2="160" stroke="#CBD5E1" stroke-width="1" />
+
+  <!-- Rear HVAC / Battery Pod -->
+  <g id="ac-unit-3">
+    <rect x="18" y="168" width="26" height="26" rx="2.5" fill="#E2E8F0" stroke="#64748B" stroke-width="1.1" />
+    <line x1="21" y1="174" x2="41" y2="174" stroke="#64748B" stroke-width="1.2" />
+    <line x1="21" y1="179" x2="41" y2="179" stroke="#64748B" stroke-width="1.2" />
+    <line x1="21" y1="184" x2="41" y2="184" stroke="#64748B" stroke-width="1.2" />
+    <rect x="25" y="188" width="12" height="2.5" rx="1" fill="#38BDF8" />
+  </g>
+
+  <!-- Rear Emergency Roof Hatch -->
+  <rect x="22" y="202" width="18" height="12" rx="2" fill="#E2E8F0" stroke="#64748B" stroke-width="1" />
+  <line x1="25" y1="208" x2="37" y2="208" stroke="#94A3B8" stroke-width="1" />
+
+  <!-- Rear Window & Taillights -->
+  <path d="M13 226 L49 226 L47 231 L15 231 Z" fill="#0F172A" />
+  <rect x="10" y="231" width="7" height="2.8" rx="1" fill="#EF4444" />
+  <rect x="45" y="231" width="7" height="2.8" rx="1" fill="#EF4444" />
+  <rect x="18" y="231.5" width="3" height="2" rx="0.5" fill="#F59E0B" />
+  <rect x="41" y="231.5" width="3" height="2" rx="0.5" fill="#F59E0B" />
+</svg>

@@ -1,10 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { DEFAULT_CONFIG, TrafficSimulation } from './engine/simulation';
 import { SimConfig, SimSnapshot } from './engine/types';
 import { IntersectionCanvas } from './canvas/IntersectionCanvas';
 import { TopBar } from './components/TopBar';
 import { ParameterInspector } from './components/ParameterInspector';
 import { TelemetryStrip } from './components/TelemetryStrip';
+
+const UI_THROTTLE_MS = 80;
+
+const MemoTopBar = React.memo(TopBar);
+const MemoParameterInspector = React.memo(ParameterInspector);
+const MemoTelemetryStrip = React.memo(TelemetryStrip);
 
 export function App() {
   const simRef = useRef<TrafficSimulation | null>(null);
@@ -13,15 +19,22 @@ export function App() {
   }
 
   const [snapshot, setSnapshot] = useState<SimSnapshot>(() => simRef.current!.getSnapshot());
+  const [uiSnapshot, setUiSnapshot] = useState<SimSnapshot>(() => snapshot);
+  const lastUiSyncRef = useRef<number>(0);
+
   const [running, setRunning] = useState(true);
   const [speed, setSpeed] = useState(1);
   const [zoom, setZoom] = useState(1);
   const [showGrid, setShowGrid] = useState(true);
 
   useEffect(() => {
-    if (!running) return;
+    if (!running) {
+      setUiSnapshot(simRef.current!.getSnapshot());
+      return;
+    }
     let rafId = 0;
     let lastTime = performance.now();
+    lastUiSyncRef.current = lastTime;
 
     const tick = (now: number) => {
       const realDt = Math.min(0.05, (now - lastTime) / 1000);
@@ -35,7 +48,14 @@ export function App() {
         sim.step(stepDt);
       }
 
-      setSnapshot(sim.getSnapshot());
+      const next = sim.getSnapshot();
+      setSnapshot(next);
+
+      if (now - lastUiSyncRef.current >= UI_THROTTLE_MS) {
+        lastUiSyncRef.current = now;
+        setUiSnapshot(next);
+      }
+
       rafId = requestAnimationFrame(tick);
     };
 
@@ -48,7 +68,9 @@ export function App() {
       if (running) return;
       const sim = simRef.current!;
       sim.updateConfig(partial);
-      setSnapshot(sim.getSnapshot());
+      const next = sim.getSnapshot();
+      setSnapshot(next);
+      setUiSnapshot(next);
     },
     [running]
   );
@@ -57,38 +79,48 @@ export function App() {
     if (running) return;
     const sim = simRef.current!;
     sim.updateConfig(DEFAULT_CONFIG);
-    setSnapshot(sim.getSnapshot());
+    const next = sim.getSnapshot();
+    setSnapshot(next);
+    setUiSnapshot(next);
   }, [running]);
 
   const handleReset = useCallback(() => {
     const sim = simRef.current!;
     sim.reset();
-    setSnapshot(sim.getSnapshot());
+    const next = sim.getSnapshot();
+    setSnapshot(next);
+    setUiSnapshot(next);
   }, []);
 
+  const handleToggleRun = useCallback(() => setRunning((r) => !r), []);
+  const handlePause = useCallback(() => setRunning(false), []);
+  const handleToggleGrid = useCallback(() => setShowGrid((g) => !g), []);
+  const handleZoomIn = useCallback(() => setZoom((z) => Math.min(2.2, +(z + 0.15).toFixed(2))), []);
+  const handleZoomOut = useCallback(() => setZoom((z) => Math.max(0.6, +(z - 0.15).toFixed(2))), []);
+
   const phaseDuration =
-    snapshot.signal.activeColor === 'green'
-      ? snapshot.config.greenDuration
-      : snapshot.signal.activeColor === 'yellow'
-      ? snapshot.config.yellowDuration
-      : snapshot.config.allRedDuration;
+    uiSnapshot.signal.activeColor === 'green'
+      ? uiSnapshot.config.greenDuration
+      : uiSnapshot.signal.activeColor === 'yellow'
+      ? uiSnapshot.config.yellowDuration
+      : uiSnapshot.config.allRedDuration;
 
   return (
     <div className="min-h-screen lg:h-screen w-screen flex flex-col bg-slate-50 text-slate-900 lg:overflow-hidden">
-      <TopBar
+      <MemoTopBar
         running={running}
-        onToggleRun={() => setRunning((r) => !r)}
+        onToggleRun={handleToggleRun}
         onReset={handleReset}
         speed={speed}
         onSpeedChange={setSpeed}
-        signal={snapshot.signal}
+        signal={uiSnapshot.signal}
         phaseDuration={phaseDuration}
-        simTime={snapshot.stats.simTime}
+        simTime={uiSnapshot.stats.simTime}
         zoom={zoom}
         showGrid={showGrid}
-        onToggleGrid={() => setShowGrid((g) => !g)}
-        onZoomIn={() => setZoom((z) => Math.min(2.2, +(z + 0.15).toFixed(2)))}
-        onZoomOut={() => setZoom((z) => Math.max(0.6, +(z - 0.15).toFixed(2)))}
+        onToggleGrid={handleToggleGrid}
+        onZoomIn={handleZoomIn}
+        onZoomOut={handleZoomOut}
       />
 
       <main className="flex-1 min-h-0 p-2.5 flex flex-col gap-2.5 lg:overflow-hidden">
@@ -100,16 +132,16 @@ export function App() {
               showGrid={showGrid}
             />
           </div>
-          <ParameterInspector
-            config={snapshot.config}
+          <MemoParameterInspector
+            config={uiSnapshot.config}
             running={running}
-            onPause={() => setRunning(false)}
+            onPause={handlePause}
             onChange={handleConfigChange}
             onResetDefaults={handleResetDefaults}
           />
         </div>
 
-        <TelemetryStrip stats={snapshot.stats} signal={snapshot.signal} />
+        <MemoTelemetryStrip stats={uiSnapshot.stats} signal={uiSnapshot.signal} />
       </main>
     </div>
   );

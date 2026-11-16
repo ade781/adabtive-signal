@@ -271,16 +271,13 @@ export function sampleWithLateralOffset(
     return steerYaw !== 0 ? { ...base, heading } : base;
   }
 
-  // Smooth taper on tight left turns over 3.0m inside [stopLineDist, exitLineDist]
+  // Smooth cosine taper on turning paths inside [stopLineDist, exitLineDist] to avoid sharp apex cuts
   let taper = 1.0;
-  if (path.turn === 'left' && dist > path.stopLineDist && dist < path.exitLineDist) {
+  if ((path.turn === 'left' || path.turn === 'right') && dist > path.stopLineDist && dist < path.exitLineDist) {
     const span = path.exitLineDist - path.stopLineDist;
-    const ramp = Math.min(3.0, span * 0.5);
-    if (ramp > 1e-6) {
-      const dEdge = Math.min(dist - path.stopLineDist, path.exitLineDist - dist);
-      const u = Math.min(1, dEdge / ramp);
-      const w = 0.5 * (1 - Math.cos(Math.PI * u));
-      taper = 1.0 - 0.15 * w;
+    if (span > 1e-6) {
+      const w = (dist - path.stopLineDist) / span;
+      taper = 1.0 - 0.65 * 0.5 * (1 - Math.cos(Math.PI * 2 * w));
     }
   }
   const effOffset = lateralOffset * taper;

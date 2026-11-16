@@ -161,4 +161,36 @@ const wideOut = wideSim.getSnapshot().stats.totalExitedAllTime;
 console.log(`[PASS] 5. Lane Width Mobility Impact (2.8m=${narrowOut} vs 4.0m=${wideOut} exited in 120s)`);
 assert(wideOut > narrowOut, `Expected wide 4.0m lane (${wideOut}) > narrow 2.8m lane (${narrowOut})`);
 
+// 6. Config Clamping, Rescaling StopLine Guard & Actual Phase/Cycle Duration Recording
+{
+  const cfgSim = new TrafficSimulation({ greenDuration: 1, yellowDuration: 0, allRedDuration: -2, lanesPerDirection: 2, laneWidth: 3.5, roadLength: 100 });
+  const initSnap = cfgSim.getSnapshot();
+  assert(initSnap.config.greenDuration === 3, `Expected greenDuration clamped to 3, got ${initSnap.config.greenDuration}`);
+  assert(initSnap.config.yellowDuration === 1, `Expected yellowDuration clamped to 1, got ${initSnap.config.yellowDuration}`);
+  assert(initSnap.config.allRedDuration === 0, `Expected allRedDuration clamped to 0, got ${initSnap.config.allRedDuration}`);
+
+  cfgSim.updateConfig({ greenDuration: 2, yellowDuration: 0.2, allRedDuration: -1 });
+  const updSnap = cfgSim.getSnapshot();
+  assert(updSnap.config.greenDuration === 3, `Expected updated greenDuration clamped to 3`);
+  assert(updSnap.config.yellowDuration === 1, `Expected updated yellowDuration clamped to 1`);
+  assert(updSnap.config.allRedDuration === 0, `Expected updated allRedDuration clamped to 0`);
+
+  // Step through > 1 full cycle (4 * (3 + 1) = 16s) and verify actual phase/cycle durations
+  for (let s = 0; s < 400; s++) cfgSim.step(0.05);
+  const statSnap = cfgSim.getSnapshot();
+  assert(statSnap.stats.phaseHistory.length >= 4, `Expected >=4 phaseHistory records`);
+  assert(statSnap.stats.cycleHistory.length >= 1, `Expected >=1 cycleHistory records`);
+  assert(statSnap.stats.phaseHistory[0].greenDuration >= 3.9, `Expected actual phase duration ~4.0s, got ${statSnap.stats.phaseHistory[0].greenDuration}`);
+  assert(statSnap.stats.cycleHistory[0].totalDuration >= 15.8, `Expected actual cycle duration ~16.0s, got ${statSnap.stats.cycleHistory[0].totalDuration}`);
+
+  // Verify turning motor spawn offsets never cross to wrong side
+  for (const v of statSnap.vehicles) {
+    if (v.vClass === 'motor' && v.distanceAlongPath < 5) {
+      if (v.turn === 'left') assert(v.lateralOffset >= -1e-6, `Left-turning motor spawned with negative offset ${v.lateralOffset}`);
+      if (v.turn === 'right') assert(v.lateralOffset <= 1e-6, `Right-turning motor spawned with positive offset ${v.lateralOffset}`);
+    }
+  }
+  console.log('[PASS] 6. Config Clamping, Actual Phase/Cycle Duration & Motor Turn Offset');
+}
+
 console.log('--- ALL TESTS PASSED ---');

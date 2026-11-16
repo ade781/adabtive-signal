@@ -91,8 +91,8 @@ export function findBlockingLeader(
       }
     } else if (
       other.originArm === v.originArm ||
-      other.destArm === v.destArm ||
-      (v.distanceAlongPath >= v.stopLineDist - 1.5 && other.distanceAlongPath > other.stopLineDist + 0.5 && other.distanceAlongPath < other.exitLineDist - 0.5)
+      (other.destArm === v.destArm && (other.distanceAlongPath >= other.stopLineDist - 2.0 || v.distanceAlongPath >= v.stopLineDist - 14.0)) ||
+      (v.distanceAlongPath >= v.stopLineDist - 1.5 && other.distanceAlongPath > other.stopLineDist + 0.5 && other.distanceAlongPath - other.length * 0.5 < other.exitLineDist)
     ) {
       // Same-arm, same-turn curve following: arc-length gap remains exact even across 90-degree Bezier bends
       if (other.originArm === v.originArm && other.turn === v.turn && other.distanceAlongPath > v.distanceAlongPath) {
@@ -142,7 +142,8 @@ export function findBlockingLeader(
       if (forwardProj <= 0.1) continue;
 
       if (gapAlong < nearestGap) {
-        nearestGap = Math.max(0.05, gapAlong);
+        const minGap = other.originArm !== v.originArm && gapAlong <= 0 && other.speed > 1.0 ? 0.25 : 0.05;
+        nearestGap = Math.max(minGap, gapAlong);
         leadSpeed = other.speed;
         blockingLeader = other;
       }
@@ -166,7 +167,7 @@ export function updateMotorcycleSeepage(
   const myEffW = effClearanceWidth(v);
   const myGlobalLat = getGlobalLat(v.laneIndex, v.lateralOffset, lw);
 
-  const recenterDist = v.turn === 'straight' ? v.stopLineDist - 2.5 : v.stopLineDist + 0.5;
+  const recenterDist = v.turn === 'straight' ? v.stopLineDist - 2.5 : v.stopLineDist - 6.0;
   if (v.distanceAlongPath >= recenterDist) {
     for (const other of vehicles) {
       if (other.id === v.id || other.originArm !== v.originArm) continue;
@@ -192,12 +193,14 @@ export function updateMotorcycleSeepage(
     return;
   }
 
-  const minBound = v.turn === 'straight' ? 0.42 : Math.max(0.42, v.laneIndex * lw - 0.6);
-  const maxBound = v.turn === 'straight' ? roadW - 0.42 : Math.min(roadW - 0.42, (v.laneIndex + 1) * lw + 0.6);
+  const minBound = v.turn === 'straight' ? 0.42 : Math.max(0.42, v.laneIndex * lw + 0.42);
+  const maxBound = v.turn === 'straight' ? roadW - 0.42 : Math.min(roadW - 0.42, (v.laneIndex + 1) * lw - 0.42);
   const leadEffW = effClearanceWidth(blockingLeader);
 
   const raw: number[] = [];
-  for (let l = 1; l < config.lanesPerDirection; l++) raw.push(l * lw);
+  if (v.turn === 'straight') {
+    for (let l = 1; l < config.lanesPerDirection; l++) raw.push(l * lw);
+  }
   raw.push(myGlobalLat - (myEffW + leadEffW) * 0.5 - 0.12, myGlobalLat + (myEffW + leadEffW) * 0.5 + 0.12, maxBound, minBound);
 
   let bestCand: number | null = null;
@@ -213,13 +216,19 @@ export function updateMotorcycleSeepage(
     for (const other of vehicles) {
       if (other.id === v.id || other.originArm !== v.originArm) continue;
       const otherLat = getGlobalLat(other.laneIndex, other.lateralOffset, lw);
+      const otherTargetLat = getGlobalLat(other.laneIndex, other.targetLateralOffset, lw);
       const pad = (myEffW + effClearanceWidth(other)) * 0.5 + 0.12;
       const halfSumLen = (v.length + other.length) * 0.5;
       const longDiff = other.distanceAlongPath - v.distanceAlongPath;
 
       if (Math.abs(longDiff) < halfSumLen + 1.2) {
-        if (otherLat >= bandMin - pad && otherLat <= bandMax + pad) { clear = false; break; }
-      } else if (longDiff > 0 && Math.abs(cand - otherLat) < pad) {
+        if (
+          (otherLat >= bandMin - pad && otherLat <= bandMax + pad) ||
+          (otherTargetLat >= bandMin - pad && otherTargetLat <= bandMax + pad)
+        ) {
+          clear = false; break;
+        }
+      } else if (longDiff > 0 && (Math.abs(cand - otherLat) < pad || Math.abs(cand - otherTargetLat) < pad)) {
         const gap = longDiff - halfSumLen;
         if (gap < 4.5 || (v.speed > other.speed + 1.5 && gap < (v.speed - other.speed) * 1.4)) {
           clear = false; break;

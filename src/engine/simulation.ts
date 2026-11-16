@@ -33,7 +33,18 @@ export { DEFAULT_CONFIG };
 function normalizeConfig(raw: SimConfig): SimConfig {
   const lanes = Math.max(1, Math.min(4, Math.round(raw.lanesPerDirection)));
   const lw = Math.max(2.8, Math.min(4.2, +(raw.laneWidth ?? raw.roadWidthPerDirection / lanes).toFixed(2)));
-  return { ...raw, lanesPerDirection: lanes, laneWidth: lw, roadWidthPerDirection: +(lanes * lw).toFixed(2) };
+  const greenDuration = Math.max(3, raw.greenDuration);
+  const yellowDuration = Math.max(1, raw.yellowDuration);
+  const allRedDuration = Math.max(0, raw.allRedDuration);
+  return {
+    ...raw,
+    lanesPerDirection: lanes,
+    laneWidth: lw,
+    roadWidthPerDirection: +(lanes * lw).toFixed(2),
+    greenDuration,
+    yellowDuration,
+    allRedDuration,
+  };
 }
 
 export class TrafficSimulation {
@@ -57,6 +68,7 @@ export class TrafficSimulation {
   private currentCycleExited = { motor: 0, car: 0, heavy: 0, total: 0 };
   private currentCycleQueueSum = 0;
   private currentCycleSteps = 0;
+  private currentCycleDuration = 0;
   private totalExitedAllTime = 0;
   private phaseHistory: PhaseRecord[] = [];
   private cycleHistory: CycleRecord[] = [];
@@ -84,6 +96,7 @@ export class TrafficSimulation {
     this.currentCycleExited = { motor: 0, car: 0, heavy: 0, total: 0 };
     this.currentCycleQueueSum = 0;
     this.currentCycleSteps = 0;
+    this.currentCycleDuration = 0;
     this.totalExitedAllTime = 0;
     this.phaseHistory = [];
     this.cycleHistory = [];
@@ -107,13 +120,18 @@ export class TrafficSimulation {
           v.lateralOffset = Math.max(-maxLat, Math.min(maxLat, v.lateralOffset));
           v.targetLateralOffset = Math.max(-maxLat, Math.min(maxLat, v.targetLateralOffset));
         }
+        const wasBehindStopLine = v.distanceAlongPath < v.stopLineDist;
         const newPath = this.pathCache[v.originArm][v.turn][v.laneIndex];
         const rel = v.totalPathLength > 0 ? v.distanceAlongPath / v.totalPathLength : 0;
         v.path = newPath;
         v.stopLineDist = newPath.stopLineDist;
         v.exitLineDist = newPath.exitLineDist;
         v.totalPathLength = newPath.totalPathLength;
-        v.distanceAlongPath = Math.max(0, Math.min(newPath.totalPathLength, rel * newPath.totalPathLength));
+        let scaledDist = Math.max(0, Math.min(newPath.totalPathLength, rel * newPath.totalPathLength));
+        if (wasBehindStopLine) {
+          scaledDist = Math.min(scaledDist, Math.max(0, newPath.stopLineDist - 0.5));
+        }
+        v.distanceAlongPath = scaledDist;
         const pt = sampleWithLateralOffset(newPath, v.distanceAlongPath, v.lateralOffset, 0, v.speed);
         v.x = pt.x; v.y = pt.y; v.heading = pt.heading;
       }
@@ -177,11 +195,12 @@ export class TrafficSimulation {
     }
 
     this.phaseCounter += 1;
+    this.currentCycleDuration += this.phaseElapsed;
     this.phaseHistory.unshift({
       phaseIndex: this.phaseCounter,
       cycleNumber: this.cycleNumber,
       arm: ARM_ORDER[this.activeArmIndex],
-      greenDuration: this.config.greenDuration,
+      greenDuration: Math.round(this.phaseElapsed * 10) / 10,
       exitedMotor: this.currentPhaseExited.motor,
       exitedCar: this.currentPhaseExited.car,
       exitedHeavy: this.currentPhaseExited.heavy,
@@ -195,11 +214,9 @@ export class TrafficSimulation {
 
     if (this.activeArmIndex === 0) {
       const avgQ = this.currentCycleSteps > 0 ? this.currentCycleQueueSum / this.currentCycleSteps : 0;
-      const effAllRed = this.config.allRedDuration > 0.05 ? this.config.allRedDuration : 0;
-      const cycleDur = (this.config.greenDuration + this.config.yellowDuration + effAllRed) * 4;
       this.cycleHistory.unshift({
         cycleNumber: this.cycleNumber,
-        totalDuration: Math.round(cycleDur * 10) / 10,
+        totalDuration: Math.round(this.currentCycleDuration * 10) / 10,
         exitedMotor: this.currentCycleExited.motor,
         exitedCar: this.currentCycleExited.car,
         exitedHeavy: this.currentCycleExited.heavy,
@@ -211,6 +228,7 @@ export class TrafficSimulation {
       this.currentCycleExited = { motor: 0, car: 0, heavy: 0, total: 0 };
       this.currentCycleQueueSum = 0;
       this.currentCycleSteps = 0;
+      this.currentCycleDuration = 0;
     }
 
     this.activeColor = 'green';
@@ -261,8 +279,13 @@ export class TrafficSimulation {
     const lw = getLaneWidth(this.config);
 
     let lateralOffset = 0;
-    if (vClass === 'motor' && lw >= 3.1) lateralOffset = Math.random() < 0.5 ? -lw * 0.27 : lw * 0.27;
-    else if (vClass === 'car') lateralOffset = (Math.random() - 0.5) * 0.16;
+    if (vClass === 'motor' && lw >= 3.1) {
+      if (turn === 'left') lateralOffset = Math.random() < 0.5 ? lw * 0.22 : 0;
+      else if (turn === 'right') lateralOffset = Math.random() < 0.5 ? -lw * 0.22 : 0;
+      else lateralOffset = Math.random() < 0.5 ? -lw * 0.27 : lw * 0.27;
+    } else if (vClass === 'car') {
+      lateralOffset = (Math.random() - 0.5) * 0.16;
+    }
 
     const myEffW = vClass === 'motor' ? 0.72 : spec.width;
     const minClearance = spec.length + spec.minGap + 4.5;
@@ -338,7 +361,7 @@ export class TrafficSimulation {
   }
 
   private isBoxOccupiedByOtherArm(myArm: ArmId): boolean {
-    return this.vehicles.some((o) => o.originArm !== myArm && o.distanceAlongPath > o.stopLineDist + 1.0 && o.distanceAlongPath - o.length * 0.5 < o.exitLineDist);
+    return this.vehicles.some((o) => o.originArm !== myArm && o.distanceAlongPath > o.stopLineDist + 1.0 && o.distanceAlongPath - o.length * 0.25 < o.exitLineDist);
   }
 
   /** Indonesian dilemma-zone behavior: majority of motorcycles (75-85%) and cars (60-70%) push through yellow when close/moving. */
@@ -383,6 +406,24 @@ export class TrafficSimulation {
 
       let { nearestGap, leadSpeed, blockingLeader, isSqueezingPast } = findBlockingLeader(v, this.vehicles, lw);
 
+      if ((v.turn === 'left' || v.turn === 'right') && v.distanceAlongPath >= v.stopLineDist - 8.0 && v.distanceAlongPath <= v.exitLineDist) {
+        const myEffW = effClearanceWidth(v);
+        for (const other of this.vehicles) {
+          if (other.id === v.id || other.originArm !== v.originArm || other.turn !== v.turn || other.laneIndex !== v.laneIndex) continue;
+          if (other.distanceAlongPath <= v.distanceAlongPath) continue;
+          const taperLatSep = Math.abs(v.lateralOffset - other.lateralOffset) * 0.35;
+          const minLatNeed = (myEffW + effClearanceWidth(other)) * 0.5 + 0.06;
+          if (taperLatSep < minLatNeed) {
+            const gapAlong = other.distanceAlongPath - v.distanceAlongPath - (other.length + v.length) * 0.5;
+            if (gapAlong < nearestGap) {
+              nearestGap = Math.max(0.05, gapAlong);
+              leadSpeed = other.speed;
+              blockingLeader = other;
+            }
+          }
+        }
+      }
+
       const distToStop = v.stopLineDist - (v.distanceAlongPath + v.length * 0.5);
       if (distToStop > 0) {
         const stopForYellow = light === 'yellow' && this.shouldStopForYellow(v, distToStop);
@@ -394,10 +435,12 @@ export class TrafficSimulation {
       // Creep forward slowly when green & previous arm is still clearing the intersection box
       if (light === 'green' && distToStop > -2.5 && distToStop < 16 && this.isBoxOccupiedByOtherArm(v.originArm)) {
         desiredV = Math.min(desiredV, distToStop > 1.5 ? 3.2 : 1.8);
-        const creepBarrier = distToStop + 2.4;
-        if (creepBarrier > 0 && creepBarrier < nearestGap) {
-          nearestGap = Math.max(0.1, creepBarrier);
-          leadSpeed = 0;
+        if (distToStop <= 1.5 && distToStop > -2.0) {
+          const creepBarrier = distToStop + 2.6;
+          if (creepBarrier > 0 && creepBarrier < nearestGap) {
+            nearestGap = Math.max(0.1, creepBarrier);
+            leadSpeed = 0;
+          }
         }
       }
 
@@ -417,15 +460,14 @@ export class TrafficSimulation {
         const myEffW = effClearanceWidth(v);
 
         let blocked = false;
-        if (v.vClass === 'motor') {
-          const candG = getGlobalLat(v.laneIndex, candLat, lw), curG = getGlobalLat(v.laneIndex, v.lateralOffset, lw);
-          for (const other of this.vehicles) {
-            if (other.id === v.id || other.originArm !== v.originArm) continue;
-            if (Math.abs(other.distanceAlongPath - v.distanceAlongPath) < (v.length + other.length) * 0.5 + 2.0) {
-              const otherG = getGlobalLat(other.laneIndex, other.lateralOffset + other.lateralVelocity * dt, lw);
-              if (Math.abs(candG - otherG) < (myEffW + effClearanceWidth(other)) * 0.5 + 0.18 && Math.abs(candG - otherG) < Math.abs(curG - otherG)) {
-                blocked = true; break;
-              }
+        const candG = getGlobalLat(v.laneIndex, candLat, lw), curG = getGlobalLat(v.laneIndex, v.lateralOffset, lw);
+        for (const other of this.vehicles) {
+          if (other.id === v.id || other.originArm !== v.originArm) continue;
+          const speedBuf = other.distanceAlongPath > v.distanceAlongPath ? Math.max(0, v.speed - other.speed) * 0.6 : 0;
+          if (Math.abs(other.distanceAlongPath - v.distanceAlongPath) < (v.length + other.length) * 0.5 + 2.0 + speedBuf) {
+            const otherG = getGlobalLat(other.laneIndex, other.lateralOffset + other.lateralVelocity * dt, lw);
+            if (Math.abs(candG - otherG) < (myEffW + effClearanceWidth(other)) * 0.5 + 0.18 && Math.abs(candG - otherG) < Math.abs(curG - otherG)) {
+              blocked = true; break;
             }
           }
         }
@@ -438,10 +480,11 @@ export class TrafficSimulation {
 
       // Smooth urban IDM with continuous brake curve & jerk limiting + responsive launch
       let nextSpeed = v.speed;
-      if (v.reactionTimer > 0 && light === 'green') {
+      if (v.reactionTimer > 0 && light === 'green' && v.speed < 0.35) {
         nextSpeed = Math.max(0, v.speed - 0.8 * dt);
         v.prevAccel = 0;
       } else {
+        if (v.speed < 0.15) v.prevAccel = Math.max(0, v.prevAccel ?? 0);
         const effAccel = v.maxAccel * v.accelFactor;
         const minGap = v.vClass === 'motor' && v.speed < 4.5 ? 0.65 : v.minGap;
         const headway = (v.vClass === 'motor' && v.speed < 4.5 ? 0.5 : v.timeHeadway) * widthHeadwayFactor;
@@ -449,10 +492,13 @@ export class TrafficSimulation {
         const sStar = minGap + Math.max(0, v.speed * headway + (v.speed * dv) / (2 * Math.sqrt(effAccel * v.comfortDecel)));
         const rawAccel = effAccel * (1 - Math.pow(v.speed / Math.max(1, desiredV), 4) - (Number.isFinite(nearestGap) ? Math.pow(sStar / Math.max(0.05, nearestGap), 2) : 0));
         // Responsive launch from standstill when green and gap is open
-        const launchBoost =
-          light === 'green' && v.speed < 2.5 && leadSpeed > 0.2 && nearestGap >= minGap * 1.05
-            ? effAccel * (0.78 * (1 - v.speed / 2.8))
-            : -Infinity;
+        const canLaunch =
+          v.speed < 2.5 &&
+          nearestGap >= minGap * 1.05 &&
+          (light === 'green' || v.distanceAlongPath >= v.stopLineDist) &&
+          (leadSpeed > 0.1 || nearestGap > minGap * 1.8) &&
+          !(leadSpeed < 0.5 && nearestGap < minGap * 1.35);
+        const launchBoost = canLaunch ? effAccel * (0.78 * (1 - v.speed / 2.8)) : -Infinity;
         const closeT = Number.isFinite(nearestGap) ? Math.max(0, Math.min(1, (20 - nearestGap) / 16)) : 0;
         const maxEmergencyDecel = v.vClass === 'motor' ? 7.5 : 5.5;
         const brakeLimit = -(v.comfortDecel + (maxEmergencyDecel - v.comfortDecel) * closeT);
@@ -464,7 +510,11 @@ export class TrafficSimulation {
             ? targetAccel
             : prevA + Math.max(-12.0 * dt, Math.min(18.0 * dt, targetAccel - prevA));
         v.prevAccel = smoothedAccel;
-        nextSpeed = Math.max(0, Math.min(desiredV * 1.05, v.speed + smoothedAccel * dt));
+        const candidateSpeed = Math.max(0, v.speed + smoothedAccel * dt);
+        nextSpeed =
+          candidateSpeed > desiredV * 1.05
+            ? Math.min(candidateSpeed, Math.max(desiredV * 1.05, v.speed - v.comfortDecel * dt))
+            : candidateSpeed;
       }
 
       decisions.push({ v, nextSpeed, nextLat, nextLatVel });

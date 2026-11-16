@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#0F172A" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Left and right road edges -->
+  <line x1="4" y1="3" x2="4" y2="21"/>
+  <line x1="20" y1="3" x2="20" y2="21"/>
+  <!-- Horizontal width measurement arrow -->
+  <line x1="7" y1="12" x2="17" y2="12"/>
+  <polyline points="10 9 7 12 10 15"/>
+  <polyline points="14 9 17 12 14 15"/>
+</svg>

@@ -158,7 +158,7 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = ({ snapshot
       ctx.fillText('10 m · LHT (ID)', bx, by - 7);
     }
     ctx.restore();
-  }, [snapshot, size, zoom, halfRoad, halfBox]);
+  }, [snapshot, size, zoom, halfRoad, halfBox, assetVer]);
 
   return (
     <div ref={containerRef} className="relative w-full h-full overflow-hidden bg-slate-100 rounded-lg border border-slate-200">
