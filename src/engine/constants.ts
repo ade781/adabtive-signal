@@ -47,14 +47,14 @@ export const SPRITES: Record<VehicleClass, string[]> = {
   ],
 };
 
-// Calibrated for smooth urban braking (higher comfortDecel & tighter urban headway prevent premature slamming)
+// Calibrated for responsive Indonesian urban start-up & smooth braking
 export const VEHICLE_SPECS: Record<
   VehicleClass,
   { length: number; width: number; maxSpeed: number; maxAccel: number; comfortDecel: number; minGap: number; timeHeadway: number }
 > = {
-  motor: { length: 2.0, width: 0.85, maxSpeed: 13.8, maxAccel: 3.2, comfortDecel: 3.4, minGap: 0.85, timeHeadway: 0.65 },
-  car: { length: 4.5, width: 1.85, maxSpeed: 13.5, maxAccel: 2.2, comfortDecel: 2.8, minGap: 1.5, timeHeadway: 0.85 },
-  heavy: { length: 9.2, width: 2.5, maxSpeed: 10.2, maxAccel: 1.2, comfortDecel: 2.2, minGap: 2.3, timeHeadway: 1.3 },
+  motor: { length: 2.0, width: 0.85, maxSpeed: 13.8, maxAccel: 4.0, comfortDecel: 3.4, minGap: 0.85, timeHeadway: 0.65 },
+  car: { length: 4.5, width: 1.85, maxSpeed: 13.5, maxAccel: 2.8, comfortDecel: 2.8, minGap: 1.5, timeHeadway: 0.85 },
+  heavy: { length: 9.2, width: 2.5, maxSpeed: 10.2, maxAccel: 1.5, comfortDecel: 2.2, minGap: 2.3, timeHeadway: 1.3 },
 };
 
 export type DriverProfile = 'cautious' | 'normal' | 'aggressive';

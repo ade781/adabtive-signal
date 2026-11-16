@@ -256,9 +256,7 @@ export class TrafficSimulation {
   }
 
   private trySpawnOne(vClass: VehicleClass): boolean {
-    const arm = ARM_ORDER[this.armSpawnCursor % ARM_ORDER.length];
     const turn = this.pickTurnIntent();
-    const laneIndex = this.pickLaneForTurn(arm, turn);
     const spec = VEHICLE_SPECS[vClass];
     const lw = getLaneWidth(this.config);
 
@@ -266,61 +264,73 @@ export class TrafficSimulation {
     if (vClass === 'motor' && lw >= 3.1) lateralOffset = Math.random() < 0.5 ? -lw * 0.27 : lw * 0.27;
     else if (vClass === 'car') lateralOffset = (Math.random() - 0.5) * 0.16;
 
-    const myGlobalLat = getGlobalLat(laneIndex, lateralOffset, lw);
     const myEffW = vClass === 'motor' ? 0.72 : spec.width;
     const minClearance = spec.length + spec.minGap + 4.5;
-    let nearestAheadSpeed = Infinity;
 
-    for (const other of this.vehicles) {
-      if (other.originArm !== arm) continue;
-      const latSep = Math.abs(myGlobalLat - getGlobalLat(other.laneIndex, other.lateralOffset, lw));
-      if (latSep < (myEffW + effClearanceWidth(other)) * 0.5 + 0.25) {
-        if (other.distanceAlongPath < other.length * 0.5 + minClearance) return false;
-        if (other.distanceAlongPath < 14) nearestAheadSpeed = Math.min(nearestAheadSpeed, other.speed);
+    for (let attempt = 0; attempt < ARM_ORDER.length; attempt++) {
+      const arm = ARM_ORDER[(this.armSpawnCursor + attempt) % ARM_ORDER.length];
+      const laneIndex = this.pickLaneForTurn(arm, turn);
+      const myGlobalLat = getGlobalLat(laneIndex, lateralOffset, lw);
+      let nearestAheadSpeed = Infinity;
+      let blocked = false;
+
+      for (const other of this.vehicles) {
+        if (other.originArm !== arm) continue;
+        const latSep = Math.abs(myGlobalLat - getGlobalLat(other.laneIndex, other.lateralOffset, lw));
+        if (latSep < (myEffW + effClearanceWidth(other)) * 0.5 + 0.25) {
+          if (other.distanceAlongPath < other.length * 0.5 + minClearance) {
+            blocked = true;
+            break;
+          }
+          if (other.distanceAlongPath < 14) nearestAheadSpeed = Math.min(nearestAheadSpeed, other.speed);
+        }
       }
+      if (blocked) continue;
+
+      this.armSpawnCursor = (this.armSpawnCursor + attempt + 1) % ARM_ORDER.length;
+      const r = Math.random();
+      const profile: DriverProfile = r < 0.22 ? 'cautious' : r < 0.72 ? 'normal' : 'aggressive';
+      const pMult = PROFILE_MULT[profile];
+      const path = this.pathCache[arm][turn][laneIndex];
+      const speedFactor = pMult.speed * (0.95 + Math.random() * 0.1);
+      const accelFactor = pMult.accel * (0.95 + Math.random() * 0.1);
+      const initialSpeed = Math.min(spec.maxSpeed * speedFactor * 0.65, nearestAheadSpeed + 1.5);
+      const startPt = sampleWithLateralOffset(path, 0, lateralOffset, 0, initialSpeed);
+      const sprites = SPRITES[vClass];
+
+      this.vehicles.push({
+        id: this.nextVehicleId++,
+        vClass,
+        spriteKey: sprites[Math.floor(Math.random() * sprites.length)],
+        originArm: arm,
+        destArm: getDestArm(arm, turn),
+        turn,
+        laneIndex,
+        lateralOffset,
+        targetLateralOffset: lateralOffset,
+        lateralVelocity: 0,
+        speedFactor,
+        accelFactor,
+        profile,
+        reactionTimer: 0,
+        prevAccel: 0,
+        laneChangeDir: null,
+        ...spec,
+        speed: initialSpeed,
+        distanceAlongPath: 0,
+        totalPathLength: path.totalPathLength,
+        stopLineDist: path.stopLineDist,
+        exitLineDist: path.exitLineDist,
+        x: startPt.x,
+        y: startPt.y,
+        heading: startPt.heading,
+        hasExitedIntersection: false,
+        waitingTime: 0,
+        path,
+      });
+      return true;
     }
-
-    this.armSpawnCursor = (this.armSpawnCursor + 1) % ARM_ORDER.length;
-    const r = Math.random();
-    const profile: DriverProfile = r < 0.22 ? 'cautious' : r < 0.72 ? 'normal' : 'aggressive';
-    const pMult = PROFILE_MULT[profile];
-    const path = this.pathCache[arm][turn][laneIndex];
-    const speedFactor = pMult.speed * (0.95 + Math.random() * 0.1);
-    const accelFactor = pMult.accel * (0.95 + Math.random() * 0.1);
-    const initialSpeed = Math.min(spec.maxSpeed * speedFactor * 0.65, nearestAheadSpeed + 1.5);
-    const startPt = sampleWithLateralOffset(path, 0, lateralOffset, 0, initialSpeed);
-    const sprites = SPRITES[vClass];
-
-    this.vehicles.push({
-      id: this.nextVehicleId++,
-      vClass,
-      spriteKey: sprites[Math.floor(Math.random() * sprites.length)],
-      originArm: arm,
-      destArm: getDestArm(arm, turn),
-      turn,
-      laneIndex,
-      lateralOffset,
-      targetLateralOffset: lateralOffset,
-      lateralVelocity: 0,
-      speedFactor,
-      accelFactor,
-      profile,
-      reactionTimer: 0,
-      laneChangeDir: null,
-      ...spec,
-      speed: initialSpeed,
-      distanceAlongPath: 0,
-      totalPathLength: path.totalPathLength,
-      stopLineDist: path.stopLineDist,
-      exitLineDist: path.exitLineDist,
-      x: startPt.x,
-      y: startPt.y,
-      heading: startPt.heading,
-      hasExitedIntersection: false,
-      waitingTime: 0,
-      path,
-    });
-    return true;
+    return false;
   }
 
   private getArmLight(arm: ArmId): SignalColor {
@@ -328,7 +338,29 @@ export class TrafficSimulation {
   }
 
   private isBoxOccupiedByOtherArm(myArm: ArmId): boolean {
-    return this.vehicles.some((o) => o.originArm !== myArm && o.distanceAlongPath > o.stopLineDist + 2.0 && o.distanceAlongPath < o.exitLineDist - 2.0);
+    return this.vehicles.some((o) => o.originArm !== myArm && o.distanceAlongPath > o.stopLineDist + 1.0 && o.distanceAlongPath - o.length * 0.5 < o.exitLineDist);
+  }
+
+  /** Indonesian dilemma-zone behavior: majority of motorcycles (75-85%) and cars (60-70%) push through yellow when close/moving. */
+  private shouldStopForYellow(v: SimVehicle, distToStop: number): boolean {
+    const comfortableStopDist = (v.speed * v.speed) / (2 * v.comfortDecel * (v.profile === 'aggressive' ? 1.65 : 1.3));
+    if (distToStop <= Math.max(4.0, comfortableStopDist * 0.65)) return false;
+
+    const bucket = v.id % 10;
+    if (v.vClass === 'motor') {
+      if (v.speed < 3.5 && distToStop > 4.0 && this.phaseRemaining < 1.0) return true;
+      if (distToStop > 24 && (v.profile === 'cautious' || bucket < 2)) return true;
+      if (v.profile === 'cautious' && distToStop > 16 && v.speed < 7.0) return true;
+      return false;
+    }
+    if (v.vClass === 'car') {
+      if (v.speed < 3.5 && distToStop > 5.0 && this.phaseRemaining < 1.0) return true;
+      if (distToStop > 24 && comfortableStopDist < distToStop) return true;
+      if (v.profile === 'cautious' && distToStop > 17 && comfortableStopDist * 1.15 < distToStop) return true;
+      if (bucket < 3 && distToStop > 18 && comfortableStopDist < distToStop) return true;
+      return false;
+    }
+    return distToStop > 18 && comfortableStopDist < distToStop;
   }
 
   private updateVehicles(dt: number): void {
@@ -353,10 +385,18 @@ export class TrafficSimulation {
 
       const distToStop = v.stopLineDist - (v.distanceAlongPath + v.length * 0.5);
       if (distToStop > 0) {
-        const stopForYellow = light === 'yellow' && distToStop > (v.speed * v.speed) / (2 * v.comfortDecel * (v.profile === 'aggressive' ? 1.65 : 1.3));
-        const stopForBox = light === 'green' && distToStop < 12 && this.isBoxOccupiedByOtherArm(v.originArm);
-        if ((light === 'red' || stopForYellow || stopForBox) && distToStop < nearestGap) {
+        const stopForYellow = light === 'yellow' && this.shouldStopForYellow(v, distToStop);
+        if ((light === 'red' || stopForYellow) && distToStop < nearestGap) {
           nearestGap = Math.max(0.1, distToStop);
+          leadSpeed = 0;
+        }
+      }
+      // Creep forward slowly when green & previous arm is still clearing the intersection box
+      if (light === 'green' && distToStop > -2.5 && distToStop < 16 && this.isBoxOccupiedByOtherArm(v.originArm)) {
+        desiredV = Math.min(desiredV, distToStop > 1.5 ? 3.2 : 1.8);
+        const creepBarrier = distToStop + 2.4;
+        if (creepBarrier > 0 && creepBarrier < nearestGap) {
+          nearestGap = Math.max(0.1, creepBarrier);
           leadSpeed = 0;
         }
       }
@@ -382,8 +422,8 @@ export class TrafficSimulation {
           for (const other of this.vehicles) {
             if (other.id === v.id || other.originArm !== v.originArm) continue;
             if (Math.abs(other.distanceAlongPath - v.distanceAlongPath) < (v.length + other.length) * 0.5 + 2.0) {
-              const otherG = getGlobalLat(other.laneIndex, other.lateralOffset, lw);
-              if (Math.abs(candG - otherG) < (myEffW + effClearanceWidth(other)) * 0.5 + 0.08 && Math.abs(candG - otherG) < Math.abs(curG - otherG)) {
+              const otherG = getGlobalLat(other.laneIndex, other.lateralOffset + other.lateralVelocity * dt, lw);
+              if (Math.abs(candG - otherG) < (myEffW + effClearanceWidth(other)) * 0.5 + 0.18 && Math.abs(candG - otherG) < Math.abs(curG - otherG)) {
                 blocked = true; break;
               }
             }
@@ -396,10 +436,11 @@ export class TrafficSimulation {
         nextLatVel *= Math.max(0, 1 - 10 * dt);
       }
 
-      // Smooth urban IDM: soft coasting at >10m gap, firm braking only when close
+      // Smooth urban IDM with continuous brake curve & jerk limiting + responsive launch
       let nextSpeed = v.speed;
       if (v.reactionTimer > 0 && light === 'green') {
-        nextSpeed = Math.max(0, v.speed - 1.5 * dt);
+        nextSpeed = Math.max(0, v.speed - 0.8 * dt);
+        v.prevAccel = 0;
       } else {
         const effAccel = v.maxAccel * v.accelFactor;
         const minGap = v.vClass === 'motor' && v.speed < 4.5 ? 0.65 : v.minGap;
@@ -407,14 +448,23 @@ export class TrafficSimulation {
         const dv = v.speed - leadSpeed;
         const sStar = minGap + Math.max(0, v.speed * headway + (v.speed * dv) / (2 * Math.sqrt(effAccel * v.comfortDecel)));
         const rawAccel = effAccel * (1 - Math.pow(v.speed / Math.max(1, desiredV), 4) - (Number.isFinite(nearestGap) ? Math.pow(sStar / Math.max(0.05, nearestGap), 2) : 0));
-        // Prevent IDM v=0 deadlock when light is green and gap is around minGap
+        // Responsive launch from standstill when green and gap is open
         const launchBoost =
-          light === 'green' && v.speed < 1.0 && leadSpeed > 0.2 && nearestGap >= minGap * 1.05
-            ? 0.45 * effAccel
+          light === 'green' && v.speed < 2.5 && leadSpeed > 0.2 && nearestGap >= minGap * 1.05
+            ? effAccel * (0.78 * (1 - v.speed / 2.8))
             : -Infinity;
-        const brakeLimit = nearestGap > 22 ? -v.comfortDecel : v.vClass === 'motor' ? -7.5 : -5.5;
-        const clampedAccel = Math.max(launchBoost, Math.max(brakeLimit, Math.min(effAccel, rawAccel)));
-        nextSpeed = Math.max(0, Math.min(desiredV * 1.05, v.speed + clampedAccel * dt));
+        const closeT = Number.isFinite(nearestGap) ? Math.max(0, Math.min(1, (20 - nearestGap) / 16)) : 0;
+        const maxEmergencyDecel = v.vClass === 'motor' ? 7.5 : 5.5;
+        const brakeLimit = -(v.comfortDecel + (maxEmergencyDecel - v.comfortDecel) * closeT);
+        const targetAccel = Math.max(launchBoost, Math.max(brakeLimit, Math.min(effAccel, rawAccel)));
+
+        const prevA = v.prevAccel ?? 0;
+        const smoothedAccel =
+          targetAccel < prevA && (targetAccel <= -v.comfortDecel || nearestGap < minGap * 3.0)
+            ? targetAccel
+            : prevA + Math.max(-12.0 * dt, Math.min(18.0 * dt, targetAccel - prevA));
+        v.prevAccel = smoothedAccel;
+        nextSpeed = Math.max(0, Math.min(desiredV * 1.05, v.speed + smoothedAccel * dt));
       }
 
       decisions.push({ v, nextSpeed, nextLat, nextLatVel });

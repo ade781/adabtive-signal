@@ -8,6 +8,32 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
+function obbOverlap(
+  ax: number, ay: number, aHead: number, aLen: number, aWid: number,
+  bx: number, by: number, bHead: number, bLen: number, bWid: number
+): boolean {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const maxR = (aLen + bLen) * 0.5 + (aWid + bWid) * 0.5;
+  if (dx * dx + dy * dy > maxR * maxR) return false;
+
+  const cosA = Math.cos(aHead), sinA = Math.sin(aHead);
+  const cosB = Math.cos(bHead), sinB = Math.sin(bHead);
+  const axes = [
+    [cosA, sinA],
+    [-sinA, cosA],
+    [cosB, sinB],
+    [-sinB, cosB],
+  ];
+  for (const [ux, uy] of axes) {
+    const centerProj = Math.abs(dx * ux + dy * uy);
+    const aProj = Math.abs(cosA * ux + sinA * uy) * (aLen * 0.5) + Math.abs(-sinA * ux + cosA * uy) * (aWid * 0.5);
+    const bProj = Math.abs(cosB * ux + sinB * uy) * (bLen * 0.5) + Math.abs(-sinB * ux + cosB * uy) * (bWid * 0.5);
+    if (centerProj >= aProj + bProj) return false;
+  }
+  return true;
+}
+
 function checkSnapshotIntegrity(sim: TrafficSimulation, label: string) {
   const snap = sim.getSnapshot();
   const maxLane = snap.config.lanesPerDirection - 1;
@@ -24,12 +50,12 @@ function checkSnapshotIntegrity(sim: TrafficSimulation, label: string) {
     for (let j = i + 1; j < snap.vehicles.length; j++) {
       const a = snap.vehicles[i];
       const b = snap.vehicles[j];
-      if (a.originArm === b.originArm) {
+      const aEffW = a.vClass === 'motor' ? 0.72 : a.width;
+      const bEffW = b.vClass === 'motor' ? 0.72 : b.width;
+      if (a.originArm === b.originArm && a.distanceAlongPath < a.stopLineDist && b.distanceAlongPath < b.stopLineDist) {
         const aLat = (a.laneIndex + 0.5) * lw + a.lateralOffset;
         const bLat = (b.laneIndex + 0.5) * lw + b.lateralOffset;
         const latSep = Math.abs(aLat - bLat);
-        const aEffW = a.vClass === 'motor' ? 0.72 : a.width;
-        const bEffW = b.vClass === 'motor' ? 0.72 : b.width;
         // True 2D check: if laterally separated beyond combined effective half-widths, they cannot overlap
         if (latSep >= (aEffW + bEffW) * 0.5 + 0.02) {
           continue;
@@ -41,6 +67,13 @@ function checkSnapshotIntegrity(sim: TrafficSimulation, label: string) {
             `[${label}] Overlap detected between v#${a.id}(${a.vClass}, turn=${a.turn}, d=${a.distanceAlongPath.toFixed(1)}, lat=${a.lateralOffset.toFixed(2)}) and v#${b.id}(${b.vClass}, turn=${b.turn}, d=${b.distanceAlongPath.toFixed(1)}, lat=${b.lateralOffset.toFixed(2)}) on ${a.originArm} lane ${a.laneIndex}: dist=${dist.toFixed(2)}m < ${minExpected.toFixed(2)}m`
           );
         }
+      } else if (
+        (a.originArm === b.originArm || a.destArm === b.destArm) &&
+        obbOverlap(a.x, a.y, a.heading, a.length * 0.85, aEffW * 0.85, b.x, b.y, b.heading, b.length * 0.85, bEffW * 0.85)
+      ) {
+        throw new Error(
+          `[${label}] 2D Turning/Merge OBB Overlap between v#${a.id}(${a.vClass}, ${a.originArm}->${a.destArm}, d=${a.distanceAlongPath.toFixed(1)}) and v#${b.id}(${b.vClass}, ${b.originArm}->${b.destArm}, d=${b.distanceAlongPath.toFixed(1)})`
+        );
       }
     }
   }

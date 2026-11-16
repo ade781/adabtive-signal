@@ -10,6 +10,7 @@ export interface SimVehicle extends Vehicle {
   accelFactor: number;
   profile: DriverProfile;
   reactionTimer: number;
+  prevAccel?: number;
 }
 
 export function getGlobalLat(laneIndex: number, lateralOffset: number, lw: number): number {
@@ -63,10 +64,20 @@ export function findBlockingLeader(
     const pad = v.vClass === 'motor' || other.vClass === 'motor' ? 0.06 : 0.3;
     const minLatNeed = (myEffW + otherEffW) * 0.5 + pad;
 
-    if (v.distanceAlongPath < v.stopLineDist && other.originArm === v.originArm && other.distanceAlongPath < other.stopLineDist + 2) {
+    if (v.distanceAlongPath < v.stopLineDist - 2.0 && other.originArm === v.originArm && other.distanceAlongPath < other.stopLineDist - 0.5) {
       if (other.distanceAlongPath <= v.distanceAlongPath) continue;
-      const latSep = Math.abs(myGlobalLat - getGlobalLat(other.laneIndex, other.lateralOffset, lw));
-      if (latSep >= minLatNeed) {
+      const otherGlobalLat = getGlobalLat(other.laneIndex, other.lateralOffset, lw);
+      const latSep = Math.abs(myGlobalLat - otherGlobalLat);
+      // Do not squeeze alongside a vehicle in the same lane with a different turn approaching the intersection
+      const crossingTurnInLane =
+        v.distanceAlongPath >= v.stopLineDist - 20.0 &&
+        v.laneIndex === other.laneIndex &&
+        v.turn !== other.turn;
+      const tailSwingPad1 =
+        other.vClass === 'heavy' && other.turn !== 'straight' && other.distanceAlongPath >= other.stopLineDist - 8.0
+          ? 1.4
+          : 0;
+      if (latSep >= minLatNeed + tailSwingPad1 && !crossingTurnInLane) {
         if (v.vClass === 'motor' && latSep < minLatNeed + 0.45 && Math.abs(other.distanceAlongPath - v.distanceAlongPath) < 4.5) {
           isSqueezingPast = true;
         }
@@ -78,14 +89,58 @@ export function findBlockingLeader(
         leadSpeed = other.speed;
         blockingLeader = other;
       }
-    } else if (other.originArm === v.originArm || other.destArm === v.destArm) {
+    } else if (
+      other.originArm === v.originArm ||
+      other.destArm === v.destArm ||
+      (v.distanceAlongPath >= v.stopLineDist - 1.5 && other.distanceAlongPath > other.stopLineDist + 0.5 && other.distanceAlongPath < other.exitLineDist - 0.5)
+    ) {
+      // Same-arm, same-turn curve following: arc-length gap remains exact even across 90-degree Bezier bends
+      if (other.originArm === v.originArm && other.turn === v.turn && other.distanceAlongPath > v.distanceAlongPath) {
+        const latSep = Math.abs(myGlobalLat - getGlobalLat(other.laneIndex, other.lateralOffset, lw));
+        if (latSep < minLatNeed) {
+          const arcGap = other.distanceAlongPath - v.distanceAlongPath - (other.length + v.length) * 0.5;
+          if (arcGap < 45 && arcGap < nearestGap) {
+            nearestGap = Math.max(0.05, arcGap);
+            leadSpeed = other.speed;
+            blockingLeader = other;
+          }
+          continue;
+        }
+      }
+
       const dx = other.x - v.x;
       const dy = other.y - v.y;
-      const forwardProj = dx * cosH + dy * sinH;
-      if (forwardProj <= 0.1 || forwardProj > 45) continue;
-      if (Math.abs(-dx * sinH + dy * cosH) >= minLatNeed) continue;
+      if (dx * dx + dy * dy > 45 * 45) continue;
 
-      const gapAlong = forwardProj - (other.length + v.length) * 0.5;
+      const forwardProj = dx * cosH + dy * sinH;
+      const latProj = Math.abs(-dx * sinH + dy * cosH);
+
+      // Project other's oriented bounding box onto v's local forward & lateral axes
+      const cosO = Math.cos(other.heading);
+      const sinO = Math.sin(other.heading);
+      const dotCos = cosO * cosH + sinO * sinH;
+      const dotSin = -sinO * cosH + cosO * sinH;
+      const otherProjLen = Math.abs(dotCos) * (other.length * 0.5) + Math.abs(dotSin) * (otherEffW * 0.5);
+      const otherProjLat = Math.abs(-cosO * sinH + sinO * cosH) * (other.length * 0.5) + Math.abs(sinO * sinH + cosO * cosH) * (otherEffW * 0.5);
+
+      const crossingTurnSameLane =
+        v.distanceAlongPath < v.stopLineDist + 8.0 &&
+        other.originArm === v.originArm &&
+        v.laneIndex === other.laneIndex &&
+        v.turn !== other.turn &&
+        other.distanceAlongPath > v.distanceAlongPath;
+      const tailSwingPad =
+        other.vClass === 'heavy' &&
+        other.turn !== 'straight' &&
+        other.originArm === v.originArm &&
+        other.distanceAlongPath >= other.stopLineDist - 4.0 &&
+        other.distanceAlongPath <= other.exitLineDist
+          ? 1.4
+          : 0;
+      if (!crossingTurnSameLane && latProj >= myEffW * 0.5 + otherProjLat + tailSwingPad + pad) continue;
+      const gapAlong = forwardProj - (v.length * 0.5 + otherProjLen);
+      if (forwardProj <= 0.1) continue;
+
       if (gapAlong < nearestGap) {
         nearestGap = Math.max(0.05, gapAlong);
         leadSpeed = other.speed;
@@ -111,13 +166,16 @@ export function updateMotorcycleSeepage(
   const myEffW = effClearanceWidth(v);
   const myGlobalLat = getGlobalLat(v.laneIndex, v.lateralOffset, lw);
 
-  if (v.distanceAlongPath >= v.stopLineDist - 2.5) {
+  const recenterDist = v.turn === 'straight' ? v.stopLineDist - 2.5 : v.stopLineDist + 0.5;
+  if (v.distanceAlongPath >= recenterDist) {
     for (const other of vehicles) {
       if (other.id === v.id || other.originArm !== v.originArm) continue;
-      if (Math.abs(other.distanceAlongPath - v.distanceAlongPath) < (v.length + other.length) * 0.5 + 1.5) {
+      if (Math.abs(other.distanceAlongPath - v.distanceAlongPath) < (v.length + other.length) * 0.5 + 2.5) {
         const otherLat = getGlobalLat(other.laneIndex, other.lateralOffset, lw);
+        const otherTargetLat = getGlobalLat(other.laneIndex, other.targetLateralOffset, lw);
         const centerLat = getGlobalLat(v.laneIndex, 0, lw);
-        if (Math.abs(centerLat - otherLat) < (myEffW + effClearanceWidth(other)) * 0.5 + 0.15) return;
+        const minClear = (myEffW + effClearanceWidth(other)) * 0.5 + 0.35;
+        if (Math.abs(centerLat - otherLat) < minClear || Math.abs(centerLat - otherTargetLat) < minClear) return;
       }
     }
     v.targetLateralOffset = 0;
@@ -127,6 +185,7 @@ export function updateMotorcycleSeepage(
   if (
     !blockingLeader ||
     nearestGap >= 24.0 ||
+    (v.distanceAlongPath >= v.stopLineDist - 20.0 && v.laneIndex === blockingLeader.laneIndex && v.turn !== blockingLeader.turn) ||
     (blockingLeader.speed >= desiredV - 0.8 && blockingLeader.speed >= 3.5) ||
     !canFilterSideBySide(v.width, blockingLeader.width, roadW)
   ) {
@@ -158,14 +217,14 @@ export function updateMotorcycleSeepage(
       const halfSumLen = (v.length + other.length) * 0.5;
       const longDiff = other.distanceAlongPath - v.distanceAlongPath;
 
-      if (Math.abs(longDiff) < halfSumLen + 0.4) {
+      if (Math.abs(longDiff) < halfSumLen + 1.2) {
         if (otherLat >= bandMin - pad && otherLat <= bandMax + pad) { clear = false; break; }
-      } else if (longDiff > 0 && longDiff < halfSumLen + 3.0) {
-        if ((other.laneChangeDir != null && Math.abs(cand - otherLat) < pad + 0.5) || Math.abs(cand - otherLat) < pad) {
+      } else if (longDiff > 0 && Math.abs(cand - otherLat) < pad) {
+        const gap = longDiff - halfSumLen;
+        if (gap < 4.5 || (v.speed > other.speed + 1.5 && gap < (v.speed - other.speed) * 1.4)) {
           clear = false; break;
         }
-      } else if (longDiff > 0 && Math.abs(cand - otherLat) < pad) {
-        forwardClear = Math.min(forwardClear, longDiff - halfSumLen);
+        forwardClear = Math.min(forwardClear, gap);
       }
     }
 
@@ -218,7 +277,9 @@ export function tryCarLaneChange(
     for (const other of vehicles) {
       if (other.id === v.id || other.originArm !== v.originArm) continue;
       const otherLat = getGlobalLat(other.laneIndex, other.lateralOffset, lw);
-      if (Math.abs(otherLat - center) < (v.width + effClearanceWidth(other)) * 0.5 + 0.35) {
+      const otherTargetLat = getGlobalLat(other.laneIndex, other.targetLateralOffset, lw);
+      const minLatClear = (v.width + effClearanceWidth(other)) * 0.5 + 0.35;
+      if (Math.abs(otherLat - center) < minLatClear || Math.abs(otherTargetLat - center) < minLatClear) {
         const rel = other.distanceAlongPath - v.distanceAlongPath;
         if (rel > -8.0 && rel < 22.0) { clear = false; break; }
       }
