@@ -1,10 +1,10 @@
 import { SimVehicle } from './behaviors';
+import { QUEUE_SPEED_THRESHOLD } from './constants';
 import { ArmId, SimConfig } from './types';
 
 const ALL_ARMS: readonly ArmId[] = ['north', 'east', 'south', 'west'];
 const APPROACH_WINDOW_M = 35;
 const GAP_OUT_WINDOW_M = 20;
-const QUEUE_SPEED_THRESHOLD = 1.5;
 const STARVATION_WAIT_S = 30;
 
 interface ArmMetrics {
@@ -87,7 +87,7 @@ export function computeAdaptiveGreenTarget(
 
   const avgRedDemand = totalRedDemand / (ALL_ARMS.length - 1);
   const pressureRatio = activeDemand / Math.max(1, activeDemand + avgRedDemand);
-  const rawTarget = config.greenDuration * (0.65 + pressureRatio * 0.95);
+  const rawTarget = config.greenDuration * (0.525 + pressureRatio * 0.95);
 
   if (maxRedQueue === 0 && activeDemand > 0) {
     return Math.min(maxGreen, Math.max(minGreen, Math.round(config.greenDuration * 1.3)));
@@ -108,18 +108,33 @@ export function shouldExtendGreenPhase(
   config: SimConfig
 ): boolean {
   const { minGreen, maxGreen } = getAdaptiveGreenBounds(config);
-
-  if (phaseElapsed < minGreen) return true;
   if (phaseElapsed >= maxGreen) return false;
 
   const active = measureArm(vehicles, activeArm);
-  const hasWaitingRedArm = ALL_ARMS.some(
-    (arm) => arm !== activeArm && measureArm(vehicles, arm).queued > 0
-  );
+  let redDemand = 0;
+  let hasWaitingRedArm = false;
+  for (const arm of ALL_ARMS) {
+    if (arm === activeArm) continue;
+    const red = measureArm(vehicles, arm);
+    if (red.queued > 0) hasWaitingRedArm = true;
+    redDemand += red.queued * 2 + red.approaching;
+  }
+
+  // Fast gap-out on completely empty active arm when other arms have waiting demand
+  if (active.queued === 0 && active.nearStopLine === 0 && active.approaching === 0 && redDemand > 0) {
+    return phaseElapsed < 2.0;
+  }
+
+  if (phaseElapsed < minGreen) return true;
 
   // Gap-out: active approach near stop line is clear while another arm is waiting
   if (active.queued === 0 && active.nearStopLine === 0 && hasWaitingRedArm) {
     return false;
+  }
+
+  // Prevent mid-platoon green cutoff while a queue or near-stop-line platoon is discharging
+  if (active.queued > 0 || active.nearStopLine > 0) {
+    return true;
   }
 
   const target = computeAdaptiveGreenTarget(vehicles, activeArm, config);

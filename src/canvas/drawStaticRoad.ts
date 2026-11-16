@@ -94,20 +94,36 @@ export function drawStaticRoadLayer(
   }
 
   // Asphalt & curbs
+  const filletR = 2.2;
   ctx.fillStyle = '#334155';
   ctx.fillRect(-halfRoad, -armLen, halfRoad * 2, armLen * 2);
   ctx.fillRect(-armLen, -halfRoad, armLen * 2, halfRoad * 2);
+
+  // Rounded corner fillets so turning heavy vehicles don't clip sharp 90-degree corners
+  for (const sx of [-1, 1] as const) {
+    for (const sy of [-1, 1] as const) {
+      ctx.beginPath();
+      ctx.moveTo(sx * halfRoad, sy * halfRoad);
+      ctx.lineTo(sx * halfRoad, sy * (halfRoad + filletR));
+      ctx.arcTo(sx * halfRoad, sy * halfRoad, sx * (halfRoad + filletR), sy * halfRoad, filletR);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
   ctx.fillStyle = '#293548';
   ctx.fillRect(-halfRoad, -halfRoad, halfRoad * 2, halfRoad * 2);
 
   ctx.strokeStyle = '#94A3B8';
   ctx.lineWidth = 0.25;
   ctx.beginPath();
-  for (const s of [-1, 1]) {
-    ctx.moveTo(s * halfRoad, -armLen); ctx.lineTo(s * halfRoad, -halfRoad);
-    ctx.moveTo(s * halfRoad, halfRoad); ctx.lineTo(s * halfRoad, armLen);
-    ctx.moveTo(-armLen, s * halfRoad); ctx.lineTo(-halfRoad, s * halfRoad);
-    ctx.moveTo(halfRoad, s * halfRoad); ctx.lineTo(armLen, s * halfRoad);
+  for (const sx of [-1, 1] as const) {
+    for (const sy of [-1, 1] as const) {
+      ctx.moveTo(sx * halfRoad, sy * armLen);
+      ctx.lineTo(sx * halfRoad, sy * (halfRoad + filletR));
+      ctx.arcTo(sx * halfRoad, sy * halfRoad, sx * (halfRoad + filletR), sy * halfRoad, filletR);
+      ctx.lineTo(sx * armLen, sy * halfRoad);
+    }
   }
   ctx.stroke();
 

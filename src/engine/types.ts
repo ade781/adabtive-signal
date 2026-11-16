@@ -25,6 +25,7 @@ export interface SimConfig {
   yellowDuration: number;        // seconds
   allRedDuration: number;        // seconds
   adaptiveSignal: boolean;       // enable dynamic green extension
+  armWeights?: Record<ArmId, number>; // relative demand weight per arm
 }
 
 export interface Point2D {
@@ -89,6 +90,7 @@ export interface SignalState {
   phaseElapsed: number;
   cycleNumber: number;
   isExtended?: boolean;
+  adaptiveTarget?: number;
   armLights: Record<ArmId, SignalColor>;
 }
 

@@ -13,14 +13,11 @@ const MemoParameterInspector = React.memo(ParameterInspector);
 const MemoTelemetryStrip = React.memo(TelemetryStrip);
 
 export function App() {
-  const simRef = useRef<TrafficSimulation | null>(null);
-  if (!simRef.current) {
-    simRef.current = new TrafficSimulation();
-  }
-
-  const [snapshot, setSnapshot] = useState<SimSnapshot>(() => simRef.current!.getSnapshot());
-  const [uiSnapshot, setUiSnapshot] = useState<SimSnapshot>(() => snapshot);
-  const [inspectorConfig, setInspectorConfig] = useState<SimConfig>(() => snapshot.config);
+  const [sim] = useState(() => new TrafficSimulation());
+  const snapshotRef = useRef<SimSnapshot>(sim.getSnapshot());
+  const [uiSnapshot, setUiSnapshot] = useState<SimSnapshot>(() => snapshotRef.current);
+  const [inspectorConfig, setInspectorConfig] = useState<SimConfig>(() => snapshotRef.current.config);
+  const [drawTick, setDrawTick] = useState(0);
   const lastUiSyncRef = useRef<number>(0);
 
   const [running, setRunning] = useState(true);
@@ -30,7 +27,9 @@ export function App() {
 
   useEffect(() => {
     if (!running) {
-      setUiSnapshot(simRef.current!.getSnapshot());
+      snapshotRef.current = sim.getSnapshot();
+      setUiSnapshot(snapshotRef.current);
+      setDrawTick((t) => t + 1);
       return;
     }
     let rafId = 0;
@@ -41,7 +40,6 @@ export function App() {
       const realDt = Math.min(0.05, (now - lastTime) / 1000);
       lastTime = now;
 
-      const sim = simRef.current!;
       const simDt = realDt * speed;
       const subSteps = Math.max(1, Math.ceil(simDt / 0.04));
       const stepDt = simDt / subSteps;
@@ -49,12 +47,11 @@ export function App() {
         sim.step(stepDt);
       }
 
-      const next = sim.getSnapshot();
-      setSnapshot(next);
+      snapshotRef.current = sim.getSnapshot();
 
       if (now - lastUiSyncRef.current >= UI_THROTTLE_MS) {
         lastUiSyncRef.current = now;
-        setUiSnapshot(next);
+        setUiSnapshot(snapshotRef.current);
       }
 
       rafId = requestAnimationFrame(tick);
@@ -62,41 +59,35 @@ export function App() {
 
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [running, speed]);
+  }, [running, speed, sim]);
 
   const handleConfigChange = useCallback(
     (partial: Partial<SimConfig>) => {
-      if (running) return;
-      const sim = simRef.current!;
       sim.updateConfig(partial);
-      const next = sim.getSnapshot();
-      setSnapshot(next);
-      setUiSnapshot(next);
-      setInspectorConfig(next.config);
+      snapshotRef.current = sim.getSnapshot();
+      setUiSnapshot(snapshotRef.current);
+      setInspectorConfig(snapshotRef.current.config);
+      setDrawTick((t) => t + 1);
     },
-    [running]
+    [sim]
   );
 
   const handleResetDefaults = useCallback(() => {
-    if (running) return;
-    const sim = simRef.current!;
     sim.updateConfig(DEFAULT_CONFIG);
-    const next = sim.getSnapshot();
-    setSnapshot(next);
-    setUiSnapshot(next);
-    setInspectorConfig(next.config);
-  }, [running]);
+    snapshotRef.current = sim.getSnapshot();
+    setUiSnapshot(snapshotRef.current);
+    setInspectorConfig(snapshotRef.current.config);
+    setDrawTick((t) => t + 1);
+  }, [sim]);
 
   const handleReset = useCallback(() => {
-    const sim = simRef.current!;
     sim.reset();
-    const next = sim.getSnapshot();
-    setSnapshot(next);
-    setUiSnapshot(next);
-  }, []);
+    snapshotRef.current = sim.getSnapshot();
+    setUiSnapshot(snapshotRef.current);
+    setDrawTick((t) => t + 1);
+  }, [sim]);
 
   const handleToggleRun = useCallback(() => setRunning((r) => !r), []);
-  const handlePause = useCallback(() => setRunning(false), []);
   const handleToggleGrid = useCallback(() => setShowGrid((g) => !g), []);
   const handleZoomIn = useCallback(() => setZoom((z) => Math.min(2.2, +(z + 0.1).toFixed(1))), []);
   const handleZoomOut = useCallback(() => setZoom((z) => Math.max(0.6, +(z - 0.1).toFixed(1))), []);
@@ -104,11 +95,17 @@ export function App() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) {
+        return;
+      }
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')) {
         return;
       }
       if (e.code === 'Space') {
+        if (target?.closest('button, [role="tab"], a')) {
+          return;
+        }
         e.preventDefault();
         setRunning((r) => !r);
       } else if (e.key === 'r' || e.key === 'R') {
@@ -122,13 +119,13 @@ export function App() {
 
   const phaseDuration =
     uiSnapshot.signal.activeColor === 'green'
-      ? uiSnapshot.config.greenDuration
+      ? (uiSnapshot.signal.adaptiveTarget ?? uiSnapshot.config.greenDuration)
       : uiSnapshot.signal.activeColor === 'yellow'
       ? uiSnapshot.config.yellowDuration
       : uiSnapshot.config.allRedDuration;
 
   return (
-    <div className="min-h-screen lg:h-screen w-screen flex flex-col bg-slate-50 text-slate-900 lg:overflow-hidden">
+    <div className="min-h-screen lg:h-screen w-full flex flex-col bg-slate-50 text-slate-900 lg:overflow-hidden">
       <MemoTopBar
         running={running}
         onToggleRun={handleToggleRun}
@@ -150,15 +147,16 @@ export function App() {
         <div className="flex-1 min-h-0 flex flex-col lg:flex-row gap-2.5 lg:overflow-hidden">
           <div className="flex-1 min-h-[340px] min-w-0">
             <IntersectionCanvas
-              snapshot={snapshot}
+              snapshotRef={snapshotRef}
+              config={inspectorConfig}
+              running={running}
+              drawTick={drawTick}
               zoom={zoom}
               showGrid={showGrid}
             />
           </div>
           <MemoParameterInspector
             config={inspectorConfig}
-            running={running}
-            onPause={handlePause}
             onChange={handleConfigChange}
             onResetDefaults={handleResetDefaults}
           />

@@ -1,11 +1,14 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getEffectiveRoadWidth } from '../engine/geometry';
-import { ArmId, SignalColor, SimSnapshot, Vehicle } from '../engine/types';
+import { ArmId, SignalColor, SimConfig, SimSnapshot, Vehicle } from '../engine/types';
 import { getLoadedAsset, onAssetsLoaded, preloadSimulationAssets } from './assetLoader';
 import { drawStaticRoadLayer } from './drawStaticRoad';
 
 interface IntersectionCanvasProps {
-  snapshot: SimSnapshot;
+  snapshotRef: React.MutableRefObject<SimSnapshot>;
+  config: SimConfig;
+  running: boolean;
+  drawTick: number;
   zoom: number;
   showGrid: boolean;
 }
@@ -17,7 +20,14 @@ const SIGNAL_IMG: Record<SignalColor, string> = {
   red: '/assets/infra/signal-red.svg',
 };
 
-export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = ({ snapshot, zoom, showGrid }) => {
+export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = ({
+  snapshotRef,
+  config,
+  running,
+  drawTick,
+  zoom,
+  showGrid,
+}) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const staticCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -27,6 +37,16 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = ({ snapshot
   useEffect(() => {
     preloadSimulationAssets();
     return onAssetsLoaded(() => setAssetVer((v) => v + 1));
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (staticCanvasRef.current) {
+        staticCanvasRef.current.width = 0;
+        staticCanvasRef.current.height = 0;
+        staticCanvasRef.current = null;
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -50,9 +70,18 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = ({ snapshot
     return () => ro.disconnect();
   }, []);
 
-  const { config } = snapshot;
   const halfRoad = getEffectiveRoadWidth(config);
   const halfBox = halfRoad + 2.0;
+
+  const sigPositions = useMemo<{ arm: ArmId; x: number; y: number }[]>(
+    () => [
+      { arm: 'north', x: halfRoad + 2.7, y: -halfBox - 2.7 },
+      { arm: 'south', x: -halfRoad - 2.7, y: halfBox + 2.7 },
+      { arm: 'west', x: -halfBox - 2.7, y: -halfRoad - 2.7 },
+      { arm: 'east', x: halfBox + 2.7, y: halfRoad + 2.7 },
+    ],
+    [halfRoad, halfBox]
+  );
 
   useEffect(() => {
     if (typeof document === 'undefined') return;
@@ -62,9 +91,9 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = ({ snapshot
     off.height = Math.floor(size.height * size.dpr);
     const ctx = off.getContext('2d');
     if (ctx) drawStaticRoadLayer(ctx, size.width, size.height, size.dpr, zoom, showGrid, halfRoad, halfBox, config);
-  }, [size, zoom, showGrid, halfRoad, halfBox, config.roadLength, config.lanesPerDirection, assetVer]);
+  }, [size, zoom, showGrid, halfRoad, halfBox, config, assetVer]);
 
-  useEffect(() => {
+  const drawFrame = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -72,14 +101,16 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = ({ snapshot
 
     const { width, height, dpr } = size;
     ctx.save();
+    if (staticCanvasRef.current) {
+      ctx.drawImage(staticCanvasRef.current, 0, 0);
+    }
     ctx.scale(dpr, dpr);
-    if (staticCanvasRef.current) ctx.drawImage(staticCanvasRef.current, 0, 0, width, height);
 
     const totalExtent = (halfBox + config.roadLength) * 2;
     const pxPerMeter = ((Math.min(width, height) * 0.92) / Math.max(60, totalExtent)) * zoom;
     const cx = width / 2;
     const cy = height / 2;
-    const { signal, vehicles, stats } = snapshot;
+    const { signal, vehicles, stats } = snapshotRef.current;
     const blinkOn = Math.floor(stats.simTime * 2.5) % 2 === 0;
 
     ctx.save();
@@ -87,13 +118,6 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = ({ snapshot
     ctx.scale(pxPerMeter, pxPerMeter);
 
     for (const v of vehicles) drawVehicle(ctx, v, blinkOn);
-
-    const sigPositions: { arm: ArmId; x: number; y: number }[] = [
-      { arm: 'north', x: halfRoad + 2.7, y: -halfBox - 2.7 },
-      { arm: 'south', x: -halfRoad - 2.7, y: halfBox + 2.7 },
-      { arm: 'west', x: -halfBox - 2.7, y: -halfRoad - 2.7 },
-      { arm: 'east', x: halfBox + 2.7, y: halfRoad + 2.7 },
-    ];
 
     for (const sp of sigPositions) {
       const color = signal.armLights[sp.arm];
@@ -141,7 +165,11 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = ({ snapshot
     }
 
     const compassImg = getLoadedAsset('/assets/infra/compass-north.svg');
-    if (compassImg) ctx.drawImage(compassImg, width - 58, 14, 44, 44);
+    if (compassImg) {
+      ctx.drawImage(compassImg, width - 58, 14, 44, 44);
+    } else {
+      drawVectorCompassFallback(ctx, width - 36, 36);
+    }
 
     const barPx = 10 * pxPerMeter;
     if (barPx > 18 && barPx < 200) {
@@ -158,7 +186,24 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = ({ snapshot
       ctx.fillText('10 m · LHT (ID)', bx, by - 7);
     }
     ctx.restore();
-  }, [snapshot, size, zoom, halfRoad, halfBox, assetVer]);
+  }, [size, zoom, halfBox, config.roadLength, sigPositions, snapshotRef]);
+
+  useEffect(() => {
+    if (!running) {
+      drawFrame();
+      return;
+    }
+
+    let rafId = 0;
+    const tick = () => {
+      drawFrame();
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(rafId);
+    };
+  }, [running, drawTick, zoom, showGrid, size, assetVer, config, drawFrame]);
 
   return (
     <div ref={containerRef} className="relative w-full h-full overflow-hidden bg-slate-100 rounded-lg border border-slate-200">
@@ -166,6 +211,32 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = ({ snapshot
     </div>
   );
 };
+
+function drawVectorCompassFallback(ctx: CanvasRenderingContext2D, cx: number, cy: number) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, 18, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+  ctx.fill();
+  ctx.strokeStyle = '#CBD5E1';
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - 13);
+  ctx.lineTo(cx - 4.5, cy - 5);
+  ctx.lineTo(cx + 4.5, cy - 5);
+  ctx.closePath();
+  ctx.fillStyle = '#EF4444';
+  ctx.fill();
+
+  ctx.fillStyle = '#0F172A';
+  ctx.font = '700 11px "JetBrains Mono", monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('N', cx, cy + 5);
+  ctx.restore();
+}
 
 function drawVehicle(ctx: CanvasRenderingContext2D, v: Vehicle, blinkOn: boolean) {
   ctx.save();

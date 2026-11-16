@@ -1,4 +1,4 @@
-import { shouldExtendGreenPhase } from './adaptiveController';
+import { computeAdaptiveGreenTarget, pickNextArmAdaptive, shouldExtendGreenPhase } from './adaptiveController';
 import {
   assignReactionWave,
   effClearanceWidth,
@@ -8,7 +8,7 @@ import {
   tryCarLaneChange,
   updateMotorcycleSeepage,
 } from './behaviors';
-import { ARM_ORDER, DEFAULT_CONFIG, DriverProfile, PROFILE_MULT, SPRITES, VEHICLE_SPECS } from './constants';
+import { ARM_ORDER, DEFAULT_CONFIG, DriverProfile, PROFILE_MULT, QUEUE_SPEED_THRESHOLD, SPRITES, VEHICLE_SPECS } from './constants';
 import {
   createPathCache,
   getDestArm,
@@ -31,20 +31,53 @@ import {
 
 export { DEFAULT_CONFIG };
 
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 function normalizeConfig(raw: SimConfig): SimConfig {
   const lanes = Math.max(1, Math.min(4, Math.round(raw.lanesPerDirection)));
   const lw = Math.max(2.8, Math.min(4.2, +(raw.laneWidth ?? raw.roadWidthPerDirection / lanes).toFixed(2)));
+  const roadLength = Math.max(40, Math.min(200, Number.isFinite(raw.roadLength) ? raw.roadLength : DEFAULT_CONFIG.roadLength));
+  const motorRate = Math.max(0, Number.isFinite(raw.motorRate) ? raw.motorRate : 0);
+  const carRate = Math.max(0, Number.isFinite(raw.carRate) ? raw.carRate : 0);
+  const heavyRate = Math.max(0, Number.isFinite(raw.heavyRate) ? raw.heavyRate : 0);
+  const turnLeftPct = Math.max(0, Number.isFinite(raw.turnLeftPct) ? raw.turnLeftPct : 0);
+  const turnStraightPct = Math.max(0, Number.isFinite(raw.turnStraightPct) ? raw.turnStraightPct : 0);
+  const turnRightPct = Math.max(0, Number.isFinite(raw.turnRightPct) ? raw.turnRightPct : 0);
   const greenDuration = Math.max(3, raw.greenDuration);
   const yellowDuration = Math.max(1, raw.yellowDuration);
   const allRedDuration = Math.max(0, raw.allRedDuration);
+  const rawWeights = raw.armWeights ?? DEFAULT_CONFIG.armWeights!;
+  const armWeights: Record<ArmId, number> = {
+    north: Math.max(0, Number.isFinite(rawWeights.north) ? rawWeights.north : 1),
+    east: Math.max(0, Number.isFinite(rawWeights.east) ? rawWeights.east : 1),
+    south: Math.max(0, Number.isFinite(rawWeights.south) ? rawWeights.south : 1),
+    west: Math.max(0, Number.isFinite(rawWeights.west) ? rawWeights.west : 1),
+  };
   return {
     ...raw,
     lanesPerDirection: lanes,
     laneWidth: lw,
     roadWidthPerDirection: +(lanes * lw).toFixed(2),
+    roadLength,
+    motorRate,
+    carRate,
+    heavyRate,
+    turnLeftPct,
+    turnStraightPct,
+    turnRightPct,
     greenDuration,
     yellowDuration,
     allRedDuration,
+    armWeights,
   };
 }
 
@@ -65,12 +98,14 @@ export class TrafficSimulation {
   private isAllRed = false;
   private cycleNumber = 1;
   private phaseCounter = 0;
+  private phasesInCycle = 0;
+  private rng: () => number = mulberry32(1337);
 
   private spawnAccum = { motor: 0, car: 0, heavy: 0 };
   private currentPhaseExited = { motor: 0, car: 0, heavy: 0, total: 0 };
   private currentCycleExited = { motor: 0, car: 0, heavy: 0, total: 0 };
   private currentCycleQueueSum = 0;
-  private currentCycleSteps = 0;
+  private currentCycleQueueTime = 0;
   private currentCycleDuration = 0;
   private totalExitedAllTime = 0;
   private phaseHistory: PhaseRecord[] = [];
@@ -96,11 +131,13 @@ export class TrafficSimulation {
     this.isGreenExtended = false;
     this.cycleNumber = 1;
     this.phaseCounter = 0;
+    this.phasesInCycle = 0;
+    this.rng = mulberry32(1337);
     this.spawnAccum = { motor: 0, car: 0, heavy: 0 };
     this.currentPhaseExited = { motor: 0, car: 0, heavy: 0, total: 0 };
     this.currentCycleExited = { motor: 0, car: 0, heavy: 0, total: 0 };
     this.currentCycleQueueSum = 0;
-    this.currentCycleSteps = 0;
+    this.currentCycleQueueTime = 0;
     this.currentCycleDuration = 0;
     this.totalExitedAllTime = 0;
     this.phaseHistory = [];
@@ -173,13 +210,14 @@ export class TrafficSimulation {
   }
 
   public step(dt: number): void {
+    if (!Number.isFinite(dt)) return;
     const clampedDt = Math.min(0.1, Math.max(0.001, dt));
     this.simTime += clampedDt;
     this.advanceSignals(clampedDt);
     this.spawnVehicles(clampedDt);
     this.updateVehicles(clampedDt);
-    this.currentCycleQueueSum += this.countQueue();
-    this.currentCycleSteps += 1;
+    this.currentCycleQueueSum += this.countQueue() * clampedDt;
+    this.currentCycleQueueTime += clampedDt;
   }
 
   private advanceSignals(dt: number): void {
@@ -188,14 +226,15 @@ export class TrafficSimulation {
 
     if (this.activeColor === 'green') {
       this.greenElapsed += dt;
-      if (
-        this.config.adaptiveSignal &&
-        shouldExtendGreenPhase(this.vehicles, ARM_ORDER[this.activeArmIndex], this.phaseElapsed, this.config)
-      ) {
-        if (this.phaseRemaining <= 0.25) {
-          this.isGreenExtended = true;
+      if (this.config.adaptiveSignal) {
+        if (shouldExtendGreenPhase(this.vehicles, ARM_ORDER[this.activeArmIndex], this.phaseElapsed, this.config)) {
+          if (this.phaseRemaining <= 0.25) {
+            this.isGreenExtended = true;
+          }
+          this.phaseRemaining = Math.max(0.25, this.phaseRemaining);
+          return;
         }
-        this.phaseRemaining = Math.max(0.25, this.phaseRemaining);
+      } else if (this.phaseRemaining > 0) {
         return;
       }
       this.isGreenExtended = false;
@@ -230,10 +269,13 @@ export class TrafficSimulation {
     this.currentPhaseExited = { motor: 0, car: 0, heavy: 0, total: 0 };
 
     this.isAllRed = false;
-    this.activeArmIndex = (this.activeArmIndex + 1) % ARM_ORDER.length;
+    this.activeArmIndex = this.config.adaptiveSignal
+      ? pickNextArmAdaptive(this.vehicles, this.activeArmIndex, ARM_ORDER)
+      : (this.activeArmIndex + 1) % ARM_ORDER.length;
 
-    if (this.activeArmIndex === 0) {
-      const avgQ = this.currentCycleSteps > 0 ? this.currentCycleQueueSum / this.currentCycleSteps : 0;
+    this.phasesInCycle += 1;
+    if (this.phasesInCycle >= ARM_ORDER.length) {
+      const avgQ = this.currentCycleQueueTime > 0 ? this.currentCycleQueueSum / this.currentCycleQueueTime : 0;
       this.cycleHistory.unshift({
         cycleNumber: this.cycleNumber,
         totalDuration: Math.round(this.currentCycleDuration * 10) / 10,
@@ -245,9 +287,10 @@ export class TrafficSimulation {
       });
       if (this.cycleHistory.length > 16) this.cycleHistory.pop();
       this.cycleNumber += 1;
+      this.phasesInCycle = 0;
       this.currentCycleExited = { motor: 0, car: 0, heavy: 0, total: 0 };
       this.currentCycleQueueSum = 0;
-      this.currentCycleSteps = 0;
+      this.currentCycleQueueTime = 0;
       this.currentCycleDuration = 0;
     }
 
@@ -262,7 +305,7 @@ export class TrafficSimulation {
   private pickTurnIntent(): TurnIntent {
     const sum = Math.max(0, this.config.turnLeftPct) + Math.max(0, this.config.turnStraightPct) + Math.max(0, this.config.turnRightPct);
     if (sum <= 0) return 'straight';
-    const roll = Math.random() * sum;
+    const roll = this.rng() * sum;
     if (roll < Math.max(0, this.config.turnLeftPct)) return 'left';
     if (roll < Math.max(0, this.config.turnLeftPct) + Math.max(0, this.config.turnStraightPct)) return 'straight';
     return 'right';
@@ -274,7 +317,7 @@ export class TrafficSimulation {
     if (turn === 'left') return L - 1;
     if (turn === 'right') return 0;
     let bestLane = 0, bestCount = Infinity;
-    const startOffset = Math.floor(Math.random() * L);
+    const startOffset = Math.floor(this.rng() * L);
     for (let i = 0; i < L; i++) {
       const lane = (startOffset + i) % L;
       const count = this.vehicles.filter((v) => v.originArm === arm && v.laneIndex === lane && v.distanceAlongPath < v.stopLineDist).length;
@@ -285,6 +328,10 @@ export class TrafficSimulation {
 
   private spawnVehicles(dt: number): void {
     const rates: [VehicleClass, number][] = [['motor', this.config.motorRate], ['car', this.config.carRate], ['heavy', this.config.heavyRate]];
+    for (let i = rates.length - 1; i > 0; i--) {
+      const j = Math.floor(this.rng() * (i + 1));
+      [rates[i], rates[j]] = [rates[j], rates[i]];
+    }
     for (const [cls, rate] of rates) {
       if (rate <= 0) continue;
       this.spawnAccum[cls] += (rate / 60) * dt;
@@ -295,6 +342,24 @@ export class TrafficSimulation {
     }
   }
 
+  private pickWeightedArmOrder(): ArmId[] {
+    const weights = this.config.armWeights ?? DEFAULT_CONFIG.armWeights!;
+    const candidates: ArmId[] = [];
+    for (let i = 0; i < ARM_ORDER.length; i++) {
+      const arm = ARM_ORDER[(this.armSpawnCursor + i) % ARM_ORDER.length];
+      if ((weights[arm] ?? 0) > 0) candidates.push(arm);
+    }
+    if (candidates.length <= 1) return candidates;
+    const totalW = candidates.reduce((acc, arm) => acc + (weights[arm] ?? 0), 0);
+    let roll = this.rng() * totalW;
+    let firstIdx = 0;
+    for (let i = 0; i < candidates.length; i++) {
+      roll -= weights[candidates[i]] ?? 0;
+      if (roll <= 0) { firstIdx = i; break; }
+    }
+    return [...candidates.slice(firstIdx), ...candidates.slice(0, firstIdx)];
+  }
+
   private trySpawnOne(vClass: VehicleClass): boolean {
     const turn = this.pickTurnIntent();
     const spec = VEHICLE_SPECS[vClass];
@@ -302,18 +367,18 @@ export class TrafficSimulation {
 
     let lateralOffset = 0;
     if (vClass === 'motor' && lw >= 3.1) {
-      if (turn === 'left') lateralOffset = Math.random() < 0.5 ? lw * 0.22 : 0;
-      else if (turn === 'right') lateralOffset = Math.random() < 0.5 ? -lw * 0.22 : 0;
-      else lateralOffset = Math.random() < 0.5 ? -lw * 0.27 : lw * 0.27;
+      if (turn === 'left') lateralOffset = this.rng() < 0.5 ? lw * 0.22 : 0;
+      else if (turn === 'right') lateralOffset = this.rng() < 0.5 ? -lw * 0.22 : 0;
+      else lateralOffset = this.rng() < 0.5 ? -lw * 0.27 : lw * 0.27;
     } else if (vClass === 'car') {
-      lateralOffset = (Math.random() - 0.5) * 0.16;
+      lateralOffset = (this.rng() - 0.5) * 0.16;
     }
 
     const myEffW = vClass === 'motor' ? 0.72 : spec.width;
     const minClearance = spec.length + spec.minGap + 4.5;
+    const armCandidates = this.pickWeightedArmOrder();
 
-    for (let attempt = 0; attempt < ARM_ORDER.length; attempt++) {
-      const arm = ARM_ORDER[(this.armSpawnCursor + attempt) % ARM_ORDER.length];
+    for (const arm of armCandidates) {
       const laneIndex = this.pickLaneForTurn(arm, turn);
       const myGlobalLat = getGlobalLat(laneIndex, lateralOffset, lw);
       let nearestAheadSpeed = Infinity;
@@ -322,7 +387,8 @@ export class TrafficSimulation {
       for (const other of this.vehicles) {
         if (other.originArm !== arm) continue;
         const latSep = Math.abs(myGlobalLat - getGlobalLat(other.laneIndex, other.lateralOffset, lw));
-        if (latSep < (myEffW + effClearanceWidth(other)) * 0.5 + 0.25) {
+        const targetLatSep = Math.abs(myGlobalLat - getGlobalLat(other.laneIndex, other.targetLateralOffset, lw));
+        if (Math.min(latSep, targetLatSep) < (myEffW + effClearanceWidth(other)) * 0.5 + 0.25) {
           if (other.distanceAlongPath < other.length * 0.5 + minClearance) {
             blocked = true;
             break;
@@ -332,13 +398,13 @@ export class TrafficSimulation {
       }
       if (blocked) continue;
 
-      this.armSpawnCursor = (this.armSpawnCursor + attempt + 1) % ARM_ORDER.length;
-      const r = Math.random();
+      this.armSpawnCursor = (ARM_ORDER.indexOf(arm) + 1) % ARM_ORDER.length;
+      const r = this.rng();
       const profile: DriverProfile = r < 0.22 ? 'cautious' : r < 0.72 ? 'normal' : 'aggressive';
       const pMult = PROFILE_MULT[profile];
       const path = this.pathCache[arm][turn][laneIndex];
-      const speedFactor = pMult.speed * (0.95 + Math.random() * 0.1);
-      const accelFactor = pMult.accel * (0.95 + Math.random() * 0.1);
+      const speedFactor = pMult.speed * (0.95 + this.rng() * 0.1);
+      const accelFactor = pMult.accel * (0.95 + this.rng() * 0.1);
       const initialSpeed = Math.min(spec.maxSpeed * speedFactor * 0.65, nearestAheadSpeed + 1.5);
       const startPt = sampleWithLateralOffset(path, 0, lateralOffset, 0, initialSpeed);
       const sprites = SPRITES[vClass];
@@ -346,7 +412,7 @@ export class TrafficSimulation {
       this.vehicles.push({
         id: this.nextVehicleId++,
         vClass,
-        spriteKey: sprites[Math.floor(Math.random() * sprites.length)],
+        spriteKey: sprites[Math.floor(this.rng() * sprites.length)],
         originArm: arm,
         destArm: getDestArm(arm, turn),
         turn,
@@ -388,6 +454,7 @@ export class TrafficSimulation {
 
   /** Indonesian dilemma-zone behavior: majority of motorcycles (75-85%) and cars (60-70%) push through yellow when close/moving. */
   private shouldStopForYellow(v: SimVehicle, distToStop: number): boolean {
+    if (distToStop > v.speed * Math.max(0.1, this.phaseRemaining)) return true;
     const comfortableStopDist = (v.speed * v.speed) / (2 * v.comfortDecel * (v.profile === 'aggressive' ? 1.65 : 1.3));
     if (distToStop <= Math.max(4.0, comfortableStopDist * 0.65)) return false;
 
@@ -428,37 +495,21 @@ export class TrafficSimulation {
 
       let { nearestGap, leadSpeed, blockingLeader, isSqueezingPast } = findBlockingLeader(v, this.vehicles, lw);
 
-      if ((v.turn === 'left' || v.turn === 'right') && v.distanceAlongPath >= v.stopLineDist - 8.0 && v.distanceAlongPath <= v.exitLineDist) {
-        const myEffW = effClearanceWidth(v);
-        for (const other of this.vehicles) {
-          if (other.id === v.id || other.originArm !== v.originArm || other.turn !== v.turn || other.laneIndex !== v.laneIndex) continue;
-          if (other.distanceAlongPath <= v.distanceAlongPath) continue;
-          const taperLatSep = Math.abs(v.lateralOffset - other.lateralOffset) * 0.25;
-          const minLatNeed = (myEffW + effClearanceWidth(other)) * 0.5 + 0.35;
-          if (taperLatSep < minLatNeed) {
-            const gapAlong = other.distanceAlongPath - v.distanceAlongPath - (other.length + v.length) * 0.5;
-            if (gapAlong < nearestGap) {
-              nearestGap = Math.max(0.05, gapAlong);
-              leadSpeed = other.speed;
-              blockingLeader = other;
-            }
-          }
-        }
-      }
-
+      let stoppingForSignal = false;
       const distToStop = v.stopLineDist - (v.distanceAlongPath + v.length * 0.5);
       if (distToStop > 0) {
         const stopForYellow = light === 'yellow' && this.shouldStopForYellow(v, distToStop);
         if ((light === 'red' || stopForYellow) && distToStop < nearestGap) {
           nearestGap = Math.max(0.1, distToStop);
           leadSpeed = 0;
+          stoppingForSignal = true;
         }
       }
       // Creep forward slowly when green & previous arm is still clearing the intersection box
       if (light === 'green' && distToStop > -2.5 && distToStop < 16 && this.isBoxOccupiedByOtherArm(v.originArm)) {
         desiredV = Math.min(desiredV, distToStop > 1.5 ? 3.2 : 1.8);
         if (distToStop <= 1.5 && distToStop > -2.0) {
-          const creepBarrier = distToStop + 2.6;
+          const creepBarrier = distToStop + 0.4;
           if (creepBarrier > 0 && creepBarrier < nearestGap) {
             nearestGap = Math.max(0.1, creepBarrier);
             leadSpeed = 0;
@@ -524,11 +575,12 @@ export class TrafficSimulation {
         const closeT = Number.isFinite(nearestGap) ? Math.max(0, Math.min(1, (20 - nearestGap) / 16)) : 0;
         const maxEmergencyDecel = v.vClass === 'motor' ? 7.5 : 5.5;
         const brakeLimit = -(v.comfortDecel + (maxEmergencyDecel - v.comfortDecel) * closeT);
-        const targetAccel = Math.max(launchBoost, Math.max(brakeLimit, Math.min(effAccel, rawAccel)));
+        const hardBrakeLimit = nearestGap < minGap || stoppingForSignal ? -Math.max(maxEmergencyDecel * 1.6, 10.0) : brakeLimit;
+        const targetAccel = Math.max(launchBoost, Math.max(hardBrakeLimit, Math.min(effAccel, rawAccel)));
 
         const prevA = v.prevAccel ?? 0;
         const smoothedAccel =
-          targetAccel < prevA && (targetAccel <= -v.comfortDecel || nearestGap < minGap * 3.0)
+          targetAccel < prevA && (targetAccel <= -v.comfortDecel || nearestGap < minGap * 3.0 || stoppingForSignal)
             ? targetAccel
             : prevA + Math.max(-12.0 * dt, Math.min(18.0 * dt, targetAccel - prevA));
         v.prevAccel = smoothedAccel;
@@ -563,24 +615,30 @@ export class TrafficSimulation {
   }
 
   private countQueue(): number {
-    return this.vehicles.filter((v) => v.distanceAlongPath < v.stopLineDist && v.speed < 1.0).length;
+    return this.vehicles.filter((v) => v.distanceAlongPath < v.stopLineDist && v.speed < QUEUE_SPEED_THRESHOLD).length;
   }
 
   public getSnapshot(): SimSnapshot {
     const queueByArm: Record<ArmId, number> = { north: 0, east: 0, south: 0, west: 0 };
     let activeQueueCount = 0;
     for (const v of this.vehicles) {
-      if (v.distanceAlongPath < v.stopLineDist && v.speed < 1.0) { queueByArm[v.originArm] += 1; activeQueueCount += 1; }
+      if (v.distanceAlongPath < v.stopLineDist && v.speed < QUEUE_SPEED_THRESHOLD) { queueByArm[v.originArm] += 1; activeQueueCount += 1; }
     }
+    const activeArm = ARM_ORDER[this.activeArmIndex];
+    const adaptiveTarget =
+      this.config.adaptiveSignal && this.activeColor === 'green'
+        ? computeAdaptiveGreenTarget(this.vehicles, activeArm, this.config)
+        : undefined;
     return {
       config: { ...this.config },
       signal: {
-        activeArm: ARM_ORDER[this.activeArmIndex],
+        activeArm,
         activeColor: this.activeColor,
         phaseRemaining: Math.max(0, this.phaseRemaining),
         phaseElapsed: this.phaseElapsed,
         cycleNumber: this.cycleNumber,
         isExtended: this.isGreenExtended,
+        adaptiveTarget,
         armLights: { north: this.getArmLight('north'), east: this.getArmLight('east'), south: this.getArmLight('south'), west: this.getArmLight('west') },
       },
       vehicles: this.vehicles.map(({ path: _p, targetLateralOffset: _t, lateralVelocity: _lv, speedFactor: _sf, accelFactor: _af, profile: _pr, reactionTimer: _rt, ...rest }) => rest),

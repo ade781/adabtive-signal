@@ -15,7 +15,10 @@ export const DEFAULT_CONFIG: SimConfig = {
   yellowDuration: 3,
   allRedDuration: 1.5,
   adaptiveSignal: true,
+  armWeights: { north: 1, east: 1, south: 1, west: 1 },
 };
+
+export const QUEUE_SPEED_THRESHOLD = 1.2;
 
 export const ARM_ORDER: ArmId[] = ['north', 'east', 'south', 'west'];
 

@@ -46,9 +46,16 @@ const ASSET_URLS = [
 ];
 
 const cache = new Map<string, HTMLImageElement>();
+const failedUrls = new Set<string>();
 const listeners = new Set<() => void>();
 let started = false;
 let notifyScheduled = false;
+
+export function resolveAssetUrl(path: string): string {
+  const base = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '');
+  const cleanPath = path.startsWith('/') ? path : `/${path}`;
+  return `${base}${cleanPath}`;
+}
 
 function scheduleNotify(): void {
   if (notifyScheduled) return;
@@ -68,9 +75,16 @@ export function preloadSimulationAssets(): void {
   if (started || typeof Image === 'undefined') return;
   started = true;
   for (const url of ASSET_URLS) {
+    const resolvedUrl = resolveAssetUrl(url);
     const img = new Image();
     img.onload = scheduleNotify;
-    img.src = url;
+    img.onerror = () => {
+      if (!failedUrls.has(url)) {
+        failedUrls.add(url);
+        console.warn(`[assetLoader] Failed to load asset: ${resolvedUrl}`);
+      }
+    };
+    img.src = resolvedUrl;
     cache.set(url, img);
   }
 }

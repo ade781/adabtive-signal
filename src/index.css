@@ -23,10 +23,3 @@
     font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
   }
 }
-
-@layer components {
-  .swiss-card {
-    background-color: var(--bg-card);
-    border: 1px solid var(--border-subtle);
-  }
-}

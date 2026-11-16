@@ -1,32 +1,132 @@
-import React, { useId, useState } from 'react';
-import { Sliders, CarFront, TrafficCone, Lock, Pause, RotateCcw } from 'lucide-react';
-import { SimConfig } from '../engine/types';
+import React, { useId, useRef, useState } from 'react';
+import { Sliders, CarFront, TrafficCone, RotateCcw } from 'lucide-react';
+import { ArmId, SimConfig } from '../engine/types';
 
 interface ParameterInspectorProps {
   config: SimConfig;
-  running: boolean;
-  onPause: () => void;
   onChange: (partial: Partial<SimConfig>) => void;
   onResetDefaults: () => void;
 }
 
 type TabId = 'geometry' | 'traffic' | 'signal';
 
+interface ScenarioPreset {
+  id: string;
+  label: string;
+  description: string;
+  patch: {
+    motorRate: number;
+    carRate: number;
+    heavyRate: number;
+    armWeights: Record<ArmId, number>;
+  };
+}
+
+const DEFAULT_ARM_WEIGHTS: Record<ArmId, number> = {
+  north: 1,
+  east: 1,
+  south: 1,
+  west: 1,
+};
+
+const ARM_ITEMS: { id: ArmId; label: string }[] = [
+  { id: 'north', label: 'Utara' },
+  { id: 'east', label: 'Timur' },
+  { id: 'south', label: 'Selatan' },
+  { id: 'west', label: 'Barat' },
+];
+
+const SCENARIO_PRESETS: ScenarioPreset[] = [
+  {
+    id: 'balanced',
+    label: 'Seimbang',
+    description: 'Arus merata di semua lengan',
+    patch: {
+      motorRate: 30,
+      carRate: 22,
+      heavyRate: 5,
+      armWeights: { north: 1, east: 1, south: 1, west: 1 },
+    },
+  },
+  {
+    id: 'peak-ns',
+    label: 'Jam Sibuk U-S',
+    description: 'Koridor Utara-Selatan padat',
+    patch: {
+      motorRate: 56,
+      carRate: 40,
+      heavyRate: 8,
+      armWeights: { north: 1.8, east: 0.5, south: 1.8, west: 0.5 },
+    },
+  },
+  {
+    id: 'asymmetric',
+    label: 'Arus Timpang',
+    description: 'Beban dominan Utara & Timur',
+    patch: {
+      motorRate: 44,
+      carRate: 32,
+      heavyRate: 7,
+      armWeights: { north: 2.2, east: 1.3, south: 0.4, west: 0.5 },
+    },
+  },
+  {
+    id: 'heavy-corridor',
+    label: 'Koridor Berat',
+    description: 'Proporsi truk & bus tinggi',
+    patch: {
+      motorRate: 24,
+      carRate: 26,
+      heavyRate: 22,
+      armWeights: { north: 1.3, east: 1.0, south: 1.3, west: 1.0 },
+    },
+  },
+];
+
+const TABS: { id: TabId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+  { id: 'geometry', label: 'Jalan', icon: Sliders },
+  { id: 'traffic', label: 'Kendaraan', icon: CarFront },
+  { id: 'signal', label: 'Lampu', icon: TrafficCone },
+];
+
 function snap5(val: number): number {
   return Math.round(val / 5) * 5;
 }
 
+function isPresetActive(
+  config: SimConfig,
+  armWeights: Record<ArmId, number>,
+  preset: ScenarioPreset
+): boolean {
+  const { patch } = preset;
+  if (
+    config.motorRate !== patch.motorRate ||
+    config.carRate !== patch.carRate ||
+    config.heavyRate !== patch.heavyRate
+  ) {
+    return false;
+  }
+  return (['north', 'east', 'south', 'west'] as const).every(
+    (arm) => Math.abs((armWeights[arm] ?? 1) - patch.armWeights[arm]) < 0.05
+  );
+}
+
 export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
   config,
-  running,
-  onPause,
   onChange,
   onResetDefaults,
 }) => {
   const [activeTab, setActiveTab] = useState<TabId>('geometry');
+  const tabsId = useId();
+  const tabRefs = useRef<Record<TabId, HTMLButtonElement | null>>({
+    geometry: null,
+    traffic: null,
+    signal: null,
+  });
+
+  const armWeights = config.armWeights ?? DEFAULT_ARM_WEIGHTS;
 
   const handleTurnChange = (key: 'turnLeftPct' | 'turnStraightPct' | 'turnRightPct', val: number) => {
-    if (running) return;
     const clamped = snap5(Math.max(0, Math.min(100, val)));
     const remaining = 100 - clamped;
     if (key === 'turnLeftPct') {
@@ -57,7 +157,6 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
   };
 
   const handleLanesChange = (lanes: number) => {
-    if (running) return;
     onChange({
       lanesPerDirection: lanes,
       roadWidthPerDirection: +(lanes * config.laneWidth).toFixed(2),
@@ -65,11 +164,38 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
   };
 
   const handleLaneWidthChange = (lw: number) => {
-    if (running) return;
     onChange({
       laneWidth: lw,
       roadWidthPerDirection: +(config.lanesPerDirection * lw).toFixed(2),
     });
+  };
+
+  const handleArmWeightChange = (arm: ArmId, val: number) => {
+    onChange({
+      armWeights: {
+        ...armWeights,
+        [arm]: +val.toFixed(1),
+      },
+    });
+  };
+
+  const handleTabKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    let nextIndex = index;
+    if (e.key === 'ArrowRight') {
+      nextIndex = (index + 1) % TABS.length;
+    } else if (e.key === 'ArrowLeft') {
+      nextIndex = (index - 1 + TABS.length) % TABS.length;
+    } else if (e.key === 'Home') {
+      nextIndex = 0;
+    } else if (e.key === 'End') {
+      nextIndex = TABS.length - 1;
+    } else {
+      return;
+    }
+    e.preventDefault();
+    const nextTab = TABS[nextIndex];
+    setActiveTab(nextTab.id);
+    tabRefs.current[nextTab.id]?.focus();
   };
 
   return (
@@ -79,89 +205,56 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
         <span className="text-xs font-semibold uppercase tracking-wider text-slate-700">
           Parameter Simulasi
         </span>
-        {running ? (
-          <span className="inline-flex items-center gap-1 text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">
-            <Lock className="w-3 h-3" />
-            TERKUNCI
-          </span>
-        ) : (
-          <button
-            type="button"
-            onClick={onResetDefaults}
-            className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-2 py-0.5 rounded bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200 transition-colors duration-100"
-            title="Kembalikan parameter ke nilai awal"
-          >
-            <RotateCcw className="w-2.5 h-2.5" />
-            Default
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={onResetDefaults}
+          className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-2 py-0.5 rounded bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200 transition-colors duration-100"
+          title="Kembalikan parameter ke nilai awal"
+        >
+          <RotateCcw className="w-2.5 h-2.5" />
+          Default
+        </button>
       </div>
-
-      {/* Lock Banner when running */}
-      {running && (
-        <div className="px-3.5 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-2">
-          <span className="text-[11px] text-slate-600">
-            Pause simulasi untuk mengubah parameter.
-          </span>
-          <button
-            type="button"
-            onClick={onPause}
-            className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium bg-slate-900 text-white hover:bg-slate-800 shrink-0 transition-colors duration-100"
-          >
-            <Pause className="w-3 h-3" />
-            Pause untuk Edit
-          </button>
-        </div>
-      )}
 
       {/* Tabs */}
       <div role="tablist" aria-label="Kategori Parameter" className="grid grid-cols-3 border-b border-slate-200 bg-slate-50">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab === 'geometry'}
-          onClick={() => setActiveTab('geometry')}
-          className={`py-2 px-2 text-xs font-medium flex items-center justify-center gap-1.5 border-b-2 transition-colors duration-100 ${
-            activeTab === 'geometry'
-              ? 'border-slate-900 text-slate-900 bg-white'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          <Sliders className="w-3.5 h-3.5" />
-          Jalan
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab === 'traffic'}
-          onClick={() => setActiveTab('traffic')}
-          className={`py-2 px-2 text-xs font-medium flex items-center justify-center gap-1.5 border-b-2 transition-colors duration-100 ${
-            activeTab === 'traffic'
-              ? 'border-slate-900 text-slate-900 bg-white'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          <CarFront className="w-3.5 h-3.5" />
-          Kendaraan
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab === 'signal'}
-          onClick={() => setActiveTab('signal')}
-          className={`py-2 px-2 text-xs font-medium flex items-center justify-center gap-1.5 border-b-2 transition-colors duration-100 ${
-            activeTab === 'signal'
-              ? 'border-slate-900 text-slate-900 bg-white'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          <TrafficCone className="w-3.5 h-3.5" />
-          Lampu
-        </button>
+        {TABS.map((tab, idx) => {
+          const Icon = tab.icon;
+          const selected = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              ref={(el) => {
+                tabRefs.current[tab.id] = el;
+              }}
+              id={`${tabsId}-tab-${tab.id}`}
+              type="button"
+              role="tab"
+              aria-selected={selected}
+              aria-controls={`${tabsId}-panel-${tab.id}`}
+              tabIndex={selected ? 0 : -1}
+              onClick={() => setActiveTab(tab.id)}
+              onKeyDown={(e) => handleTabKeyDown(e, idx)}
+              className={`py-2 px-2 text-xs font-medium flex items-center justify-center gap-1.5 border-b-2 transition-colors duration-100 ${
+                selected
+                  ? 'border-slate-900 text-slate-900 bg-white'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <Icon className="w-3.5 h-3.5" />
+              {tab.label}
+            </button>
+          );
+        })}
       </div>
 
       {/* Tab Body */}
-      <div className="p-3.5 space-y-4 overflow-y-auto flex-1">
+      <div
+        id={`${tabsId}-panel-${activeTab}`}
+        role="tabpanel"
+        aria-labelledby={`${tabsId}-tab-${activeTab}`}
+        className="p-3.5 space-y-4 overflow-y-auto flex-1"
+      >
         {activeTab === 'geometry' && (
           <>
             <div>
@@ -171,17 +264,17 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                   {config.lanesPerDirection} lajur
                 </span>
               </div>
-              <div className="grid grid-cols-4 gap-1.5">
+              <div role="group" aria-label="Jumlah lajur per arah" className="grid grid-cols-4 gap-1.5">
                 {[1, 2, 3, 4].map((l) => (
                   <button
                     key={l}
                     type="button"
-                    disabled={running}
+                    aria-pressed={config.lanesPerDirection === l}
                     onClick={() => handleLanesChange(l)}
-                    className={`py-1.5 text-xs font-mono font-medium rounded border transition-colors duration-100 disabled:cursor-not-allowed ${
+                    className={`py-1.5 text-xs font-mono font-medium rounded border transition-colors duration-100 ${
                       config.lanesPerDirection === l
-                        ? 'bg-slate-900 text-white border-slate-900 disabled:bg-slate-700'
-                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50 disabled:opacity-50'
+                        ? 'bg-slate-900 text-white border-slate-900'
+                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
                     }`}
                   >
                     {l}
@@ -197,7 +290,6 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
               min={2.8}
               max={4.2}
               step={0.1}
-              disabled={running}
               onChange={handleLaneWidthChange}
               hint="Mempengaruhi kecepatan (MKJI) & ruang salip motor"
             />
@@ -226,7 +318,6 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
               min={40}
               max={200}
               step={5}
-              disabled={running}
               onChange={(v) => onChange({ roadLength: v })}
               hint="Jarak pengamatan antrean sebelum garis henti"
             />
@@ -235,42 +326,95 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
 
         {activeTab === 'traffic' && (
           <>
-            <div className="text-[11px] text-slate-500">
-              Laju kedatangan total di seluruh 4 lengan simpang (kendaraan/menit).
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-xs font-semibold text-slate-700">Preset Skenario</span>
+                <span className="text-[10px] font-mono text-slate-400">LIVE</span>
+              </div>
+              <div role="group" aria-label="Preset skenario lalu lintas" className="grid grid-cols-2 gap-1.5">
+                {SCENARIO_PRESETS.map((preset) => {
+                  const active = isPresetActive(config, armWeights, preset);
+                  return (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() => onChange(preset.patch)}
+                      title={preset.description}
+                      className={`px-2 py-1.5 rounded text-left border transition-colors duration-100 ${
+                        active
+                          ? 'bg-slate-900 text-white border-slate-900'
+                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      <div className="text-[11px] font-semibold leading-tight">{preset.label}</div>
+                      <div
+                        className={`text-[10px] leading-tight mt-0.5 truncate ${
+                          active ? 'text-slate-300' : 'text-slate-400'
+                        }`}
+                      >
+                        {preset.description}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-            <SliderField
-              label="Sepeda Motor"
-              value={config.motorRate}
-              unit="kend/mnt"
-              min={0}
-              max={150}
-              step={2}
-              disabled={running}
-              onChange={(v) => onChange({ motorRate: v })}
-              accent="bg-amber-500"
-            />
-            <SliderField
-              label="Mobil Penumpang"
-              value={config.carRate}
-              unit="kend/mnt"
-              min={0}
-              max={100}
-              step={1}
-              disabled={running}
-              onChange={(v) => onChange({ carRate: v })}
-              accent="bg-slate-800"
-            />
-            <SliderField
-              label="Kendaraan Berat (Truk/Bus)"
-              value={config.heavyRate}
-              unit="kend/mnt"
-              min={0}
-              max={50}
-              step={1}
-              disabled={running}
-              onChange={(v) => onChange({ heavyRate: v })}
-              accent="bg-teal-600"
-            />
+
+            <div className="pt-3 border-t border-slate-200 space-y-3">
+              <div className="text-[11px] text-slate-500">
+                Laju kedatangan total di seluruh 4 lengan simpang (kendaraan/menit).
+              </div>
+              <SliderField
+                label="Sepeda Motor"
+                value={config.motorRate}
+                unit="kend/mnt"
+                min={0}
+                max={150}
+                step={2}
+                onChange={(v) => onChange({ motorRate: v })}
+                accent="bg-amber-500"
+              />
+              <SliderField
+                label="Mobil Penumpang"
+                value={config.carRate}
+                unit="kend/mnt"
+                min={0}
+                max={100}
+                step={1}
+                onChange={(v) => onChange({ carRate: v })}
+                accent="bg-slate-800"
+              />
+              <SliderField
+                label="Kendaraan Berat (Truk/Bus)"
+                value={config.heavyRate}
+                unit="kend/mnt"
+                min={0}
+                max={50}
+                step={1}
+                onChange={(v) => onChange({ heavyRate: v })}
+                accent="bg-teal-600"
+              />
+            </div>
+
+            <div className="pt-3 border-t border-slate-200 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-700">Bobot Permintaan per Lengan</span>
+                <span className="text-[11px] font-mono tabular-nums text-slate-500">0.2x – 2.5x</span>
+              </div>
+              {ARM_ITEMS.map((arm) => (
+                <SliderField
+                  key={arm.id}
+                  label={arm.label}
+                  value={+(armWeights[arm.id] ?? 1).toFixed(1)}
+                  unit="x"
+                  min={0.2}
+                  max={2.5}
+                  step={0.1}
+                  onChange={(v) => handleArmWeightChange(arm.id, v)}
+                />
+              ))}
+            </div>
 
             <div className="pt-3 border-t border-slate-200 space-y-3">
               <div className="flex items-center justify-between">
@@ -284,7 +428,6 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                 min={0}
                 max={100}
                 step={5}
-                disabled={running}
                 onChange={(v) => handleTurnChange('turnLeftPct', v)}
               />
               <SliderField
@@ -294,7 +437,6 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                 min={0}
                 max={100}
                 step={5}
-                disabled={running}
                 onChange={(v) => handleTurnChange('turnStraightPct', v)}
               />
               <SliderField
@@ -304,7 +446,6 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                 min={0}
                 max={100}
                 step={5}
-                disabled={running}
                 onChange={(v) => handleTurnChange('turnRightPct', v)}
               />
             </div>
@@ -320,28 +461,28 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                   {config.adaptiveSignal ? 'Adaptif' : 'Fixed-Time'}
                 </span>
               </div>
-              <div className="grid grid-cols-2 gap-1.5">
+              <div role="group" aria-label="Mode kontrol sinyal" className="grid grid-cols-2 gap-1.5">
                 <button
                   type="button"
-                  disabled={running}
+                  aria-pressed={config.adaptiveSignal}
                   onClick={() => onChange({ adaptiveSignal: true })}
                   className={`py-1.5 rounded text-xs font-medium border transition-colors duration-100 ${
                     config.adaptiveSignal
                       ? 'bg-slate-900 text-white border-slate-900'
                       : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                  } disabled:opacity-50 disabled:cursor-not-allowed`}
+                  }`}
                 >
                   Adaptif
                 </button>
                 <button
                   type="button"
-                  disabled={running}
+                  aria-pressed={!config.adaptiveSignal}
                   onClick={() => onChange({ adaptiveSignal: false })}
                   className={`py-1.5 rounded text-xs font-medium border transition-colors duration-100 ${
                     !config.adaptiveSignal
                       ? 'bg-slate-900 text-white border-slate-900'
                       : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                  } disabled:opacity-50 disabled:cursor-not-allowed`}
+                  }`}
                 >
                   Fixed-Time
                 </button>
@@ -360,7 +501,6 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
               min={5}
               max={60}
               step={1}
-              disabled={running}
               onChange={(v) => onChange({ greenDuration: v })}
               hint="Berlaku per lengan (4-fase bebas konflik)"
             />
@@ -371,7 +511,6 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
               min={2}
               max={6}
               step={0.5}
-              disabled={running}
               onChange={(v) => onChange({ yellowDuration: v })}
             />
             <SliderField
@@ -381,7 +520,6 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
               min={0}
               max={5}
               step={0.5}
-              disabled={running}
               onChange={(v) => onChange({ allRedDuration: v })}
               hint="Waktu pengosongan kotak simpang sebelum fase berikutnya"
             />
@@ -411,7 +549,6 @@ interface SliderFieldProps {
   min: number;
   max: number;
   step: number;
-  disabled?: boolean;
   onChange: (val: number) => void;
   hint?: string;
   accent?: string;
@@ -424,7 +561,6 @@ const SliderField: React.FC<SliderFieldProps> = ({
   min,
   max,
   step,
-  disabled,
   onChange,
   hint,
   accent,
@@ -448,11 +584,8 @@ const SliderField: React.FC<SliderFieldProps> = ({
         max={max}
         step={step}
         value={value}
-        disabled={disabled}
         onChange={(e) => onChange(parseFloat(e.target.value))}
-        className={`w-full h-1.5 bg-slate-200 rounded-lg appearance-none accent-slate-900 ${
-          disabled ? 'opacity-45 cursor-not-allowed' : 'cursor-pointer'
-        }`}
+        className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none accent-slate-900 cursor-pointer"
       />
       {hint && <p className="mt-1 text-[11px] text-slate-400">{hint}</p>}
     </div>

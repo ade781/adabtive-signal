@@ -36,7 +36,7 @@ function MixBar({ motor, car, heavy }: { motor: number; car: number; heavy: numb
 
 export const TelemetryStrip: React.FC<TelemetryStripProps> = ({ stats, signal }) => {
   return (
-    <section className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 shrink-0">
+    <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 shrink-0">
       {/* Card 1: Per-Phase Exited (1x Lampu Hijau Lengan Aktif) */}
       <div className="bg-white border border-slate-200 rounded-lg p-2.5 flex flex-col justify-between">
         <div className="flex items-center justify-between gap-1">
@@ -59,7 +59,7 @@ export const TelemetryStrip: React.FC<TelemetryStripProps> = ({ stats, signal })
           car={stats.currentPhaseExited.car}
           heavy={stats.currentPhaseExited.heavy}
         />
-        <div className="mt-1.5 flex items-center gap-2.5 text-[11px] font-mono tabular-nums text-slate-600">
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] font-mono tabular-nums text-slate-600">
           <span>Motor <strong className="text-slate-900">{stats.currentPhaseExited.motor}</strong></span>
           <span>Mobil <strong className="text-slate-900">{stats.currentPhaseExited.car}</strong></span>
           <span>Berat <strong className="text-slate-900">{stats.currentPhaseExited.heavy}</strong></span>
@@ -88,7 +88,7 @@ export const TelemetryStrip: React.FC<TelemetryStripProps> = ({ stats, signal })
           car={stats.currentCycleExited.car}
           heavy={stats.currentCycleExited.heavy}
         />
-        <div className="mt-1.5 flex items-center gap-2.5 text-[11px] font-mono tabular-nums text-slate-600">
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] font-mono tabular-nums text-slate-600">
           <span>Motor <strong className="text-slate-900">{stats.currentCycleExited.motor}</strong></span>
           <span>Mobil <strong className="text-slate-900">{stats.currentCycleExited.car}</strong></span>
           <span>Berat <strong className="text-slate-900">{stats.currentCycleExited.heavy}</strong></span>

@@ -193,4 +193,58 @@ assert(wideOut > narrowOut, `Expected wide 4.0m lane (${wideOut}) > narrow 2.8m 
   console.log('[PASS] 6. Config Clamping, Actual Phase/Cycle Duration & Motor Turn Offset');
 }
 
+// 7. Non-Adaptive (Fixed-Time) Mode holds greenDuration
+{
+  const fixedSim = new TrafficSimulation({
+    adaptiveSignal: false,
+    greenDuration: 10,
+    yellowDuration: 2,
+    allRedDuration: 1,
+    motorRate: 20,
+    carRate: 15,
+    heavyRate: 3,
+  });
+  // Step 5.0s: should still be green on north
+  for (let s = 0; s < 100; s++) fixedSim.step(0.05);
+  const midSnap = fixedSim.getSnapshot();
+  assert(midSnap.signal.activeArm === 'north' && midSnap.signal.activeColor === 'green', `[7. Fixed-Time] Expected north green at t=5s, got ${midSnap.signal.activeArm}/${midSnap.signal.activeColor}`);
+
+  // Step through 60s (multiple full phases)
+  for (let s = 0; s < 1100; s++) {
+    fixedSim.step(0.05);
+    if (s % 20 === 0) checkSnapshotIntegrity(fixedSim, '7. Fixed-Time');
+  }
+  const endSnap = fixedSim.getSnapshot();
+  assert(endSnap.stats.phaseHistory.length >= 4, `[7. Fixed-Time] Expected >=4 phases, got ${endSnap.stats.phaseHistory.length}`);
+  for (const ph of endSnap.stats.phaseHistory) {
+    assert(ph.greenDuration >= 9.9 && ph.greenDuration <= 10.2, `[7. Fixed-Time] Expected greenDuration ~10.0s, got ${ph.greenDuration}`);
+  }
+  console.log('[PASS] 7. Fixed-Time Mode holds configured greenDuration');
+}
+
+// 8. Adaptive Mode with Asymmetric armWeights exercises pickNextArmAdaptive
+{
+  const asymSim = new TrafficSimulation({
+    adaptiveSignal: true,
+    greenDuration: 10,
+    yellowDuration: 2,
+    allRedDuration: 1,
+    motorRate: 45,
+    carRate: 30,
+    heavyRate: 5,
+    armWeights: { north: 5, east: 0, south: 2, west: 0 },
+  });
+  for (let s = 0; s < 2400; s++) {
+    asymSim.step(0.05);
+    if (s % 20 === 0) checkSnapshotIntegrity(asymSim, '8. Asymmetric Adaptive');
+  }
+  const snap = asymSim.getSnapshot();
+  const northPhases = snap.stats.phaseHistory.filter((p) => p.arm === 'north').length;
+  const southPhases = snap.stats.phaseHistory.filter((p) => p.arm === 'south').length;
+  const zeroArmPhases = snap.stats.phaseHistory.filter((p) => p.arm === 'east' || p.arm === 'west').length;
+  assert(northPhases > 0 && southPhases > 0, `[8. Asymmetric Adaptive] Expected north (${northPhases}) and south (${southPhases}) phases`);
+  assert(northPhases + southPhases > zeroArmPhases, `[8. Asymmetric Adaptive] Expected active arms (${northPhases + southPhases}) > zero-weight arms (${zeroArmPhases})`);
+  console.log(`[PASS] 8. Asymmetric Adaptive Arm Selection (north=${northPhases}, south=${southPhases}, zeroArms=${zeroArmPhases})`);
+}
+
 console.log('--- ALL TESTS PASSED ---');

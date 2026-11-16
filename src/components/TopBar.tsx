@@ -54,7 +54,12 @@ export const TopBar: React.FC<TopBarProps> = ({
   onZoomOut,
   onZoomReset,
 }) => {
-  const pct = phaseDuration > 0 ? Math.max(0, Math.min(100, (signal.phaseRemaining / phaseDuration) * 100)) : 0;
+  const isExtended = Boolean(signal.isExtended);
+  const displayRemaining =
+    isExtended && signal.adaptiveTarget !== undefined
+      ? Math.max(0, signal.adaptiveTarget - signal.phaseElapsed)
+      : signal.phaseRemaining;
+  const pct = phaseDuration > 0 ? Math.max(0, Math.min(100, (displayRemaining / phaseDuration) * 100)) : 0;
 
   return (
     <header className="min-h-[52px] py-2 px-4 bg-white border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
@@ -87,7 +92,7 @@ export const TopBar: React.FC<TopBarProps> = ({
       </div>
 
       {/* Playback & Speed Controls */}
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
           onClick={onToggleRun}
@@ -111,11 +116,16 @@ export const TopBar: React.FC<TopBarProps> = ({
           Reset
         </button>
 
-        <div className="flex items-center bg-slate-100 p-0.5 rounded-md border border-slate-200 ml-1">
+        <div
+          role="group"
+          aria-label="Kecepatan simulasi"
+          className="flex items-center bg-slate-100 p-0.5 rounded-md border border-slate-200 ml-1"
+        >
           {[1, 2, 5].map((s) => (
             <button
               key={s}
               type="button"
+              aria-pressed={speed === s}
               onClick={() => onSpeedChange(s)}
               className={`px-2 py-1 text-[11px] font-mono font-medium rounded transition-colors duration-100 ${
                 speed === s
@@ -194,7 +204,7 @@ export const TopBar: React.FC<TopBarProps> = ({
               {ARM_LABELS[signal.activeArm]}
             </span>
             <span>
-              {Math.ceil(signal.phaseRemaining)}s{signal.isExtended ? ' +EXT' : ''}
+              {Math.ceil(displayRemaining)}s{isExtended ? ' +EXT' : ''}
             </span>
           </div>
           <div className="w-full h-1 rounded-full bg-white/70 overflow-hidden">

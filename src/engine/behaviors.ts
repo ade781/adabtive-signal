@@ -1,5 +1,5 @@
 import { PathCache } from './geometry';
-import { DriverProfile } from './constants';
+import { DriverProfile, QUEUE_SPEED_THRESHOLD } from './constants';
 import { ArmId, SignalColor, SimConfig, Vehicle, VehicleClass } from './types';
 
 export interface SimVehicle extends Vehicle {
@@ -28,7 +28,7 @@ export function canFilterSideBySide(vW: number, oW: number, roadW: number): bool
 export function assignReactionWave(vehicles: SimVehicle[], arm: ArmId, lanes: number): void {
   for (let lane = 0; lane < lanes; lane++) {
     const queued = vehicles
-      .filter((v) => v.originArm === arm && v.laneIndex === lane && v.distanceAlongPath < v.stopLineDist && v.speed < 1.2)
+      .filter((v) => v.originArm === arm && v.laneIndex === lane && v.distanceAlongPath < v.stopLineDist && v.speed < QUEUE_SPEED_THRESHOLD)
       .sort((a, b) => b.distanceAlongPath - a.distanceAlongPath);
 
     let prev = 0;
@@ -92,13 +92,13 @@ export function findBlockingLeader(
     } else if (
       other.originArm === v.originArm ||
       (other.destArm === v.destArm && (other.distanceAlongPath >= other.stopLineDist - 2.0 || v.distanceAlongPath >= v.stopLineDist - 14.0)) ||
-      (v.distanceAlongPath >= v.stopLineDist - 1.5 && other.distanceAlongPath > other.stopLineDist + 0.5 && other.distanceAlongPath - other.length * 0.5 < other.exitLineDist)
+      (v.distanceAlongPath >= v.stopLineDist - 15.0 && other.distanceAlongPath >= other.stopLineDist - 0.5 && other.distanceAlongPath - other.length * 0.5 < other.exitLineDist)
     ) {
       // Same-arm, same-turn curve following: arc-length gap remains exact even across 90-degree Bezier bends
       if (other.originArm === v.originArm && other.turn === v.turn && other.distanceAlongPath > v.distanceAlongPath) {
         const rawLatSep = Math.abs(myGlobalLat - getGlobalLat(other.laneIndex, other.lateralOffset, lw));
         const isSameTurnLane = v.turn !== 'straight' && v.laneIndex === other.laneIndex;
-        const latSep = isSameTurnLane ? rawLatSep * 0.25 : rawLatSep;
+        const latSep = isSameTurnLane ? rawLatSep * 0.35 : rawLatSep;
         if (latSep < minLatNeed + (isSameTurnLane ? 0.25 : 0)) {
           const arcGap = other.distanceAlongPath - v.distanceAlongPath - (other.length + v.length) * 0.5;
           if (arcGap < 45 && arcGap < nearestGap) {
@@ -141,11 +141,10 @@ export function findBlockingLeader(
           : 0;
       if (!crossingTurnSameLane && latProj >= myEffW * 0.5 + otherProjLat + tailSwingPad + pad) continue;
       const gapAlong = forwardProj - (v.length * 0.5 + otherProjLen);
-      if (forwardProj <= 0.1) continue;
+      if (forwardProj <= -v.length * 0.5) continue;
 
       if (gapAlong < nearestGap) {
-        const minGap = other.originArm !== v.originArm && gapAlong <= 0 && other.speed > 1.0 ? 0.25 : 0.05;
-        nearestGap = Math.max(minGap, gapAlong);
+        nearestGap = Math.max(0.05, gapAlong);
         leadSpeed = other.speed;
         blockingLeader = other;
       }
@@ -171,14 +170,21 @@ export function updateMotorcycleSeepage(
 
   const recenterDist = v.turn === 'straight' ? v.stopLineDist - 2.5 : v.stopLineDist - 5.0;
   if (v.distanceAlongPath >= recenterDist) {
+    const centerLat = getGlobalLat(v.laneIndex, 0, lw);
+    const bandMin = Math.min(myGlobalLat, centerLat);
+    const bandMax = Math.max(myGlobalLat, centerLat);
     for (const other of vehicles) {
       if (other.id === v.id || other.originArm !== v.originArm) continue;
       if (Math.abs(other.distanceAlongPath - v.distanceAlongPath) < (v.length + other.length) * 0.5 + 2.5) {
         const otherLat = getGlobalLat(other.laneIndex, other.lateralOffset, lw);
         const otherTargetLat = getGlobalLat(other.laneIndex, other.targetLateralOffset, lw);
-        const centerLat = getGlobalLat(v.laneIndex, 0, lw);
         const minClear = (myEffW + effClearanceWidth(other)) * 0.5 + 0.35;
-        if (Math.abs(centerLat - otherLat) < minClear || Math.abs(centerLat - otherTargetLat) < minClear) return;
+        if (
+          (otherLat >= bandMin - minClear && otherLat <= bandMax + minClear) ||
+          (otherTargetLat >= bandMin - minClear && otherTargetLat <= bandMax + minClear)
+        ) {
+          return;
+        }
       }
     }
     v.targetLateralOffset = 0;
@@ -195,13 +201,15 @@ export function updateMotorcycleSeepage(
     return;
   }
 
-  const minBound = v.turn === 'straight' ? 0.42 : Math.max(0.42, v.laneIndex * lw + 0.42);
-  const maxBound = v.turn === 'straight' ? roadW - 0.42 : Math.min(roadW - 0.42, (v.laneIndex + 1) * lw - 0.42);
+  const minLane = v.turn === 'straight' ? Math.max(0, v.laneIndex - 1) : v.laneIndex;
+  const maxLane = v.turn === 'straight' ? Math.min(config.lanesPerDirection - 1, v.laneIndex + 1) : v.laneIndex;
+  const minBound = Math.max(0.42, minLane * lw + 0.42);
+  const maxBound = Math.min(roadW - 0.42, (maxLane + 1) * lw - 0.42);
   const leadEffW = effClearanceWidth(blockingLeader);
 
   const raw: number[] = [];
   if (v.turn === 'straight') {
-    for (let l = 1; l < config.lanesPerDirection; l++) raw.push(l * lw);
+    for (let l = Math.max(1, minLane); l <= maxLane; l++) raw.push(l * lw);
   }
   raw.push(myGlobalLat - (myEffW + leadEffW) * 0.5 - 0.12, myGlobalLat + (myEffW + leadEffW) * 0.5 + 0.12, maxBound, minBound);
 
