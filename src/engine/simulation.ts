@@ -96,6 +96,8 @@ export class TrafficSimulation {
   private greenElapsed = 0;
   private isGreenExtended = false;
   private isAllRed = false;
+  private allRedHoldElapsed = 0;
+  private boxStuckTimers = new Map<number, number>();
   private cycleNumber = 1;
   private phaseCounter = 0;
   private phasesInCycle = 0;
@@ -123,6 +125,9 @@ export class TrafficSimulation {
     this.armSpawnCursor = 0;
     this.simTime = 0;
     this.activeArmIndex = 0;
+    this.isAllRed = false;
+    this.allRedHoldElapsed = 0;
+    this.boxStuckTimers.clear();
     this.activeColor = 'green';
     this.isAllRed = false;
     this.phaseRemaining = Math.max(1, this.config.greenDuration);
@@ -246,12 +251,29 @@ export class TrafficSimulation {
     if (this.phaseRemaining > 0) return;
 
     const overflow = this.phaseRemaining;
-    if (this.activeColor === 'yellow' && !this.isAllRed && this.config.allRedDuration > 0.05) {
-      this.activeColor = 'red';
-      this.isAllRed = true;
-      this.phaseRemaining = this.config.allRedDuration + overflow;
+    if (this.activeColor === 'yellow' && !this.isAllRed) {
+      if (this.config.allRedDuration > 0.05) {
+        this.activeColor = 'red';
+        this.isAllRed = true;
+        this.allRedHoldElapsed = 0;
+        this.phaseRemaining = this.config.allRedDuration + overflow;
+        return;
+      } else if (this.isAnyVehicleInBox() && this.allRedHoldElapsed < 3.0) {
+        this.activeColor = 'red';
+        this.isAllRed = true;
+        this.allRedHoldElapsed += dt;
+        this.phaseRemaining = 0.2;
+        return;
+      }
+    }
+
+    if (this.isAllRed && this.isAnyVehicleInBox() && this.allRedHoldElapsed < 3.5) {
+      this.allRedHoldElapsed += dt;
+      this.phaseRemaining = 0.2;
       return;
     }
+
+    this.allRedHoldElapsed = 0;
 
     this.phaseCounter += 1;
     this.currentCycleDuration += this.phaseElapsed;
@@ -448,8 +470,19 @@ export class TrafficSimulation {
     return this.isAllRed ? 'red' : ARM_ORDER[this.activeArmIndex] === arm ? this.activeColor : 'red';
   }
 
+  private isAnyVehicleInBox(): boolean {
+    return this.vehicles.some(
+      (o) => o.distanceAlongPath + o.length * 0.5 > o.stopLineDist + 0.5 && o.distanceAlongPath - o.length * 0.5 < o.exitLineDist
+    );
+  }
+
   private isBoxOccupiedByOtherArm(myArm: ArmId): boolean {
-    return this.vehicles.some((o) => o.originArm !== myArm && o.distanceAlongPath > o.stopLineDist + 1.0 && o.distanceAlongPath - o.length * 0.25 < o.exitLineDist);
+    return this.vehicles.some(
+      (o) =>
+        o.originArm !== myArm &&
+        o.distanceAlongPath + o.length * 0.5 > o.stopLineDist + 0.5 &&
+        o.distanceAlongPath - o.length * 0.5 < o.exitLineDist
+    );
   }
 
   /** Indonesian dilemma-zone behavior: majority of motorcycles (75-85%) and cars (60-70%) push through yellow when close/moving. */
@@ -494,6 +527,33 @@ export class TrafficSimulation {
       }
 
       let { nearestGap, leadSpeed, blockingLeader, isSqueezingPast } = findBlockingLeader(v, this.vehicles, lw);
+
+      // Watchdog & mutual-lock tie-breaker for vehicles stuck inside/straddling the intersection box
+      const inBox = v.distanceAlongPath + v.length * 0.5 > v.stopLineDist + 0.2 && !v.hasExitedIntersection;
+      let stuckTime = 0;
+      if (inBox && v.speed < 0.35) {
+        stuckTime = (this.boxStuckTimers.get(v.id) ?? 0) + dt;
+        this.boxStuckTimers.set(v.id, stuckTime);
+      } else {
+        this.boxStuckTimers.delete(v.id);
+      }
+
+      if (inBox && blockingLeader && blockingLeader.originArm !== v.originArm) {
+        const mutualTieBreak =
+          stuckTime > 1.5 &&
+          v.speed < 0.4 &&
+          blockingLeader.speed < 0.4 &&
+          (v.exitLineDist - v.distanceAlongPath < blockingLeader.exitLineDist - blockingLeader.distanceAlongPath ||
+            (Math.abs(v.exitLineDist - v.distanceAlongPath - (blockingLeader.exitLineDist - blockingLeader.distanceAlongPath)) < 0.5 &&
+              v.id < blockingLeader.id));
+        const watchdogClear = stuckTime > 2.5 && blockingLeader.destArm !== v.destArm;
+        if (mutualTieBreak || watchdogClear) {
+          nearestGap = Infinity;
+          leadSpeed = desiredV;
+          blockingLeader = null;
+          desiredV = Math.max(desiredV, 4.5);
+        }
+      }
 
       let stoppingForSignal = false;
       const distToStop = v.stopLineDist - (v.distanceAlongPath + v.length * 0.5);
@@ -611,7 +671,10 @@ export class TrafficSimulation {
         v.x = pt.x; v.y = pt.y; v.heading = pt.heading;
       }
     }
-    if (toRemove.size > 0) this.vehicles = this.vehicles.filter((v) => !toRemove.has(v.id));
+    if (toRemove.size > 0) {
+      for (const id of toRemove) this.boxStuckTimers.delete(id);
+      this.vehicles = this.vehicles.filter((v) => !toRemove.has(v.id));
+    }
   }
 
   private countQueue(): number {

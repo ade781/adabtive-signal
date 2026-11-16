@@ -58,6 +58,8 @@ export function findBlockingLeader(
   const cosH = Math.cos(v.heading);
   const sinH = Math.sin(v.heading);
 
+  const vInsideBox = v.distanceAlongPath + v.length * 0.5 > v.stopLineDist + 0.5 && !v.hasExitedIntersection;
+
   for (const other of vehicles) {
     if (other.id === v.id) continue;
     const otherEffW = effClearanceWidth(other);
@@ -91,8 +93,16 @@ export function findBlockingLeader(
       }
     } else if (
       other.originArm === v.originArm ||
-      (other.destArm === v.destArm && (other.distanceAlongPath >= other.stopLineDist - 2.0 || v.distanceAlongPath >= v.stopLineDist - 14.0)) ||
-      (v.distanceAlongPath >= v.stopLineDist - 15.0 && other.distanceAlongPath >= other.stopLineDist - 0.5 && other.distanceAlongPath - other.length * 0.5 < other.exitLineDist)
+      (other.destArm === v.destArm &&
+        (vInsideBox
+          ? other.distanceAlongPath >= other.exitLineDist - 2.0 ||
+            (other.distanceAlongPath + other.length * 0.5 > other.stopLineDist + 1.2 && other.distanceAlongPath > v.distanceAlongPath)
+          : other.distanceAlongPath >= other.stopLineDist - 2.0 || v.distanceAlongPath >= v.stopLineDist - 14.0)) ||
+      (vInsideBox
+        ? other.distanceAlongPath + other.length * 0.5 > other.stopLineDist + 1.2 && other.distanceAlongPath - other.length * 0.5 < other.exitLineDist
+        : v.distanceAlongPath >= v.stopLineDist - 15.0 &&
+          other.distanceAlongPath >= other.stopLineDist - 0.5 &&
+          other.distanceAlongPath - other.length * 0.5 < other.exitLineDist)
     ) {
       // Same-arm, same-turn curve following: arc-length gap remains exact even across 90-degree Bezier bends
       if (other.originArm === v.originArm && other.turn === v.turn && other.distanceAlongPath > v.distanceAlongPath) {
@@ -222,7 +232,6 @@ export function updateMotorcycleSeepage(
     const bandMin = Math.min(myGlobalLat, cand);
     const bandMax = Math.max(myGlobalLat, cand);
     let forwardClear = v.stopLineDist - v.distanceAlongPath;
-
     for (const other of vehicles) {
       if (other.id === v.id || other.originArm !== v.originArm) continue;
       const otherLat = getGlobalLat(other.laneIndex, other.lateralOffset, lw);
