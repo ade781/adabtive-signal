@@ -448,19 +448,6 @@ function drawVehicle(ctx: CanvasRenderingContext2D, v: Vehicle, blinkOn: boolean
   ctx.translate(v.x, v.y);
   ctx.rotate(v.heading + Math.PI / 2);
 
-  // Crisp LED brake lights when stopped/waiting
-  if (v.speed < 0.8 && v.distanceAlongPath < v.stopLineDist) {
-    ctx.fillStyle = 'rgba(239, 68, 68, 0.9)';
-    if (v.vClass === 'motor') {
-      ctx.fillRect(-0.11, v.length * 0.42, 0.22, 0.14);
-    } else {
-      const bw = Math.max(0.16, v.width * 0.18);
-      const bh = Math.max(0.14, v.length * 0.045);
-      ctx.fillRect(-v.width * 0.34, v.length * 0.41, bw, bh);
-      ctx.fillRect(v.width * 0.34 - bw, v.length * 0.41, bw, bh);
-    }
-  }
-
   const img = getLoadedAsset(v.spriteKey);
   if (img) {
     ctx.drawImage(img, -v.width / 2, -v.length / 2, v.width, v.length);
@@ -469,16 +456,38 @@ function drawVehicle(ctx: CanvasRenderingContext2D, v: Vehicle, blinkOn: boolean
     ctx.fillRect(-v.width / 2, -v.length / 2, v.width, v.length);
   }
 
-  // Blinking amber turn signal (lampu sein) for turning or tactical lane change
+  // Crisp LED brake lights drawn ON TOP of vehicle rear bumper
+  if (v.speed < 0.8 && v.distanceAlongPath < v.stopLineDist + 2.0) {
+    ctx.fillStyle = 'rgba(239, 68, 68, 0.95)';
+    if (v.vClass === 'motor') {
+      ctx.fillRect(-0.10, v.length * 0.40, 0.20, 0.12);
+    } else {
+      const bw = Math.max(0.16, v.width * 0.16);
+      const bh = Math.max(0.12, v.length * 0.04);
+      ctx.fillRect(-v.width * 0.34, v.length * 0.42, bw, bh);
+      ctx.fillRect(v.width * 0.34 - bw, v.length * 0.42, bw, bh);
+    }
+  }
+
+  // Proportional amber turn signal (lampu sein)
   const signalDir =
     v.laneChangeDir ??
     (v.turn !== 'straight' && v.distanceAlongPath < v.exitLineDist ? v.turn : null);
   if (blinkOn && signalDir) {
-    const sideX = signalDir === 'left' ? -v.width * 0.44 : v.width * 0.44;
     ctx.fillStyle = '#F59E0B';
-    ctx.beginPath();
-    ctx.arc(sideX, -v.length * 0.44, Math.max(0.22, v.width * 0.16), 0, Math.PI * 2);
-    ctx.fill();
+    if (v.vClass === 'motor') {
+      const r = Math.max(0.055, v.width * 0.075);
+      const sx = signalDir === 'left' ? -v.width * 0.28 : v.width * 0.28;
+      ctx.beginPath();
+      ctx.arc(sx, -v.length * 0.36, r, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      const r = Math.min(0.13, v.width * 0.075);
+      const sx = signalDir === 'left' ? -v.width * 0.36 : v.width * 0.36;
+      ctx.beginPath();
+      ctx.arc(sx, -v.length * 0.43, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 
   ctx.restore();
