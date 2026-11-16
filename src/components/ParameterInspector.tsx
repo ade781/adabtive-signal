@@ -234,8 +234,8 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
               value={config.motorRate}
               unit="kend/mnt"
               min={0}
-              max={60}
-              step={1}
+              max={150}
+              step={2}
               disabled={running}
               onChange={(v) => onChange({ motorRate: v })}
               accent="bg-amber-500"
@@ -245,7 +245,7 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
               value={config.carRate}
               unit="kend/mnt"
               min={0}
-              max={45}
+              max={100}
               step={1}
               disabled={running}
               onChange={(v) => onChange({ carRate: v })}
@@ -256,7 +256,7 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
               value={config.heavyRate}
               unit="kend/mnt"
               min={0}
-              max={20}
+              max={50}
               step={1}
               disabled={running}
               onChange={(v) => onChange({ heavyRate: v })}

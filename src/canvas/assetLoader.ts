@@ -32,6 +32,17 @@ const ASSET_URLS = [
   '/assets/infra/city/building-roof-1.svg',
   '/assets/infra/city/building-roof-2.svg',
   '/assets/infra/city/building-roof-3.svg',
+  '/assets/infra/city/park-plaza.svg',
+  '/assets/infra/city/park-pond.svg',
+  '/assets/infra/city/building-tower-glass.svg',
+  '/assets/infra/city/building-commercial-mall.svg',
+  '/assets/infra/city/building-terrace-green.svg',
+  '/assets/infra/city/parking-lot-top.svg',
+  '/assets/infra/city/helipad-roof.svg',
+  '/assets/infra/city/bus-shelter-top.svg',
+  '/assets/infra/city/bench-architectural.svg',
+  '/assets/infra/city/tree-palm-top.svg',
+  '/assets/infra/city/planter-box-long.svg',
 ];
 
 const cache = new Map<string, HTMLImageElement>();
