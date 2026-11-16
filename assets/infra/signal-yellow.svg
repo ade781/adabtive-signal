@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 144" width="64" height="144" fill="none">
+  <defs>
+    <radialGradient id="signalYellowActiveGrad" cx="50%" cy="45%" r="55%">
+      <stop offset="0%" stop-color="#FDE68A"/>
+      <stop offset="45%" stop-color="#F59E0B"/>
+      <stop offset="100%" stop-color="#B45309"/>
+    </radialGradient>
+    <radialGradient id="signalYellowHalo" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#F59E0B" stop-opacity="0.45"/>
+      <stop offset="60%" stop-color="#F59E0B" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#F59E0B" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Mounting bracket / pole stub -->
+  <rect x="27" y="128" width="10" height="12" rx="1" fill="#E2E8F0" stroke="#334155" stroke-width="1.5"/>
+  <line x1="22" y1="140" x2="42" y2="140" stroke="#334155" stroke-width="1.5" stroke-linecap="square"/>
+
+  <!-- Outer architectural housing -->
+  <rect x="10" y="6" width="44" height="122" rx="8" fill="#F8FAFC" stroke="#1E293B" stroke-width="2"/>
+  <rect x="14" y="10" width="36" height="114" rx="5" fill="#F1F5F9" stroke="#CBD5E1" stroke-width="1"/>
+
+  <!-- Subtle Swiss grid divider lines -->
+  <line x1="16" y1="48" x2="48" y2="48" stroke="#CBD5E1" stroke-width="1"/>
+  <line x1="16" y1="86" x2="48" y2="86" stroke="#CBD5E1" stroke-width="1"/>
+
+  <!-- Visor hoods -->
+  <path d="M18 26 A14 14 0 0 1 46 26" stroke="#94A3B8" stroke-width="1.25" fill="none"/>
+  <path d="M18 64 A14 14 0 0 1 46 64" stroke="#334155" stroke-width="1.5" fill="none"/>
+  <path d="M18 102 A14 14 0 0 1 46 102" stroke="#94A3B8" stroke-width="1.25" fill="none"/>
+
+  <!-- Red Lamp (Inactive) -->
+  <circle cx="32" cy="29" r="12" fill="#E2E8F0" stroke="#94A3B8" stroke-width="1.25"/>
+  <circle cx="32" cy="29" r="8" fill="#CBD5E1" stroke="#94A3B8" stroke-width="0.75" stroke-dasharray="2 2"/>
+
+  <!-- Active Yellow Lamp Halo -->
+  <circle cx="32" cy="67" r="24" fill="url(#signalYellowHalo)"/>
+
+  <!-- Yellow Lamp (Active) -->
+  <circle cx="32" cy="67" r="12" fill="url(#signalYellowActiveGrad)" stroke="#92400E" stroke-width="1.5"/>
+  <circle cx="32" cy="67" r="8.5" stroke="#FEF3C7" stroke-width="0.75" stroke-opacity="0.6" fill="none"/>
+  <circle cx="28.5" cy="63.5" r="2.2" fill="#FFFFFF" fill-opacity="0.65"/>
+
+  <!-- Green Lamp (Inactive) -->
+  <circle cx="32" cy="105" r="12" fill="#E2E8F0" stroke="#94A3B8" stroke-width="1.25"/>
+  <circle cx="32" cy="105" r="8" fill="#CBD5E1" stroke="#94A3B8" stroke-width="0.75" stroke-dasharray="2 2"/>
+</svg>

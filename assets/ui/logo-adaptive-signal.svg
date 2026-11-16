@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40" fill="none">
+  <!-- Outer Swiss architectural frame -->
+  <rect x="2" y="2" width="36" height="36" rx="4" stroke="#0F172A" stroke-width="2"/>
+  <!-- Intersection grid lines -->
+  <line x1="14" y1="2" x2="14" y2="38" stroke="#0F172A" stroke-width="1.5"/>
+  <line x1="26" y1="2" x2="26" y2="38" stroke="#0F172A" stroke-width="1.5"/>
+  <line x1="2" y1="14" x2="38" y2="14" stroke="#0F172A" stroke-width="1.5"/>
+  <line x1="2" y1="26" x2="38" y2="26" stroke="#0F172A" stroke-width="1.5"/>
+  <!-- Corner architectural blocks -->
+  <rect x="5" y="5" width="6" height="6" rx="1" fill="#0F172A"/>
+  <rect x="29" y="5" width="6" height="6" rx="1" fill="#0F172A"/>
+  <rect x="5" y="29" width="6" height="6" rx="1" fill="#0F172A"/>
+  <rect x="29" y="29" width="6" height="6" rx="1" fill="#0F172A"/>
+  <!-- Central intersection signal housing -->
+  <rect x="16" y="8" width="8" height="24" rx="4" fill="#0F172A"/>
+  <!-- 3 Signal dots: Red, Amber, Green -->
+  <circle cx="20" cy="13" r="2.2" fill="#EF4444"/>
+  <circle cx="20" cy="20" r="2.2" fill="#F59E0B"/>
+  <circle cx="20" cy="27" r="2.2" fill="#10B981"/>
+</svg>
