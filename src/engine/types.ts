@@ -7,7 +7,7 @@ export interface SimConfig {
   // Road Geometry (unified: roadWidthPerDirection = lanesPerDirection * laneWidth)
   laneWidth: number;             // meters per lane (2.8 - 4.2m)
   roadWidthPerDirection: number; // derived meters (lanesPerDirection * laneWidth)
-  roadLength: number;            // meters approach length (40 - 140m)
+  roadLength: number;            // meters approach length (40 - 200m)
   lanesPerDirection: number;     // 1 - 4 lanes
 
   // Traffic Mix (total arrival rate across all 4 arms in vehicles/min)
@@ -21,11 +21,24 @@ export interface SimConfig {
   turnRightPct: number;
 
   // Signal Timing (seconds) - 4-phase split (N -> E -> S -> W)
-  greenDuration: number;         // seconds
+  greenDuration: number;         // seconds (base or max green)
+  armGreenDurations?: Record<ArmId, number>; // optional per-arm green duration (seconds)
   yellowDuration: number;        // seconds
   allRedDuration: number;        // seconds
   adaptiveSignal: boolean;       // enable dynamic green extension
   armWeights?: Record<ArmId, number>; // relative demand weight per arm
+
+  // Indonesian Traffic & Road Metadata
+  leftTurnOnRed: boolean;        // Belok Kiri Langsung (LTOR)
+  motorSwarmMode: boolean;       // 3-4 column motorcycle packing & tighter seepage
+  motorBoxEnabled: boolean;      // Kotak Khusus Sepeda Motor / RHK visual & stop-line pocket
+  hasMedian: boolean;            // whether approach arms have a physical center median
+  armNames?: Record<ArmId, string>; // optional real street names per arm
+
+  // Optional scenario metadata for Excel evaluation report & landmark rendering
+  environmentId?: string;
+  scenarioName?: string;
+  scenarioNotes?: string;
 }
 
 export interface Point2D {
@@ -58,7 +71,7 @@ export interface Vehicle {
   y: number;                     // world meters
   heading: number;               // radians (0 = East/+X, -PI/2 = North/-Y)
   hasExitedIntersection: boolean;
-  waitingTime: number;           // seconds spent v < 0.5 m/s
+  waitingTime: number;           // seconds spent v < QUEUE_SPEED_THRESHOLD (1.2 m/s)
   laneChangeDir?: 'left' | 'right' | null;
 }
 
@@ -71,6 +84,8 @@ export interface PhaseRecord {
   exitedCar: number;
   exitedHeavy: number;
   exitedTotal: number;
+  queueAtStart: number;
+  queueAtEnd: number;
 }
 
 export interface CycleRecord {
@@ -89,8 +104,6 @@ export interface SignalState {
   phaseRemaining: number;        // seconds remaining in current sub-phase
   phaseElapsed: number;
   cycleNumber: number;
-  isExtended?: boolean;
-  adaptiveTarget?: number;
   armLights: Record<ArmId, SignalColor>;
 }
 
@@ -99,6 +112,10 @@ export interface SimStats {
   currentPhaseExited: { motor: number; car: number; heavy: number; total: number };
   currentCycleExited: { motor: number; car: number; heavy: number; total: number };
   totalExitedAllTime: number;
+  avgWaitTime: number;           // seconds per exited vehicle
+  maxWaitTime: number;           // max observed waiting time (seconds)
+  throughputPerHour: number;     // projected vehicles/hour
+  boxStuckCount: number;         // vehicles stalled inside intersection box > 2s
   activeQueueCount: number;
   queueByArm: Record<ArmId, number>;
   phaseHistory: PhaseRecord[];   // newest first

@@ -12,15 +12,28 @@ export const DEFAULT_CONFIG: SimConfig = {
   turnStraightPct: 55,
   turnRightPct: 20,
   greenDuration: 15,
+  armGreenDurations: undefined,
   yellowDuration: 3,
   allRedDuration: 1.5,
   adaptiveSignal: true,
   armWeights: { north: 1, east: 1, south: 1, west: 1 },
+  leftTurnOnRed: true,
+  motorSwarmMode: true,
+  motorBoxEnabled: true,
+  hasMedian: false,
+  armNames: undefined,
+  scenarioName: undefined,
+  scenarioNotes: undefined,
 };
 
 export const QUEUE_SPEED_THRESHOLD = 1.2;
 
 export const ARM_ORDER: ArmId[] = ['north', 'east', 'south', 'west'];
+
+export function getArmGreenDuration(config: SimConfig, arm: ArmId): number {
+  const val = config.armGreenDurations?.[arm] ?? config.greenDuration;
+  return Math.max(3, Math.min(180, Number.isFinite(val) ? val : config.greenDuration));
+}
 
 export const SPRITES: Record<VehicleClass, string[]> = {
   motor: [

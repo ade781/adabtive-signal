@@ -1,11 +1,80 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 80" width="32" height="80">
-  <rect x="13" y="4" width="6" height="14" rx="3" fill="#0F172A"/>
-  <rect x="13" y="60" width="6" height="14" rx="3" fill="#0F172A"/>
-  <rect x="6" y="18" width="20" height="3" rx="1.5" fill="#334155"/>
-  <rect x="10" y="16" width="12" height="44" rx="5" fill="#10B981" stroke="#0F172A" stroke-width="1.2"/>
-  <circle cx="16" cy="36" r="7" fill="#F59E0B" stroke="#0F172A" stroke-width="1.2"/>
-  <rect x="12" y="30" width="8" height="4" rx="1" fill="#0F172A" opacity="0.8"/>
-  <rect x="13" y="5" width="6" height="2" rx="1" fill="#FEF08A"/>
-  <rect x="13" y="72" width="6" height="2" rx="1" fill="#EF4444"/>
-  <rect x="8" y="48" width="16" height="16" rx="2" fill="#F8FAFC" stroke="#0F172A" stroke-width="1.2"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 80" width="32" height="80" fill="none">
+  <defs>
+    <filter id="mdb-shadow" x="-30%" y="-12%" width="160%" height="130%">
+      <feDropShadow dx="1" dy="2.5" stdDeviation="1.6" flood-color="#0F172A" flood-opacity="0.3"/>
+    </filter>
+    <linearGradient id="mdb-ojol-jacket" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#22C55E"/>
+      <stop offset="55%" stop-color="#16A34A"/>
+      <stop offset="100%" stop-color="#15803D"/>
+    </linearGradient>
+    <radialGradient id="mdb-ojol-helmet" cx="42%" cy="38%" r="60%">
+      <stop offset="0%" stop-color="#4ADE80"/>
+      <stop offset="65%" stop-color="#16A34A"/>
+      <stop offset="100%" stop-color="#14532D"/>
+    </radialGradient>
+    <linearGradient id="mdb-box" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1E293B"/>
+      <stop offset="100%" stop-color="#0F172A"/>
+    </linearGradient>
+  </defs>
+
+  <g filter="url(#mdb-shadow)">
+    <!-- Front & Rear Tires -->
+    <rect x="13.8" y="4.5" width="4.4" height="13.5" rx="2.2" fill="#0F172A"/>
+    <rect x="13.8" y="62" width="4.4" height="13.5" rx="2.2" fill="#0F172A"/>
+
+    <!-- Front Fairing (Dark Matic Scooter) -->
+    <path d="M11 12.5 C11 9.5, 21 9.5, 21 12.5 L22 24 C22 26.5, 10 26.5, 10 24 Z" fill="#1E293B" stroke="#0F172A" stroke-width="1"/>
+    <!-- Crisp LED Headlight -->
+    <path d="M12.2 10.6 C14 9, 18 9, 19.8 10.6 L19 12.4 L13 12.4 Z" fill="#FEF9C3" stroke="#CA8A04" stroke-width="0.6"/>
+    <rect x="14.2" y="10.2" width="3.6" height="1.2" rx="0.6" fill="#FFFFFF"/>
+
+    <!-- Mirrors -->
+    <line x1="8.8" y1="19" x2="6" y2="16" stroke="#334155" stroke-width="1" stroke-linecap="round"/>
+    <line x1="23.2" y1="19" x2="26" y2="16" stroke="#334155" stroke-width="1" stroke-linecap="round"/>
+    <rect x="4" y="14.6" width="3.2" height="2" rx="0.9" fill="#475569" stroke="#0F172A" stroke-width="0.7"/>
+    <rect x="24.8" y="14.6" width="3.2" height="2" rx="0.9" fill="#475569" stroke="#0F172A" stroke-width="0.7"/>
+
+    <!-- Handlebars & Phone Mount (Ojol Signature) -->
+    <path d="M6.8 21 L12 19 L20 19 L25.2 21" stroke="#475569" stroke-width="2.2" stroke-linecap="round"/>
+    <rect x="5.8" y="19.8" width="3.8" height="2.4" rx="1.2" fill="#0F172A"/>
+    <rect x="22.4" y="19.8" width="3.8" height="2.4" rx="1.2" fill="#0F172A"/>
+    <!-- Phone GPS Mount -->
+    <rect x="14.2" y="17.5" width="3.6" height="2.4" rx="0.6" fill="#38BDF8" stroke="#0F172A" stroke-width="0.6"/>
+
+    <!-- Floorboard -->
+    <rect x="10.5" y="25" width="11" height="13" rx="2" fill="#334155" stroke="#0F172A" stroke-width="0.8"/>
+
+    <!-- Scooter Rear Body -->
+    <path d="M10 38 C10 35.5, 22 35.5, 22 38 L21.2 64 C21.2 67, 10.8 67, 10.8 64 Z" fill="#1E293B" stroke="#0F172A" stroke-width="1"/>
+    <!-- Taillight -->
+    <rect x="12.8" y="65" width="6.4" height="2.2" rx="0.8" fill="#EF4444" stroke="#7F1D1D" stroke-width="0.5"/>
+
+    <!-- Rear Insulated Ojol Delivery Box -->
+    <rect x="7.5" y="45.5" width="17" height="17.5" rx="2.5" fill="url(#mdb-box)" stroke="#0F172A" stroke-width="1.1"/>
+    <rect x="9" y="47" width="14" height="14.5" rx="1.5" fill="#16A34A" stroke="#14532D" stroke-width="0.8"/>
+    <!-- Thermal Box Lid Flap & Reflective Strip -->
+    <line x1="9" y1="51.5" x2="23" y2="51.5" stroke="#14532D" stroke-width="1"/>
+    <rect x="10.5" y="59" width="11" height="1.6" rx="0.8" fill="#BEF264"/>
+    <rect x="13" y="53.5" width="6" height="3" rx="0.8" fill="#F8FAFC" fill-opacity="0.9"/>
+
+    <!-- Rider Arms (Green Ojol Jacket Sleeves) -->
+    <path d="M10.2 34.5 L7.6 21.5" stroke="#16A34A" stroke-width="3.2" stroke-linecap="round"/>
+    <path d="M21.8 34.5 L24.4 21.5" stroke="#16A34A" stroke-width="3.2" stroke-linecap="round"/>
+    <circle cx="7.4" cy="21" r="1.5" fill="#0F172A"/>
+    <circle cx="24.6" cy="21" r="1.5" fill="#0F172A"/>
+
+    <!-- Rider Shoulders (Iconic Indonesian Ojol Green Jacket + Hi-Vis Stripes) -->
+    <rect x="8.8" y="32.5" width="14.4" height="12" rx="5.2" fill="url(#mdb-ojol-jacket)" stroke="#0F172A" stroke-width="1"/>
+    <path d="M10 35.5 L12.5 35.5 M19.5 35.5 L22 35.5" stroke="#BEF264" stroke-width="1.3" stroke-linecap="round"/>
+
+    <!-- Rider Helmet (Iconic Ojol Green Helmet) -->
+    <circle cx="16" cy="36.5" r="5.4" fill="url(#mdb-ojol-helmet)" stroke="#0F172A" stroke-width="1.1"/>
+    <!-- Dark Visor -->
+    <path d="M11.6 33.4 C13.2 31.3, 18.8 31.3, 20.4 33.4 L19.4 35.2 C17.8 34, 14.2 34, 12.6 35.2 Z" fill="#0F172A"/>
+    <path d="M13 32.9 C14.5 32.1, 17.5 32.1, 19 32.9" stroke="#E2E8F0" stroke-width="0.6" stroke-opacity="0.6"/>
+    <!-- White/Lime Top Stripe -->
+    <rect x="15.3" y="35.8" width="1.4" height="5" rx="0.7" fill="#F8FAFC"/>
+  </g>
 </svg>

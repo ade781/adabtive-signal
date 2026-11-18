@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 140" width="180" height="140" fill="none">
+  <defs>
+    <filter id="spbu-shadow" x="-10%" y="-12%" width="124%" height="128%">
+      <feDropShadow dx="3" dy="4" stdDeviation="3" flood-color="#0F172A" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <!-- Forecourt Concrete -->
+  <rect x="8" y="8" width="164" height="124" rx="6" fill="#E2E8F0" stroke="#64748B" stroke-width="1.4"/>
+
+  <!-- Convenience Store / Office at back -->
+  <g filter="url(#spbu-shadow)">
+    <rect x="20" y="16" width="140" height="32" rx="3" fill="#F8FAFC" stroke="#475569" stroke-width="1.2"/>
+    <rect x="20" y="16" width="140" height="8" rx="2" fill="#2563EB"/>
+  </g>
+
+  <!-- Main Pertamina-style Red-White-Blue Canopy -->
+  <g filter="url(#spbu-shadow)">
+    <rect x="24" y="62" width="132" height="54" rx="4" fill="#DC2626" stroke="#991B1B" stroke-width="1.6"/>
+    <rect x="28" y="66" width="124" height="46" rx="2" fill="#F8FAFC"/>
+    <rect x="28" y="66" width="124" height="11" fill="#DC2626"/>
+    <rect x="28" y="101" width="124" height="11" fill="#1D4ED8"/>
+    <!-- Pump Islands -->
+    <rect x="46" y="83" width="24" height="12" rx="2" fill="#334155"/>
+    <rect x="78" y="83" width="24" height="12" rx="2" fill="#334155"/>
+    <rect x="110" y="83" width="24" height="12" rx="2" fill="#334155"/>
+  </g>
+</svg>

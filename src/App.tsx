@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { getArmGreenDuration } from './engine/constants';
 import { DEFAULT_CONFIG, TrafficSimulation } from './engine/simulation';
 import { SimConfig, SimSnapshot } from './engine/types';
 import { IntersectionCanvas } from './canvas/IntersectionCanvas';
 import { TopBar } from './components/TopBar';
 import { ParameterInspector } from './components/ParameterInspector';
 import { TelemetryStrip } from './components/TelemetryStrip';
+import { exportSimulationReportXlsx } from './utils/reportExporter';
 
 const UI_THROTTLE_MS = 80;
 
@@ -73,7 +75,14 @@ export function App() {
   );
 
   const handleResetDefaults = useCallback(() => {
-    sim.updateConfig(DEFAULT_CONFIG);
+    sim.updateConfig({
+      ...DEFAULT_CONFIG,
+      armGreenDurations: undefined,
+      armNames: undefined,
+      environmentId: undefined,
+      scenarioName: undefined,
+      scenarioNotes: undefined,
+    });
     snapshotRef.current = sim.getSnapshot();
     setUiSnapshot(snapshotRef.current);
     setInspectorConfig(snapshotRef.current.config);
@@ -92,6 +101,9 @@ export function App() {
   const handleZoomIn = useCallback(() => setZoom((z) => Math.min(2.2, +(z + 0.1).toFixed(1))), []);
   const handleZoomOut = useCallback(() => setZoom((z) => Math.max(0.6, +(z - 0.1).toFixed(1))), []);
   const handleZoomReset = useCallback(() => setZoom(1), []);
+  const handleDownloadReport = useCallback(() => {
+    exportSimulationReportXlsx(sim.getSnapshot());
+  }, [sim]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -119,10 +131,10 @@ export function App() {
 
   const phaseDuration =
     uiSnapshot.signal.activeColor === 'green'
-      ? (uiSnapshot.signal.adaptiveTarget ?? uiSnapshot.config.greenDuration)
+      ? getArmGreenDuration(uiSnapshot.config, uiSnapshot.signal.activeArm)
       : uiSnapshot.signal.activeColor === 'yellow'
       ? uiSnapshot.config.yellowDuration
-      : uiSnapshot.config.allRedDuration;
+      : Math.max(0.5, uiSnapshot.config.allRedDuration);
 
   return (
     <div className="min-h-screen lg:h-screen w-full flex flex-col bg-slate-50 text-slate-900 lg:overflow-hidden">
@@ -130,9 +142,11 @@ export function App() {
         running={running}
         onToggleRun={handleToggleRun}
         onReset={handleReset}
+        onDownloadReport={handleDownloadReport}
         speed={speed}
         onSpeedChange={setSpeed}
         signal={uiSnapshot.signal}
+        config={inspectorConfig}
         phaseDuration={phaseDuration}
         simTime={uiSnapshot.stats.simTime}
         zoom={zoom}
@@ -162,7 +176,11 @@ export function App() {
           />
         </div>
 
-        <MemoTelemetryStrip stats={uiSnapshot.stats} signal={uiSnapshot.signal} />
+        <MemoTelemetryStrip
+          stats={uiSnapshot.stats}
+          signal={uiSnapshot.signal}
+          armNames={inspectorConfig.armNames}
+        />
       </main>
     </div>
   );

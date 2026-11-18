@@ -1,1 +1,53 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" width="160" height="160"><path d="M6 6 H154 V70 H74 V154 H6 Z" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="2"/><rect x="18" y="18" width="44" height="40" fill="#E2E8F0"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" width="160" height="160" fill="none">
+  <defs>
+    <filter id="br2-shadow" x="-12%" y="-12%" width="128%" height="128%">
+      <feDropShadow dx="3" dy="4" stdDeviation="3" flood-color="#0F172A" flood-opacity="0.26"/>
+    </filter>
+    <pattern id="br2-tiles" width="10" height="10" patternUnits="userSpaceOnUse">
+      <line x1="0" y1="5" x2="10" y2="5" stroke="#451A03" stroke-opacity="0.18" stroke-width="0.7"/>
+      <line x1="5" y1="0" x2="5" y2="5" stroke="#451A03" stroke-opacity="0.14" stroke-width="0.6"/>
+    </pattern>
+  </defs>
+
+  <!-- Inner Courtyard / Service Terrace (Lower Level) -->
+  <rect x="74" y="70" width="78" height="82" rx="3" fill="#E2E8F0" stroke="#94A3B8" stroke-width="1"/>
+  <path d="M74 95 H152 M74 120 H152 M100 70 V152 M126 70 V152" stroke="#CBD5E1" stroke-width="0.8"/>
+  <!-- Courtyard Tropical Potted Shrubs -->
+  <circle cx="138" cy="136" r="9" fill="#15803D" fill-opacity="0.85"/>
+  <circle cx="136" cy="134" r="5" fill="#22C55E"/>
+
+  <!-- L-Shaped Indonesian Ruko / House Roof -->
+  <g filter="url(#br2-shadow)">
+    <path d="M6 6 H154 V70 H74 V154 H6 Z" fill="#B45309" stroke="#78350F" stroke-width="1.5"/>
+
+    <!-- Top Wing Slopes (Ochre/Terracotta Genteng) -->
+    <polygon points="10,10 150,10 136,38 24,38" fill="#EA580C"/>
+    <polygon points="24,38 136,38 150,66 10,66" fill="#C2410C"/>
+    <!-- Left Wing Slopes -->
+    <polygon points="10,10 38,24 38,136 10,150" fill="#F97316"/>
+    <polygon points="38,24 70,66 70,150 38,136" fill="#9A3412"/>
+
+    <!-- Tile Texture -->
+    <path d="M10 10 H150 V66 H70 V150 H10 Z" fill="url(#br2-tiles)"/>
+
+    <!-- Ridge Lines (Bubungan) -->
+    <g stroke="#FED7AA" stroke-opacity="0.7" stroke-width="2" stroke-linecap="round">
+      <line x1="38" y1="38" x2="136" y2="38"/>
+      <line x1="38" y1="38" x2="38" y2="136"/>
+      <line x1="10" y1="10" x2="38" y2="38"/>
+      <line x1="150" y1="10" x2="136" y2="38"/>
+      <line x1="10" y1="150" x2="38" y2="136"/>
+    </g>
+
+    <!-- Flat Concrete Utility Deck on Corner with Toren Air & AC Units -->
+    <rect x="14" y="14" width="48" height="44" rx="2" fill="#CBD5E1" stroke="#64748B" stroke-width="1"/>
+    <!-- Blue Toren Air (Water Tank) -->
+    <circle cx="30" cy="36" r="10" fill="#0284C7" stroke="#075985" stroke-width="1.2"/>
+    <circle cx="30" cy="36" r="4.5" fill="#38BDF8"/>
+    <!-- Twin Split-AC Outdoor Units -->
+    <rect x="46" y="20" width="11" height="14" rx="1.5" fill="#F8FAFC" stroke="#475569" stroke-width="0.9"/>
+    <circle cx="51.5" cy="27" r="3.5" fill="#334155"/>
+    <rect x="46" y="38" width="11" height="14" rx="1.5" fill="#F8FAFC" stroke="#475569" stroke-width="0.9"/>
+    <circle cx="51.5" cy="45" r="3.5" fill="#334155"/>
+  </g>
+</svg>

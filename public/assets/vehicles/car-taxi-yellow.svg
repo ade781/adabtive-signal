@@ -1,13 +1,71 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 45 112" width="45" height="112">
-  <rect x="4" y="6" width="37" height="100" rx="9" fill="#FBBF24" stroke="#0F172A" stroke-width="1.5"/>
-  <rect x="8" y="24" width="29" height="58" rx="6" fill="#FDE68A" stroke="#0F172A" stroke-width="1"/>
-  <path d="M10 26 L35 26 L33 38 L12 38 Z" fill="#1E293B" opacity="0.88"/>
-  <path d="M12 78 L33 78 L35 88 L10 88 Z" fill="#1E293B" opacity="0.82"/>
-  <rect x="2" y="32" width="3" height="7" rx="1" fill="#FBBF24" stroke="#0F172A" stroke-width="0.8"/>
-  <rect x="40" y="32" width="3" height="7" rx="1" fill="#FBBF24" stroke="#0F172A" stroke-width="0.8"/>
-  <rect x="7" y="7" width="8" height="3" rx="1" fill="#FEF08A"/>
-  <rect x="30" y="7" width="8" height="3" rx="1" fill="#FEF08A"/>
-  <rect x="7" y="102" width="8" height="3" rx="1" fill="#EF4444"/>
-  <rect x="30" y="102" width="8" height="3" rx="1" fill="#EF4444"/>
-  <rect x="16" y="46" width="13" height="6" rx="1.5" fill="#0F172A"/><rect x="18" y="47" width="9" height="4" rx="1" fill="#FEF9C3"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 45 112" width="45" height="112" fill="none">
+  <defs>
+    <filter id="cty-shadow" x="-20%" y="-10%" width="140%" height="122%">
+      <feDropShadow dx="1" dy="2.5" stdDeviation="1.8" flood-color="#0F172A" flood-opacity="0.3"/>
+    </filter>
+    <linearGradient id="cty-body" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#D97706"/>
+      <stop offset="20%" stop-color="#F59E0B"/>
+      <stop offset="50%" stop-color="#FBBF24"/>
+      <stop offset="80%" stop-color="#F59E0B"/>
+      <stop offset="100%" stop-color="#D97706"/>
+    </linearGradient>
+    <linearGradient id="cty-glass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#020617"/>
+      <stop offset="60%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#1E293B"/>
+    </linearGradient>
+  </defs>
+
+  <g filter="url(#cty-shadow)">
+    <!-- Side Mirrors -->
+    <path d="M4.8 33 L1.4 34 L1.4 39.5 L4.8 40 Z" fill="#F59E0B" stroke="#78350F" stroke-width="0.8"/>
+    <path d="M40.2 33 L43.6 34 L43.6 39.5 L40.2 40 Z" fill="#F59E0B" stroke="#78350F" stroke-width="0.8"/>
+
+    <!-- Main Taxi Chassis -->
+    <rect x="4.5" y="3" width="36" height="106" rx="8.5" fill="url(#cty-body)" stroke="#78350F" stroke-width="1.1"/>
+
+    <!-- Hood Creases & Indonesian Taxi Checkered Hood Accent -->
+    <path d="M10.5 9.5 L12.5 26 M34.5 9.5 L32.5 26" stroke="#B45309" stroke-opacity="0.5" stroke-width="0.9" stroke-linecap="round"/>
+    <rect x="19" y="10" width="3.5" height="3" fill="#0F172A" fill-opacity="0.75"/>
+    <rect x="22.5" y="13" width="3.5" height="3" fill="#0F172A" fill-opacity="0.75"/>
+    <rect x="19" y="16" width="3.5" height="3" fill="#0F172A" fill-opacity="0.75"/>
+
+    <!-- Trunk Seam -->
+    <path d="M9.5 96.5 Q22.5 98 35.5 96.5" stroke="#92400E" stroke-opacity="0.6" stroke-width="0.9" stroke-linecap="round"/>
+
+    <!-- Windshield -->
+    <path d="M9.5 27.5 C15 25.2 30 25.2 35.5 27.5 L38 43.5 C30 42 15 42 7 43.5 Z" fill="url(#cty-glass)" stroke="#334155" stroke-width="0.75"/>
+    <path d="M11.5 29.2 L16.5 28.4 L13.8 40.5 L9.8 41 Z" fill="#FEF08A" opacity="0.18"/>
+    <!-- Wipers -->
+    <line x1="12" y1="27.2" x2="21" y2="29.8" stroke="#64748B" stroke-width="0.9" stroke-linecap="round"/>
+    <line x1="23.5" y1="27.2" x2="32.5" y2="29.8" stroke="#64748B" stroke-width="0.9" stroke-linecap="round"/>
+
+    <!-- Side Windows & B Pillars -->
+    <path d="M6.5 45 L8.8 46 L8.8 78 L6.5 79.5 Z" fill="#0F172A"/>
+    <path d="M38.5 45 L36.2 46 L36.2 78 L38.5 79.5 Z" fill="#0F172A"/>
+    <line x1="6.4" y1="60" x2="9" y2="60" stroke="#F59E0B" stroke-width="1.8"/>
+    <line x1="36" y1="60" x2="38.6" y2="60" stroke="#F59E0B" stroke-width="1.8"/>
+
+    <!-- Roof Panel -->
+    <rect x="9" y="44" width="27" height="34.5" rx="3.5" fill="#FDE68A" stroke="#D97706" stroke-width="0.8"/>
+
+    <!-- Illuminated Indonesian TAXI Roof Sign -->
+    <rect x="14.5" y="48" width="16" height="6.5" rx="2" fill="#0F172A" stroke="#78350F" stroke-width="0.7"/>
+    <rect x="16" y="49.3" width="13" height="3.9" rx="1" fill="#FEF9C3"/>
+    <line x1="18" y1="51.2" x2="27" y2="51.2" stroke="#D97706" stroke-width="1.2" stroke-dasharray="1.8 1"/>
+
+    <!-- Rear Window -->
+    <path d="M8 80.5 C15 79.3 30 79.3 37 80.5 L34.5 92.8 C28 94.2 17 94.2 10.5 92.8 Z" fill="url(#cty-glass)" stroke="#334155" stroke-width="0.75"/>
+
+    <!-- Headlights -->
+    <path d="M6.8 7 C8.2 4.6 11.8 4 15.2 4.3 L14.5 7.2 L7.8 8 Z" fill="#FEF9C3" stroke="#CA8A04" stroke-width="0.5"/>
+    <path d="M38.2 7 C36.8 4.6 33.2 4 29.8 4.3 L30.5 7.2 L37.2 8 Z" fill="#FEF9C3" stroke="#CA8A04" stroke-width="0.5"/>
+
+    <!-- Taillights -->
+    <rect x="7" y="105" width="8.5" height="2.6" rx="1" fill="#EF4444"/>
+    <rect x="29.5" y="105" width="8.5" height="2.6" rx="1" fill="#EF4444"/>
+    <rect x="8.5" y="105.6" width="5" height="1" rx="0.5" fill="#FCA5A5"/>
+    <rect x="31.5" y="105.6" width="5" height="1" rx="0.5" fill="#FCA5A5"/>
+  </g>
 </svg>

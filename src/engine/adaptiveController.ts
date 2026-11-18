@@ -1,11 +1,17 @@
 import { SimVehicle } from './behaviors';
-import { QUEUE_SPEED_THRESHOLD } from './constants';
-import { ArmId, SimConfig } from './types';
+import { getArmGreenDuration, QUEUE_SPEED_THRESHOLD } from './constants';
+import { ArmId, SimConfig, VehicleClass } from './types';
 
 const ALL_ARMS: readonly ArmId[] = ['north', 'east', 'south', 'west'];
 const APPROACH_WINDOW_M = 35;
-const GAP_OUT_WINDOW_M = 20;
-const STARVATION_WAIT_S = 30;
+const GAP_OUT_WINDOW_M = APPROACH_WINDOW_M;
+
+// Indonesian PKJI 2023 / MKJI 1997 Passenger Car Unit (EMP/SMP) equivalents
+const EMP_WEIGHT: Record<VehicleClass, number> = {
+  motor: 0.25,
+  car: 1.0,
+  heavy: 1.5,
+};
 
 interface ArmMetrics {
   queued: number;
@@ -23,28 +29,39 @@ function measureArm(vehicles: readonly SimVehicle[], arm: ArmId): ArmMetrics {
   for (const v of vehicles) {
     if (v.originArm !== arm || v.distanceAlongPath >= v.stopLineDist) continue;
 
+    const emp = EMP_WEIGHT[v.vClass];
     const distToStop = v.stopLineDist - v.distanceAlongPath;
     if (v.speed < QUEUE_SPEED_THRESHOLD) {
-      queued++;
+      queued += emp;
       if (v.waitingTime > maxWait) maxWait = v.waitingTime;
     } else if (distToStop <= APPROACH_WINDOW_M) {
-      approaching++;
+      approaching += emp;
     }
 
     if (distToStop <= GAP_OUT_WINDOW_M) {
-      nearStopLine++;
+      nearStopLine += emp;
     }
   }
 
   return { queued, approaching, nearStopLine, maxWait };
 }
 
+function getStarvationWait(config?: SimConfig): number {
+  if (!config) return 60;
+  const avgBaseGreen =
+    ALL_ARMS.reduce((sum, arm) => sum + getArmGreenDuration(config, arm), 0) / ALL_ARMS.length;
+  return Math.min(140, Math.max(45, Math.round(avgBaseGreen * 3.5)));
+}
+
 /**
  * Computes green phase bounds `[minGreen, maxGreen]` in seconds from simulation config.
+ * `armGreenDurations?.[arm] ?? config.greenDuration` acts as `maxGreen`, while `minGreen`
+ * is capped at 12s so long-cycle presets do not hold empty approaches.
  */
-export function getAdaptiveGreenBounds(config: SimConfig): { minGreen: number; maxGreen: number } {
-  const minGreen = Math.max(4, Math.round(config.greenDuration * 0.5));
-  const maxGreen = Math.max(minGreen, Math.min(45, config.greenDuration * 1.6));
+export function getAdaptiveGreenBounds(config: SimConfig, arm?: ArmId): { minGreen: number; maxGreen: number } {
+  const baseGreen = arm ? getArmGreenDuration(config, arm) : config.greenDuration;
+  const minGreen = Math.max(4, Math.min(baseGreen, Math.min(12, Math.round(baseGreen * 0.35))));
+  const maxGreen = Math.max(minGreen, baseGreen);
   return { minGreen, maxGreen };
 }
 
@@ -53,7 +70,7 @@ function scoreMetrics(m: ArmMetrics): number {
 }
 
 /**
- * Scores an arm's traffic demand from queued vehicles, approaching vehicles, and max waiting time.
+ * Scores an arm's traffic demand from EMP-weighted queued/approaching vehicles and max waiting time.
  */
 export function getArmDemandScore(vehicles: readonly SimVehicle[], arm: ArmId): number {
   return scoreMetrics(measureArm(vehicles, arm));
@@ -68,38 +85,41 @@ export function computeAdaptiveGreenTarget(
   activeArm: ArmId,
   config: SimConfig
 ): number {
-  const { minGreen, maxGreen } = getAdaptiveGreenBounds(config);
+  const { minGreen, maxGreen } = getAdaptiveGreenBounds(config, activeArm);
   const active = measureArm(vehicles, activeArm);
   const activeDemand = active.queued * 2 + active.approaching;
 
-  let maxRedQueue = 0;
   let totalRedDemand = 0;
   for (const arm of ALL_ARMS) {
     if (arm === activeArm) continue;
     const red = measureArm(vehicles, arm);
-    if (red.queued > maxRedQueue) maxRedQueue = red.queued;
-    totalRedDemand += red.queued * 2 + red.approaching;
+    totalRedDemand += scoreMetrics(red);
   }
 
   if (activeDemand === 0 && totalRedDemand > 0) {
     return minGreen;
   }
 
+  if (totalRedDemand === 0 && activeDemand >= 1) {
+    return maxGreen;
+  }
+
+  // Scale target by active arm's own lane-normalized discharge demand so symmetric heavy
+  // traffic still uses full green capacity instead of cutting every phase to ~50%.
+  const saturationCap = 6 * Math.max(1, config.lanesPerDirection);
+  const saturationRatio = Math.min(1, activeDemand / saturationCap);
   const avgRedDemand = totalRedDemand / (ALL_ARMS.length - 1);
   const pressureRatio = activeDemand / Math.max(1, activeDemand + avgRedDemand);
-  const rawTarget = config.greenDuration * (0.525 + pressureRatio * 0.95);
-
-  if (maxRedQueue === 0 && activeDemand > 0) {
-    return Math.min(maxGreen, Math.max(minGreen, Math.round(config.greenDuration * 1.3)));
-  }
+  const effectiveRatio = Math.max(saturationRatio, pressureRatio);
+  const rawTarget = minGreen + (maxGreen - minGreen) * effectiveRatio;
 
   return Math.min(maxGreen, Math.max(minGreen, Math.round(rawTarget)));
 }
 
 /**
  * Determines whether the current green phase on `activeArm` should continue,
- * enforcing `minGreen`, `maxGreen`, and early gap-out when the active approach clears
- * while other arms have waiting queues.
+ * enforcing `[minGreen, maxGreen]` bounds, anti-starvation yield, and early gap-out
+ * when the active approach clears while other arms have waiting queues.
  */
 export function shouldExtendGreenPhase(
   vehicles: readonly SimVehicle[],
@@ -107,34 +127,34 @@ export function shouldExtendGreenPhase(
   phaseElapsed: number,
   config: SimConfig
 ): boolean {
-  const { minGreen, maxGreen } = getAdaptiveGreenBounds(config);
+  const { minGreen, maxGreen } = getAdaptiveGreenBounds(config, activeArm);
+  if (phaseElapsed < minGreen) return true;
   if (phaseElapsed >= maxGreen) return false;
 
+  const starvationWait = getStarvationWait(config);
   const active = measureArm(vehicles, activeArm);
-  let redDemand = 0;
   let hasWaitingRedArm = false;
+  let maxRedWait = 0;
   for (const arm of ALL_ARMS) {
     if (arm === activeArm) continue;
     const red = measureArm(vehicles, arm);
-    if (red.queued > 0) hasWaitingRedArm = true;
-    redDemand += red.queued * 2 + red.approaching;
+    if (red.maxWait > maxRedWait) maxRedWait = red.maxWait;
+    if (red.queued > 0) {
+      hasWaitingRedArm = true;
+    }
   }
 
-  // Fast gap-out on completely empty active arm when other arms have waiting demand
-  if (active.queued === 0 && active.nearStopLine === 0 && active.approaching === 0 && redDemand > 0) {
-    return phaseElapsed < 2.0;
+  // Only cut active green early for starvation if active queue is clear,
+  // or after 75% of maxGreen when an opposing arm has waited longer than active.
+  if (maxRedWait >= starvationWait) {
+    if (active.queued === 0 || (phaseElapsed >= Math.max(minGreen, Math.round(maxGreen * 0.75)) && maxRedWait > active.maxWait)) {
+      return false;
+    }
   }
 
-  if (phaseElapsed < minGreen) return true;
-
-  // Gap-out: active approach near stop line is clear while another arm is waiting
-  if (active.queued === 0 && active.nearStopLine === 0 && hasWaitingRedArm) {
+  // Gap-out: active approach window is clear while another arm is waiting
+  if (active.queued === 0 && active.approaching === 0 && active.nearStopLine === 0 && hasWaitingRedArm) {
     return false;
-  }
-
-  // Prevent mid-platoon green cutoff while a queue or near-stop-line platoon is discharging
-  if (active.queued > 0 || active.nearStopLine > 0) {
-    return true;
   }
 
   const target = computeAdaptiveGreenTarget(vehicles, activeArm, config);
@@ -143,27 +163,31 @@ export function shouldExtendGreenPhase(
 
 /**
  * Picks the next arm index in `armOrder` using demand-aware selection with
- * round-robin tie-breaking and anti-starvation priority for long-waiting queues.
+ * round-robin tie-breaking and anti-starvation priority for the longest-waiting queue.
  */
 export function pickNextArmAdaptive(
   vehicles: readonly SimVehicle[],
   currentArmIndex: number,
-  armOrder: readonly ArmId[]
+  armOrder: readonly ArmId[],
+  config?: SimConfig
 ): number {
   const len = armOrder.length;
   if (len === 0) return 0;
 
+  const starvationWait = getStarvationWait(config);
   const fallbackIndex = (currentArmIndex + 1) % len;
   let starvedIndex = -1;
+  let maxStarvedWait = -1;
   let bestIndex = fallbackIndex;
   let bestScore = 0;
 
-  for (let offset = 1; offset <= len; offset++) {
+  for (let offset = 1; offset < len; offset++) {
     const idx = (currentArmIndex + offset) % len;
     const arm = armOrder[idx];
     const metrics = measureArm(vehicles, arm);
 
-    if (starvedIndex === -1 && metrics.maxWait >= STARVATION_WAIT_S) {
+    if (metrics.maxWait >= starvationWait && metrics.maxWait > maxStarvedWait) {
+      maxStarvedWait = metrics.maxWait;
       starvedIndex = idx;
     }
 

@@ -1,9 +1,29 @@
 import React from 'react';
-import { SignalState, SimStats } from '../engine/types';
+import { ArmId, SignalState, SimStats } from '../engine/types';
 
 interface TelemetryStripProps {
   stats: SimStats;
   signal: SignalState;
+  armNames?: Partial<Record<ArmId, string>>;
+}
+
+function getLosBadge(avgWaitTime: number): { grade: string; label: string; className: string } {
+  if (avgWaitTime <= 5) {
+    return { grade: 'A', label: 'Sangat Baik', className: 'bg-emerald-50 text-emerald-700 border-emerald-200' };
+  }
+  if (avgWaitTime <= 15) {
+    return { grade: 'B', label: 'Baik', className: 'bg-emerald-50 text-emerald-700 border-emerald-200' };
+  }
+  if (avgWaitTime <= 25) {
+    return { grade: 'C', label: 'Cukup', className: 'bg-amber-50 text-amber-700 border-amber-200' };
+  }
+  if (avgWaitTime <= 40) {
+    return { grade: 'D', label: 'Mendekati Jenuh', className: 'bg-amber-50 text-amber-700 border-amber-200' };
+  }
+  if (avgWaitTime <= 60) {
+    return { grade: 'E', label: 'Jenuh', className: 'bg-rose-50 text-rose-700 border-rose-200' };
+  }
+  return { grade: 'F', label: 'Sangat Jenuh / Macet', className: 'bg-rose-50 text-rose-700 border-rose-200' };
 }
 
 const ARM_SHORT: Record<string, string> = {
@@ -34,7 +54,8 @@ function MixBar({ motor, car, heavy }: { motor: number; car: number; heavy: numb
   );
 }
 
-export const TelemetryStrip: React.FC<TelemetryStripProps> = ({ stats, signal }) => {
+export const TelemetryStrip: React.FC<TelemetryStripProps> = ({ stats, signal, armNames }) => {
+  const los = getLosBadge(stats.avgWaitTime);
   return (
     <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 shrink-0">
       {/* Card 1: Per-Phase Exited (1x Lampu Hijau Lengan Aktif) */}
@@ -74,7 +95,7 @@ export const TelemetryStrip: React.FC<TelemetryStripProps> = ({ stats, signal })
             Keluar Siklus #{signal.cycleNumber}
           </span>
           <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200 shrink-0">
-            4 ARAH
+            4 FASE
           </span>
         </div>
         <div className="mt-1 flex items-baseline gap-2">
@@ -102,23 +123,53 @@ export const TelemetryStrip: React.FC<TelemetryStripProps> = ({ stats, signal })
             <img src="/assets/ui/icon-queue.svg" alt="" className="w-3.5 h-3.5 opacity-75 shrink-0" />
             Antrean Aktif
           </span>
-          <span className="text-[10px] font-mono tabular-nums text-slate-500">
-            ALL: <strong className="text-slate-800">{stats.totalExitedAllTime}</strong>
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span
+              className={`text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded border ${los.className}`}
+              title={`Level of Service (PKJI/HCM): ${los.grade} — ${los.label} (rata-rata tunggu ${stats.avgWaitTime.toFixed(1)}s)`}
+            >
+              LOS {los.grade}
+            </span>
+            <span className="text-[10px] font-mono tabular-nums text-slate-500">
+              ALL: <strong className="text-slate-800">{stats.totalExitedAllTime}</strong>
+            </span>
+          </div>
         </div>
-        <div className="mt-1 flex items-baseline gap-2">
-          <span className="text-xl font-mono tabular-nums font-bold text-slate-900">
-            {stats.activeQueueCount}
-          </span>
-          <span className="text-[11px] text-slate-500">tertahan</span>
+        <div className="mt-1 flex items-baseline justify-between gap-2">
+          <div className="flex items-baseline gap-2">
+            <span className="text-xl font-mono tabular-nums font-bold text-slate-900">
+              {stats.activeQueueCount}
+            </span>
+            <span className="text-[11px] text-slate-500">tertahan</span>
+            {stats.boxStuckCount > 0 && (
+              <span
+                className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-rose-50 text-rose-700 border border-rose-200"
+                title="Kendaraan terjebak di tengah kotak simpang"
+              >
+                {stats.boxStuckCount} terjebak
+              </span>
+            )}
+          </div>
+          <div className="text-[10px] font-mono tabular-nums text-slate-500 text-right">
+            <span>Wait: <strong className="text-slate-800">{stats.avgWaitTime.toFixed(1)}s</strong></span>
+            <span className="mx-1 text-slate-300">|</span>
+            <span><strong className="text-slate-800">{stats.throughputPerHour}</strong>/jam</span>
+          </div>
         </div>
         <div className="mt-2 grid grid-cols-4 gap-1 text-[11px] font-mono tabular-nums">
-          {(['north', 'east', 'south', 'west'] as const).map((arm) => (
-            <div key={arm} className="px-1 py-0.5 rounded bg-slate-50 border border-slate-200 text-center">
-              <span className="text-slate-400">{ARM_SHORT[arm]}:</span>{' '}
-              <strong className="text-slate-800">{stats.queueByArm[arm]}</strong>
-            </div>
-          ))}
+          {(['north', 'east', 'south', 'west'] as const).map((arm) => {
+            const streetName = armNames?.[arm]?.trim();
+            return (
+              <div
+                key={arm}
+                title={streetName ? `${ARM_FULL[arm]}: ${streetName}` : ARM_FULL[arm]}
+                className="px-1 py-0.5 rounded bg-slate-50 border border-slate-200 text-center"
+              >
+                <span className="text-slate-400">{ARM_SHORT[arm]}:</span>{' '}
+                <strong className="text-slate-800">{stats.queueByArm[arm]}</strong>
+              </div>
+            );
+          })}
         </div>
       </div>
 

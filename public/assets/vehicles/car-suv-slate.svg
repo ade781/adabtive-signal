@@ -1,40 +1,71 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 118" width="48" height="118" fill="none">
-  <!-- Side Mirrors -->
-  <rect x="1.2" y="33" width="3.8" height="7.5" rx="1.5" fill="#475569" stroke="#334155" stroke-width="0.9"/>
-  <rect x="43" y="33" width="3.8" height="7.5" rx="1.5" fill="#475569" stroke="#334155" stroke-width="0.9"/>
+  <defs>
+    <filter id="css-shadow" x="-20%" y="-10%" width="140%" height="122%">
+      <feDropShadow dx="1" dy="2.8" stdDeviation="1.9" flood-color="#020617" flood-opacity="0.32"/>
+    </filter>
+    <linearGradient id="css-body" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1E293B"/>
+      <stop offset="22%" stop-color="#475569"/>
+      <stop offset="50%" stop-color="#64748B"/>
+      <stop offset="78%" stop-color="#475569"/>
+      <stop offset="100%" stop-color="#1E293B"/>
+    </linearGradient>
+    <linearGradient id="css-glass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#020617"/>
+      <stop offset="60%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#1E293B"/>
+    </linearGradient>
+  </defs>
 
-  <!-- Main Chassis -->
-  <rect x="4.5" y="3" width="39" height="112" rx="8" fill="#475569" stroke="#334155" stroke-width="1.1"/>
+  <g filter="url(#css-shadow)">
+    <!-- Side Mirrors -->
+    <path d="M4.8 33 L1.2 34 L1.2 40 L4.8 40.5 Z" fill="#475569" stroke="#0F172A" stroke-width="0.9"/>
+    <path d="M43.2 33 L46.8 34 L46.8 40 L43.2 40.5 Z" fill="#475569" stroke="#0F172A" stroke-width="0.9"/>
 
-  <!-- Subtle Hood Lines -->
-  <path d="M11 9.5 L12.5 25 M37 9.5 L35.5 25" stroke="#64748B" stroke-width="0.85" stroke-linecap="round"/>
+    <!-- Main SUV Chassis -->
+    <rect x="4.5" y="3" width="39" height="112" rx="8" fill="url(#css-body)" stroke="#0F172A" stroke-width="1.1"/>
 
-  <!-- Windshield -->
-  <path d="M9.5 27 C16 25 32 25 38.5 27 L40.5 43 C32 41.5 16 41.5 7.5 43 Z" fill="#0F172A" stroke="#334155" stroke-width="0.75"/>
-  <path d="M12 29 L16.5 28.2 L14 40 L10 40.5 Z" fill="#475569" opacity="0.4"/>
+    <!-- Hood Power Bulge & Grille -->
+    <rect x="15.5" y="3.5" width="17" height="2.2" rx="1" fill="#0F172A"/>
+    <path d="M11 9.5 L12.5 25 M37 9.5 L35.5 25" stroke="#94A3B8" stroke-opacity="0.45" stroke-width="0.9" stroke-linecap="round"/>
 
-  <!-- Side Windows (Extended SUV Profile) -->
-  <path d="M7 45 L8.8 46 L8.8 92 L7 93.5 Z" fill="#0F172A"/>
-  <path d="M41 45 L39.2 46 L39.2 92 L41 93.5 Z" fill="#0F172A"/>
+    <!-- Windshield -->
+    <path d="M9.5 27 C16 24.8 32 24.8 38.5 27 L40.5 43 C32 41.5 16 41.5 7.5 43 Z" fill="url(#css-glass)" stroke="#334155" stroke-width="0.75"/>
+    <path d="M12 29 L16.5 28.2 L14 40 L10 40.5 Z" fill="#94A3B8" opacity="0.25"/>
+    <!-- Wipers -->
+    <line x1="12.5" y1="26.8" x2="22" y2="29.4" stroke="#64748B" stroke-width="0.95" stroke-linecap="round"/>
+    <line x1="25" y1="26.8" x2="34.5" y2="29.4" stroke="#64748B" stroke-width="0.95" stroke-linecap="round"/>
 
-  <!-- Roof Panel -->
-  <rect x="9.5" y="44" width="29" height="49" rx="3" fill="#526277" stroke="#334155" stroke-width="0.8"/>
+    <!-- Extended SUV Side Windows & B/C Pillars -->
+    <path d="M6.8 45 L9 46 L9 92.5 L6.8 94 Z" fill="#020617"/>
+    <path d="M41.2 45 L39 46 L39 92.5 L41.2 94 Z" fill="#020617"/>
+    <line x1="6.5" y1="62" x2="9.2" y2="62" stroke="#475569" stroke-width="1.8"/>
+    <line x1="38.8" y1="62" x2="41.5" y2="62" stroke="#475569" stroke-width="1.8"/>
+    <line x1="6.5" y1="79" x2="9.2" y2="79" stroke="#475569" stroke-width="1.6"/>
+    <line x1="38.8" y1="79" x2="41.5" y2="79" stroke="#475569" stroke-width="1.6"/>
 
-  <!-- Roof Rails -->
-  <rect x="11" y="46" width="2.2" height="45" rx="1" fill="#CBD5E1" stroke="#334155" stroke-width="0.6"/>
-  <rect x="34.8" y="46" width="2.2" height="45" rx="1" fill="#CBD5E1" stroke="#334155" stroke-width="0.6"/>
-  <!-- Crossbars -->
-  <rect x="12" y="57" width="24" height="1.6" rx="0.5" fill="#94A3B8"/>
-  <rect x="12" y="81" width="24" height="1.6" rx="0.5" fill="#94A3B8"/>
+    <!-- Roof Panel & Sunroof -->
+    <rect x="9.5" y="44" width="29" height="49.5" rx="3" fill="#475569" stroke="#1E293B" stroke-width="0.8"/>
+    <rect x="14.5" y="46.5" width="19" height="12" rx="1.8" fill="#0F172A" stroke="#334155" stroke-width="0.7"/>
 
-  <!-- Rear Window -->
-  <path d="M9 95 C16 94 32 94 39 95 L37.5 106 C30 107.2 18 107.2 10.5 106 Z" fill="#0F172A" stroke="#334155" stroke-width="0.75"/>
+    <!-- Silver Roof Rails & Crossbars -->
+    <rect x="11" y="45.5" width="2.2" height="46" rx="1" fill="#E2E8F0" stroke="#334155" stroke-width="0.6"/>
+    <rect x="34.8" y="45.5" width="2.2" height="46" rx="1" fill="#E2E8F0" stroke="#334155" stroke-width="0.6"/>
+    <rect x="12" y="61" width="24" height="1.8" rx="0.6" fill="#CBD5E1"/>
+    <rect x="12" y="83" width="24" height="1.8" rx="0.6" fill="#CBD5E1"/>
 
-  <!-- Headlights (Front / North) -->
-  <path d="M7.5 6.5 C9 4.5 12.5 4 15.8 4.2 L15.2 7 L8.5 7.5 Z" fill="#F8FAFC"/>
-  <path d="M40.5 6.5 C39 4.5 35.5 4 32.2 4.2 L32.8 7 L39.5 7.5 Z" fill="#F8FAFC"/>
+    <!-- Rear Spoiler & Window -->
+    <path d="M9 95 C16 94 32 94 39 95 L37.5 106 C30 107.2 18 107.2 10.5 106 Z" fill="url(#css-glass)" stroke="#334155" stroke-width="0.75"/>
+    <rect x="10.5" y="93" width="27" height="3" rx="1" fill="#334155" stroke="#0F172A" stroke-width="0.6"/>
 
-  <!-- Taillights (Rear / South) -->
-  <rect x="7.5" y="110.5" width="8.5" height="2.8" rx="1" fill="#EF4444"/>
-  <rect x="32" y="110.5" width="8.5" height="2.8" rx="1" fill="#EF4444"/>
+    <!-- LED Headlights -->
+    <path d="M7 6.8 C8.5 4.6 12.2 4 15.8 4.2 L15.2 7.2 L8.2 7.8 Z" fill="#E0F2FE" stroke="#7DD3FC" stroke-width="0.5"/>
+    <path d="M41 6.8 C39.5 4.6 35.8 4 32.2 4.2 L32.8 7.2 L39.8 7.8 Z" fill="#E0F2FE" stroke="#7DD3FC" stroke-width="0.5"/>
+
+    <!-- Taillights -->
+    <rect x="7" y="110.5" width="9" height="2.8" rx="1" fill="#EF4444"/>
+    <rect x="32" y="110.5" width="9" height="2.8" rx="1" fill="#EF4444"/>
+    <rect x="8.5" y="111.1" width="5.5" height="1.1" rx="0.5" fill="#FCA5A5"/>
+    <rect x="34" y="111.1" width="5.5" height="1.1" rx="0.5" fill="#FCA5A5"/>
+  </g>
 </svg>

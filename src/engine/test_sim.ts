@@ -1,4 +1,5 @@
 import { createPathCache, getDestArm, getTurnRadius, sampleWithLateralOffset } from './geometry';
+import { SCENARIO_PRESETS } from './presets';
 import { DEFAULT_CONFIG, TrafficSimulation } from './simulation';
 import { ArmId, SimConfig, TurnIntent } from './types';
 
@@ -115,15 +116,44 @@ function testAll12LhtPaths() {
   console.log('[PASS] 12x LHT (Arm x Turn) Continuity & Radius Check');
 }
 
+function trackBoxStuck(sim: TrafficSimulation, dt: number, stuckTimers: Map<number, number>, label: string) {
+  const snap = sim.getSnapshot();
+  const activeIds = new Set<number>();
+  for (const v of snap.vehicles) {
+    activeIds.add(v.id);
+    const insideBox = v.distanceAlongPath + v.length * 0.5 > v.stopLineDist + 0.3 && !v.hasExitedIntersection;
+    if (insideBox && v.speed < 0.1) {
+      const t = (stuckTimers.get(v.id) ?? 0) + dt;
+      stuckTimers.set(v.id, t);
+      assert(t <= 5.0, `[${label}] Vehicle #${v.id} (${v.vClass}, ${v.originArm}->${v.destArm}) stuck inside box for ${t.toFixed(1)}s`);
+    } else {
+      stuckTimers.delete(v.id);
+    }
+  }
+  for (const id of stuckTimers.keys()) {
+    if (!activeIds.has(id)) stuckTimers.delete(id);
+  }
+}
+
 function runScenario(name: string, cfg: Partial<SimConfig>, seconds: number) {
   const sim = new TrafficSimulation(cfg);
   const dt = 0.05;
   const steps = Math.round(seconds / dt);
+  const stuckTimers = new Map<number, number>();
   for (let s = 0; s < steps; s++) {
     sim.step(dt);
+    trackBoxStuck(sim, dt, stuckTimers, name);
     if (s % 20 === 0) checkSnapshotIntegrity(sim, name);
   }
   const snap = sim.getSnapshot();
+  if (snap.config.adaptiveSignal) {
+    for (const ph of snap.stats.phaseHistory) {
+      assert(
+        ph.greenDuration <= snap.config.greenDuration + 0.3,
+        `[${name}] Adaptive greenDuration ${ph.greenDuration}s exceeded config.greenDuration (${snap.config.greenDuration}s) + 0.3s`
+      );
+    }
+  }
   console.log(
     `[PASS] ${name}: simTime=${snap.stats.simTime.toFixed(1)}s | exited=${snap.stats.totalExitedAllTime} | phases=${snap.stats.phaseHistory.length} | cycles=${snap.stats.cycleHistory.length} | activeVehicles=${snap.vehicles.length}`
   );
@@ -175,12 +205,15 @@ assert(wideOut > narrowOut, `Expected wide 4.0m lane (${wideOut}) > narrow 2.8m 
   assert(updSnap.config.yellowDuration === 1, `Expected updated yellowDuration clamped to 1`);
   assert(updSnap.config.allRedDuration === 0, `Expected updated allRedDuration clamped to 0`);
 
-  // Step through > 1 full adaptive cycle (4 * (~4-4.8s + 1s) <= 24s) and verify actual phase/cycle durations
+  // Step through > 1 full adaptive cycle (4 * (3.0s + 1.0s) = 16s) and verify actual phase/cycle durations
   for (let s = 0; s < 560; s++) cfgSim.step(0.05);
   const statSnap = cfgSim.getSnapshot();
   assert(statSnap.stats.phaseHistory.length >= 4, `Expected >=4 phaseHistory records`);
   assert(statSnap.stats.cycleHistory.length >= 1, `Expected >=1 cycleHistory records`);
-  assert(statSnap.stats.phaseHistory[0].greenDuration >= 3.9, `Expected actual phase duration ~4.0s, got ${statSnap.stats.phaseHistory[0].greenDuration}`);
+  assert(
+    statSnap.stats.phaseHistory[0].greenDuration >= 2.9 && statSnap.stats.phaseHistory[0].greenDuration <= 3.3,
+    `Expected actual phase duration ~3.0s, got ${statSnap.stats.phaseHistory[0].greenDuration}`
+  );
   assert(statSnap.stats.cycleHistory[0].totalDuration >= 15.8, `Expected actual cycle duration ~16.0s, got ${statSnap.stats.cycleHistory[0].totalDuration}`);
 
   // Verify turning motor spawn offsets never cross to wrong side
@@ -234,17 +267,106 @@ assert(wideOut > narrowOut, `Expected wide 4.0m lane (${wideOut}) > narrow 2.8m 
     heavyRate: 5,
     armWeights: { north: 5, east: 0, south: 2, west: 0 },
   });
+  const asymStuck = new Map<number, number>();
   for (let s = 0; s < 2400; s++) {
     asymSim.step(0.05);
+    trackBoxStuck(asymSim, 0.05, asymStuck, '8. Asymmetric Adaptive');
     if (s % 20 === 0) checkSnapshotIntegrity(asymSim, '8. Asymmetric Adaptive');
   }
   const snap = asymSim.getSnapshot();
+  for (const ph of snap.stats.phaseHistory) {
+    assert(
+      ph.greenDuration <= snap.config.greenDuration + 0.3,
+      `[8. Asymmetric Adaptive] Adaptive greenDuration ${ph.greenDuration}s exceeded config.greenDuration (${snap.config.greenDuration}s) + 0.3s`
+    );
+  }
   const northPhases = snap.stats.phaseHistory.filter((p) => p.arm === 'north').length;
   const southPhases = snap.stats.phaseHistory.filter((p) => p.arm === 'south').length;
   const zeroArmPhases = snap.stats.phaseHistory.filter((p) => p.arm === 'east' || p.arm === 'west').length;
   assert(northPhases > 0 && southPhases > 0, `[8. Asymmetric Adaptive] Expected north (${northPhases}) and south (${southPhases}) phases`);
   assert(northPhases + southPhases > zeroArmPhases, `[8. Asymmetric Adaptive] Expected active arms (${northPhases + southPhases}) > zero-weight arms (${zeroArmPhases})`);
   console.log(`[PASS] 8. Asymmetric Adaptive Arm Selection (north=${northPhases}, south=${southPhases}, zeroArms=${zeroArmPhases})`);
+}
+
+// 9. Per-Arm Green Durations & Real-World Field Preset (Brimob Yogyakarta)
+{
+  const brimob = SCENARIO_PRESETS.find((p) => p.id === 'brimob-yogya');
+  assert(!!brimob, 'Expected brimob-yogya preset to exist');
+  const fieldSim = new TrafficSimulation({
+    ...brimob!.patch,
+    adaptiveSignal: false,
+  });
+  for (let s = 0; s < 2400; s++) {
+    fieldSim.step(0.05);
+    if (s % 40 === 0) checkSnapshotIntegrity(fieldSim, '9. Brimob Yogya Fixed-Time');
+  }
+  const snap = fieldSim.getSnapshot();
+  assert(snap.stats.phaseHistory.length >= 4, `[9. Brimob Yogya] Expected >=4 phases, got ${snap.stats.phaseHistory.length}`);
+  assert(snap.stats.throughputPerHour > 0, `[9. Brimob Yogya] Expected positive throughputPerHour`);
+  assert(snap.stats.avgWaitTime >= 0, `[9. Brimob Yogya] Expected valid avgWaitTime`);
+  for (const ph of snap.stats.phaseHistory) {
+    const expected = brimob!.patch.armGreenDurations![ph.arm];
+    assert(
+      Math.abs(ph.greenDuration - expected) <= 0.3,
+      `[9. Brimob Yogya] Expected ${ph.arm} greenDuration ~${expected}s, got ${ph.greenDuration}s`
+    );
+    assert(Number.isFinite(ph.queueAtStart) && Number.isFinite(ph.queueAtEnd), `[9. Brimob Yogya] Expected queueAtStart/queueAtEnd`);
+  }
+  console.log(
+    `[PASS] 9. Field Preset (Brimob Yogya): exited=${snap.stats.totalExitedAllTime} | throughput=${snap.stats.throughputPerHour}/h | avgWait=${snap.stats.avgWaitTime}s`
+  );
+}
+
+// 10. LTOR (Belok Kiri Langsung) & Motor Swarm Mode
+{
+  const ltorBase: Partial<SimConfig> = {
+    adaptiveSignal: false,
+    greenDuration: 20,
+    yellowDuration: 2,
+    allRedDuration: 1,
+    motorRate: 30,
+    carRate: 20,
+    heavyRate: 0,
+    turnLeftPct: 100,
+    turnStraightPct: 0,
+    turnRightPct: 0,
+    armWeights: { north: 0, east: 1, south: 0, west: 0 },
+  };
+  const ltorOn = new TrafficSimulation({ ...ltorBase, leftTurnOnRed: true });
+  const ltorOff = new TrafficSimulation({ ...ltorBase, leftTurnOnRed: false });
+  for (let s = 0; s < 400; s++) {
+    ltorOn.step(0.05);
+    ltorOff.step(0.05);
+    if (s % 10 === 0) checkSnapshotIntegrity(ltorOn, '10a. LTOR On');
+  }
+  const ltorOnSnap = ltorOn.getSnapshot();
+  const ltorOffSnap = ltorOff.getSnapshot();
+  assert(
+    ltorOnSnap.stats.totalExitedAllTime > 0,
+    `[10a. LTOR] Expected left-turning vehicles to clear during red when leftTurnOnRed=true, got ${ltorOnSnap.stats.totalExitedAllTime}`
+  );
+  assert(
+    ltorOffSnap.stats.totalExitedAllTime === 0,
+    `[10a. LTOR] Expected 0 exited during red when leftTurnOnRed=false, got ${ltorOffSnap.stats.totalExitedAllTime}`
+  );
+
+  const brimob = SCENARIO_PRESETS.find((p) => p.id === 'brimob-yogya')!;
+  const swarmOn = new TrafficSimulation({ ...brimob.patch, adaptiveSignal: false, motorSwarmMode: true });
+  const swarmOff = new TrafficSimulation({ ...brimob.patch, adaptiveSignal: false, motorSwarmMode: false });
+  for (let s = 0; s < 2400; s++) {
+    swarmOn.step(0.05);
+    swarmOff.step(0.05);
+    if (s % 40 === 0) checkSnapshotIntegrity(swarmOn, '10b. Motor Swarm On');
+  }
+  const swarmOnSnap = swarmOn.getSnapshot();
+  const swarmOffSnap = swarmOff.getSnapshot();
+  assert(
+    swarmOnSnap.stats.throughputPerHour > swarmOffSnap.stats.throughputPerHour,
+    `[10b. Motor Swarm] Expected motorSwarmMode=true (${swarmOnSnap.stats.throughputPerHour}/h) > motorSwarmMode=false (${swarmOffSnap.stats.throughputPerHour}/h)`
+  );
+  console.log(
+    `[PASS] 10. LTOR & Motor Swarm: LTOR_on=${ltorOnSnap.stats.totalExitedAllTime} vs LTOR_off=${ltorOffSnap.stats.totalExitedAllTime} | Swarm_on=${swarmOnSnap.stats.throughputPerHour}/h vs Swarm_off=${swarmOffSnap.stats.throughputPerHour}/h`
+  );
 }
 
 console.log('--- ALL TESTS PASSED ---');

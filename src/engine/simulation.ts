@@ -1,4 +1,4 @@
-import { computeAdaptiveGreenTarget, pickNextArmAdaptive, shouldExtendGreenPhase } from './adaptiveController';
+import { pickNextArmAdaptive, shouldExtendGreenPhase } from './adaptiveController';
 import {
   assignReactionWave,
   effClearanceWidth,
@@ -8,7 +8,7 @@ import {
   tryCarLaneChange,
   updateMotorcycleSeepage,
 } from './behaviors';
-import { ARM_ORDER, DEFAULT_CONFIG, DriverProfile, PROFILE_MULT, QUEUE_SPEED_THRESHOLD, SPRITES, VEHICLE_SPECS } from './constants';
+import { ARM_ORDER, DEFAULT_CONFIG, DriverProfile, getArmGreenDuration, PROFILE_MULT, QUEUE_SPEED_THRESHOLD, SPRITES, VEHICLE_SPECS } from './constants';
 import {
   createPathCache,
   getDestArm,
@@ -52,9 +52,17 @@ function normalizeConfig(raw: SimConfig): SimConfig {
   const turnLeftPct = Math.max(0, Number.isFinite(raw.turnLeftPct) ? raw.turnLeftPct : 0);
   const turnStraightPct = Math.max(0, Number.isFinite(raw.turnStraightPct) ? raw.turnStraightPct : 0);
   const turnRightPct = Math.max(0, Number.isFinite(raw.turnRightPct) ? raw.turnRightPct : 0);
-  const greenDuration = Math.max(3, raw.greenDuration);
-  const yellowDuration = Math.max(1, raw.yellowDuration);
-  const allRedDuration = Math.max(0, raw.allRedDuration);
+  const greenDuration = Math.max(3, Math.min(180, Number.isFinite(raw.greenDuration) ? raw.greenDuration : DEFAULT_CONFIG.greenDuration));
+  const yellowDuration = Math.max(1, Number.isFinite(raw.yellowDuration) ? raw.yellowDuration : DEFAULT_CONFIG.yellowDuration);
+  const allRedDuration = Math.max(0, Number.isFinite(raw.allRedDuration) ? raw.allRedDuration : DEFAULT_CONFIG.allRedDuration);
+  const armGreenDurations: Record<ArmId, number> | undefined = raw.armGreenDurations
+    ? {
+        north: Math.max(3, Math.min(180, Number.isFinite(raw.armGreenDurations.north) ? raw.armGreenDurations.north : greenDuration)),
+        east: Math.max(3, Math.min(180, Number.isFinite(raw.armGreenDurations.east) ? raw.armGreenDurations.east : greenDuration)),
+        south: Math.max(3, Math.min(180, Number.isFinite(raw.armGreenDurations.south) ? raw.armGreenDurations.south : greenDuration)),
+        west: Math.max(3, Math.min(180, Number.isFinite(raw.armGreenDurations.west) ? raw.armGreenDurations.west : greenDuration)),
+      }
+    : undefined;
   const rawWeights = raw.armWeights ?? DEFAULT_CONFIG.armWeights!;
   const armWeights: Record<ArmId, number> = {
     north: Math.max(0, Number.isFinite(rawWeights.north) ? rawWeights.north : 1),
@@ -75,9 +83,14 @@ function normalizeConfig(raw: SimConfig): SimConfig {
     turnStraightPct,
     turnRightPct,
     greenDuration,
+    armGreenDurations,
     yellowDuration,
     allRedDuration,
     armWeights,
+    leftTurnOnRed: Boolean(raw.leftTurnOnRed ?? DEFAULT_CONFIG.leftTurnOnRed),
+    motorSwarmMode: Boolean(raw.motorSwarmMode ?? DEFAULT_CONFIG.motorSwarmMode),
+    motorBoxEnabled: Boolean(raw.motorBoxEnabled ?? DEFAULT_CONFIG.motorBoxEnabled),
+    hasMedian: Boolean(raw.hasMedian ?? DEFAULT_CONFIG.hasMedian),
   };
 }
 
@@ -94,10 +107,7 @@ export class TrafficSimulation {
   private phaseRemaining = 0;
   private phaseElapsed = 0;
   private greenElapsed = 0;
-  private isGreenExtended = false;
   private isAllRed = false;
-  private allRedHoldElapsed = 0;
-  private boxStuckTimers = new Map<number, number>();
   private cycleNumber = 1;
   private phaseCounter = 0;
   private phasesInCycle = 0;
@@ -110,6 +120,10 @@ export class TrafficSimulation {
   private currentCycleQueueTime = 0;
   private currentCycleDuration = 0;
   private totalExitedAllTime = 0;
+  private totalExitedWaitTime = 0;
+  private exitedWaitCount = 0;
+  private maxWaitTimeObserved = 0;
+  private currentPhaseStartQueue = 0;
   private phaseHistory: PhaseRecord[] = [];
   private cycleHistory: CycleRecord[] = [];
 
@@ -125,15 +139,11 @@ export class TrafficSimulation {
     this.armSpawnCursor = 0;
     this.simTime = 0;
     this.activeArmIndex = 0;
-    this.isAllRed = false;
-    this.allRedHoldElapsed = 0;
-    this.boxStuckTimers.clear();
     this.activeColor = 'green';
     this.isAllRed = false;
-    this.phaseRemaining = Math.max(1, this.config.greenDuration);
+    this.phaseRemaining = getArmGreenDuration(this.config, ARM_ORDER[this.activeArmIndex]);
     this.phaseElapsed = 0;
     this.greenElapsed = 0;
-    this.isGreenExtended = false;
     this.cycleNumber = 1;
     this.phaseCounter = 0;
     this.phasesInCycle = 0;
@@ -145,6 +155,10 @@ export class TrafficSimulation {
     this.currentCycleQueueTime = 0;
     this.currentCycleDuration = 0;
     this.totalExitedAllTime = 0;
+    this.totalExitedWaitTime = 0;
+    this.exitedWaitCount = 0;
+    this.maxWaitTimeObserved = 0;
+    this.currentPhaseStartQueue = 0;
     this.phaseHistory = [];
     this.cycleHistory = [];
   }
@@ -163,53 +177,137 @@ export class TrafficSimulation {
         if (v.vClass !== 'motor' || lw < 2.8) {
           v.lateralOffset = 0; v.targetLateralOffset = 0; v.lateralVelocity = 0; v.laneChangeDir = null;
         } else {
-          const maxLat = lw * 0.27;
+          const maxLat = Math.max(0, lw * 0.5 - 0.42);
           v.lateralOffset = Math.max(-maxLat, Math.min(maxLat, v.lateralOffset));
           v.targetLateralOffset = Math.max(-maxLat, Math.min(maxLat, v.targetLateralOffset));
         }
-        const wasBehindStopLine = v.distanceAlongPath < v.stopLineDist;
+        const oldStop = v.stopLineDist;
+        const oldExit = v.exitLineDist;
+        const oldTotal = v.totalPathLength;
         const newPath = this.pathCache[v.originArm][v.turn][v.laneIndex];
-        const rel = v.totalPathLength > 0 ? v.distanceAlongPath / v.totalPathLength : 0;
+        let scaledDist: number;
+        if (v.distanceAlongPath < oldStop) {
+          const segRel = oldStop > 0 ? v.distanceAlongPath / oldStop : 0;
+          scaledDist = Math.min(Math.max(0, newPath.stopLineDist - 0.5), segRel * newPath.stopLineDist);
+        } else if (v.distanceAlongPath <= oldExit) {
+          const oldBoxLen = Math.max(1e-3, oldExit - oldStop);
+          const segRel = (v.distanceAlongPath - oldStop) / oldBoxLen;
+          scaledDist = newPath.stopLineDist + segRel * (newPath.exitLineDist - newPath.stopLineDist);
+        } else {
+          const oldExitLen = Math.max(1e-3, oldTotal - oldExit);
+          const segRel = (v.distanceAlongPath - oldExit) / oldExitLen;
+          scaledDist = newPath.exitLineDist + segRel * (newPath.totalPathLength - newPath.exitLineDist);
+        }
         v.path = newPath;
         v.stopLineDist = newPath.stopLineDist;
         v.exitLineDist = newPath.exitLineDist;
         v.totalPathLength = newPath.totalPathLength;
-        let scaledDist = Math.max(0, Math.min(newPath.totalPathLength, rel * newPath.totalPathLength));
-        if (wasBehindStopLine) {
-          scaledDist = Math.min(scaledDist, Math.max(0, newPath.stopLineDist - 0.5));
-        }
-        v.distanceAlongPath = scaledDist;
+        v.distanceAlongPath = Math.max(0, Math.min(newPath.totalPathLength, scaledDist));
         const pt = sampleWithLateralOffset(newPath, v.distanceAlongPath, v.lateralOffset, 0, v.speed);
         v.x = pt.x; v.y = pt.y; v.heading = pt.heading;
       }
 
-      if (this.config.lanesPerDirection < prev.lanesPerDirection || this.config.roadLength < prev.roadLength) {
+      if (this.config.lanesPerDirection < prev.lanesPerDirection || this.config.roadLength < prev.roadLength || this.config.laneWidth < prev.laneWidth) {
         const overflowIds = new Set<number>();
         for (const arm of ARM_ORDER) {
           for (let lane = 0; lane < this.config.lanesPerDirection; lane++) {
-            const laneVehs = this.vehicles.filter((v) => v.originArm === arm && v.laneIndex === lane).sort((a, b) => b.distanceAlongPath - a.distanceAlongPath);
-            let prevAllowed = Infinity;
-            let lastLead: SimVehicle | null = null;
-            for (let i = 0; i < laneVehs.length; i++) {
-              const cur = laneVehs[i];
-              if (lastLead) {
-                const targetDist = Math.min(cur.distanceAlongPath, prevAllowed - ((lastLead.length + cur.length) * 0.5 + cur.minGap));
-                if (targetDist < 0) { overflowIds.add(cur.id); continue; }
-                cur.distanceAlongPath = targetDist;
-                cur.speed = Math.min(cur.speed, lastLead.speed);
-                const pt = sampleWithLateralOffset(cur.path, cur.distanceAlongPath, cur.lateralOffset, 0, cur.speed);
-                cur.x = pt.x; cur.y = pt.y; cur.heading = pt.heading;
+            const laneVehs = this.vehicles
+              .filter((v) => v.originArm === arm && v.laneIndex === lane && v.distanceAlongPath < v.stopLineDist)
+              .sort((a, b) => b.distanceAlongPath - a.distanceAlongPath);
+            const kept: SimVehicle[] = this.vehicles
+              .filter((v) => v.originArm === arm && v.laneIndex === lane && v.distanceAlongPath >= v.stopLineDist && v.distanceAlongPath < v.stopLineDist + 10.0)
+              .sort((a, b) => b.distanceAlongPath - a.distanceAlongPath);
+            for (const cur of laneVehs) {
+              const curLat = getGlobalLat(cur.laneIndex, cur.lateralOffset, lw);
+              const curEffW = effClearanceWidth(cur);
+              let blockingLead: SimVehicle | null = null;
+              for (let k = kept.length - 1; k >= 0; k--) {
+                const lead = kept[k];
+                const leadLat = getGlobalLat(lead.laneIndex, lead.lateralOffset, lw);
+                const pad = cur.vClass === 'motor' || lead.vClass === 'motor' ? 0.06 : 0.25;
+                if (Math.abs(curLat - leadLat) < (curEffW + effClearanceWidth(lead)) * 0.5 + pad) {
+                  blockingLead = lead;
+                  break;
+                }
               }
-              prevAllowed = cur.distanceAlongPath;
-              lastLead = cur;
+              if (blockingLead) {
+                const halfSum = (blockingLead.length + cur.length) * 0.5;
+                const maxDist = blockingLead.distanceAlongPath - (halfSum + cur.minGap);
+                if (cur.distanceAlongPath > maxDist) {
+                  if (maxDist < 0) {
+                    overflowIds.add(cur.id);
+                    continue;
+                  }
+                  cur.distanceAlongPath = maxDist;
+                  cur.speed = Math.min(cur.speed, blockingLead.speed);
+                  const pt = sampleWithLateralOffset(cur.path, cur.distanceAlongPath, cur.lateralOffset, 0, cur.speed);
+                  cur.x = pt.x; cur.y = pt.y; cur.heading = pt.heading;
+                } else {
+                  const gap = blockingLead.distanceAlongPath - cur.distanceAlongPath - halfSum;
+                  const safeSpeed = Math.sqrt(Math.max(0, blockingLead.speed * blockingLead.speed + 2 * 4.5 * Math.max(0, gap - cur.minGap)));
+                  cur.speed = Math.min(cur.speed, safeSpeed);
+                }
+              }
+              kept.push(cur);
             }
           }
         }
         if (overflowIds.size > 0) this.vehicles = this.vehicles.filter((v) => !overflowIds.has(v.id));
+
+        // Also de-overlap vehicles that already exited onto the same destArm when lanes/road shrink
+        const exitDropIds = new Set<number>();
+        for (const arm of ARM_ORDER) {
+          const exitedOnArm = this.vehicles
+            .filter((v) => v.destArm === arm && v.distanceAlongPath >= v.stopLineDist)
+            .sort((a, b) => b.distanceAlongPath - a.distanceAlongPath);
+          for (let i = 0; i < exitedOnArm.length; i++) {
+            const a = exitedOnArm[i];
+            if (exitDropIds.has(a.id)) continue;
+            for (let j = i + 1; j < exitedOnArm.length; j++) {
+              const b = exitedOnArm[j];
+              if (exitDropIds.has(b.id)) continue;
+              const aLat = getGlobalLat(a.laneIndex, a.lateralOffset, lw);
+              const bLat = getGlobalLat(b.laneIndex, b.lateralOffset, lw);
+              const minLatSep = (effClearanceWidth(a) + effClearanceWidth(b)) * 0.5 + 0.15;
+              if (
+                (a.originArm === b.originArm || (a.distanceAlongPath >= a.exitLineDist && b.distanceAlongPath >= b.exitLineDist)) &&
+                Math.abs(aLat - bLat) >= minLatSep
+              ) {
+                continue;
+              }
+              const minSep = (a.length + b.length) * 0.5 + 0.5;
+              if (Math.hypot(a.x - b.x, a.y - b.y) < minSep) {
+                exitDropIds.add(b.id);
+              }
+            }
+          }
+
+          const boxOnOriginArm = this.vehicles
+            .filter((v) => v.originArm === arm && v.distanceAlongPath >= v.stopLineDist && v.distanceAlongPath < v.exitLineDist)
+            .sort((a, b) => b.distanceAlongPath - a.distanceAlongPath);
+          for (let i = 0; i < boxOnOriginArm.length; i++) {
+            const a = boxOnOriginArm[i];
+            if (exitDropIds.has(a.id)) continue;
+            for (let j = i + 1; j < boxOnOriginArm.length; j++) {
+              const b = boxOnOriginArm[j];
+              if (exitDropIds.has(b.id)) continue;
+              const aLat = getGlobalLat(a.laneIndex, a.lateralOffset, lw);
+              const bLat = getGlobalLat(b.laneIndex, b.lateralOffset, lw);
+              const minLatSep = (effClearanceWidth(a) + effClearanceWidth(b)) * 0.5 + 0.15;
+              if (Math.abs(aLat - bLat) >= minLatSep) continue;
+              const minSep = (a.length + b.length) * 0.5 + 0.5;
+              if (Math.hypot(a.x - b.x, a.y - b.y) < minSep) {
+                exitDropIds.add(b.id);
+              }
+            }
+          }
+        }
+        if (exitDropIds.size > 0) this.vehicles = this.vehicles.filter((v) => !exitDropIds.has(v.id));
       }
     }
 
-    if (this.activeColor === 'green' && this.phaseRemaining > this.config.greenDuration) this.phaseRemaining = this.config.greenDuration;
+    const activeArmGreen = getArmGreenDuration(this.config, ARM_ORDER[this.activeArmIndex]);
+    if (this.activeColor === 'green' && this.phaseRemaining > activeArmGreen) this.phaseRemaining = activeArmGreen;
     else if (this.activeColor === 'yellow' && this.phaseRemaining > this.config.yellowDuration) this.phaseRemaining = this.config.yellowDuration;
     else if (this.isAllRed && this.phaseRemaining > this.config.allRedDuration) this.phaseRemaining = this.config.allRedDuration;
   }
@@ -231,18 +329,15 @@ export class TrafficSimulation {
 
     if (this.activeColor === 'green') {
       this.greenElapsed += dt;
-      if (this.config.adaptiveSignal) {
-        if (shouldExtendGreenPhase(this.vehicles, ARM_ORDER[this.activeArmIndex], this.phaseElapsed, this.config)) {
-          if (this.phaseRemaining <= 0.25) {
-            this.isGreenExtended = true;
-          }
-          this.phaseRemaining = Math.max(0.25, this.phaseRemaining);
-          return;
-        }
-      } else if (this.phaseRemaining > 0) {
+      const cutEarly =
+        this.config.adaptiveSignal &&
+        this.phaseRemaining > 0 &&
+        !shouldExtendGreenPhase(this.vehicles, ARM_ORDER[this.activeArmIndex], this.phaseElapsed, this.config);
+
+      if (this.phaseRemaining > 0 && !cutEarly) {
         return;
       }
-      this.isGreenExtended = false;
+
       this.activeColor = 'yellow';
       this.phaseRemaining = Math.max(0.5, this.config.yellowDuration);
       return;
@@ -251,48 +346,34 @@ export class TrafficSimulation {
     if (this.phaseRemaining > 0) return;
 
     const overflow = this.phaseRemaining;
-    if (this.activeColor === 'yellow' && !this.isAllRed) {
-      if (this.config.allRedDuration > 0.05) {
-        this.activeColor = 'red';
-        this.isAllRed = true;
-        this.allRedHoldElapsed = 0;
-        this.phaseRemaining = this.config.allRedDuration + overflow;
-        return;
-      } else if (this.isAnyVehicleInBox() && this.allRedHoldElapsed < 3.0) {
-        this.activeColor = 'red';
-        this.isAllRed = true;
-        this.allRedHoldElapsed += dt;
-        this.phaseRemaining = 0.2;
-        return;
-      }
-    }
-
-    if (this.isAllRed && this.isAnyVehicleInBox() && this.allRedHoldElapsed < 3.5) {
-      this.allRedHoldElapsed += dt;
-      this.phaseRemaining = 0.2;
+    if (this.activeColor === 'yellow' && !this.isAllRed && this.config.allRedDuration > 0.05) {
+      this.activeColor = 'red';
+      this.isAllRed = true;
+      this.phaseRemaining = this.config.allRedDuration + overflow;
       return;
     }
 
-    this.allRedHoldElapsed = 0;
-
+    const finishedArm = ARM_ORDER[this.activeArmIndex];
     this.phaseCounter += 1;
     this.currentCycleDuration += this.phaseElapsed;
     this.phaseHistory.unshift({
       phaseIndex: this.phaseCounter,
       cycleNumber: this.cycleNumber,
-      arm: ARM_ORDER[this.activeArmIndex],
+      arm: finishedArm,
       greenDuration: Math.round(this.greenElapsed * 10) / 10,
       exitedMotor: this.currentPhaseExited.motor,
       exitedCar: this.currentPhaseExited.car,
       exitedHeavy: this.currentPhaseExited.heavy,
       exitedTotal: this.currentPhaseExited.total,
+      queueAtStart: this.currentPhaseStartQueue,
+      queueAtEnd: this.countQueueForArm(finishedArm),
     });
-    if (this.phaseHistory.length > 24) this.phaseHistory.pop();
+    if (this.phaseHistory.length > 200) this.phaseHistory.pop();
     this.currentPhaseExited = { motor: 0, car: 0, heavy: 0, total: 0 };
 
     this.isAllRed = false;
     this.activeArmIndex = this.config.adaptiveSignal
-      ? pickNextArmAdaptive(this.vehicles, this.activeArmIndex, ARM_ORDER)
+      ? pickNextArmAdaptive(this.vehicles, this.activeArmIndex, ARM_ORDER, this.config)
       : (this.activeArmIndex + 1) % ARM_ORDER.length;
 
     this.phasesInCycle += 1;
@@ -307,7 +388,7 @@ export class TrafficSimulation {
         exitedTotal: this.currentCycleExited.total,
         avgQueue: Math.round(avgQ * 10) / 10,
       });
-      if (this.cycleHistory.length > 16) this.cycleHistory.pop();
+      if (this.cycleHistory.length > 60) this.cycleHistory.pop();
       this.cycleNumber += 1;
       this.phasesInCycle = 0;
       this.currentCycleExited = { motor: 0, car: 0, heavy: 0, total: 0 };
@@ -316,12 +397,13 @@ export class TrafficSimulation {
       this.currentCycleDuration = 0;
     }
 
+    const nextArm = ARM_ORDER[this.activeArmIndex];
     this.activeColor = 'green';
-    this.phaseRemaining = Math.max(1, this.config.greenDuration) + overflow;
+    this.phaseRemaining = getArmGreenDuration(this.config, nextArm) + overflow;
     this.phaseElapsed = 0;
     this.greenElapsed = 0;
-    this.isGreenExtended = false;
-    assignReactionWave(this.vehicles, ARM_ORDER[this.activeArmIndex], this.config.lanesPerDirection);
+    this.currentPhaseStartQueue = this.countQueueForArm(nextArm);
+    assignReactionWave(this.vehicles, nextArm, this.config.lanesPerDirection);
   }
 
   private pickTurnIntent(): TurnIntent {
@@ -389,15 +471,23 @@ export class TrafficSimulation {
 
     let lateralOffset = 0;
     if (vClass === 'motor' && lw >= 3.1) {
-      if (turn === 'left') lateralOffset = this.rng() < 0.5 ? lw * 0.22 : 0;
-      else if (turn === 'right') lateralOffset = this.rng() < 0.5 ? -lw * 0.22 : 0;
-      else lateralOffset = this.rng() < 0.5 ? -lw * 0.27 : lw * 0.27;
+      if (turn === 'left') lateralOffset = this.rng() < 0.9 ? lw * 0.24 : lw * 0.1;
+      else if (turn === 'right') lateralOffset = this.rng() < 0.9 ? -lw * 0.24 : -lw * 0.1;
+      else if (this.config.motorSwarmMode) {
+        const cols = [-0.34 * lw, -0.11 * lw, 0.11 * lw, 0.34 * lw];
+        lateralOffset = cols[Math.floor(this.rng() * cols.length)];
+      } else {
+        lateralOffset = this.rng() < 0.5 ? -lw * 0.27 : lw * 0.27;
+      }
     } else if (vClass === 'car') {
       lateralOffset = (this.rng() - 0.5) * 0.16;
     }
 
     const myEffW = vClass === 'motor' ? 0.72 : spec.width;
-    const minClearance = spec.length + spec.minGap + 4.5;
+    const minClearance =
+      this.config.motorSwarmMode && vClass === 'motor'
+        ? spec.length + spec.minGap + 1.8
+        : spec.length + spec.minGap + 4.5;
     const armCandidates = this.pickWeightedArmOrder();
 
     for (const arm of armCandidates) {
@@ -415,7 +505,7 @@ export class TrafficSimulation {
             blocked = true;
             break;
           }
-          if (other.distanceAlongPath < 14) nearestAheadSpeed = Math.min(nearestAheadSpeed, other.speed);
+          if (other.distanceAlongPath < 25) nearestAheadSpeed = Math.min(nearestAheadSpeed, other.speed);
         }
       }
       if (blocked) continue;
@@ -447,6 +537,14 @@ export class TrafficSimulation {
         profile,
         reactionTimer: 0,
         prevAccel: 0,
+        boxWaitTime: 0,
+        willRunRed:
+          vClass === 'motor'
+            ? profile === 'aggressive' ? this.rng() < 0.85 : profile === 'normal' ? this.rng() < 0.50 : this.rng() < 0.15
+            : vClass === 'car'
+            ? profile === 'aggressive' ? this.rng() < 0.65 : profile === 'normal' ? this.rng() < 0.25 : this.rng() < 0.05
+            : profile === 'aggressive' ? this.rng() < 0.20 : profile === 'normal' ? this.rng() < 0.05 : false,
+        yellowCommitted: false,
         laneChangeDir: null,
         ...spec,
         speed: initialSpeed,
@@ -470,42 +568,67 @@ export class TrafficSimulation {
     return this.isAllRed ? 'red' : ARM_ORDER[this.activeArmIndex] === arm ? this.activeColor : 'red';
   }
 
-  private isAnyVehicleInBox(): boolean {
-    return this.vehicles.some(
-      (o) => o.distanceAlongPath + o.length * 0.5 > o.stopLineDist + 0.5 && o.distanceAlongPath - o.length * 0.5 < o.exitLineDist
-    );
+  private isBoxOccupiedByOtherArm(arm: ArmId): boolean {
+    for (const other of this.vehicles) {
+      if (other.originArm === arm) continue;
+      if (
+        other.distanceAlongPath + other.length * 0.5 > other.stopLineDist + 0.5 &&
+        other.distanceAlongPath - other.length * 0.5 < other.exitLineDist - 0.5
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
-  private isBoxOccupiedByOtherArm(myArm: ArmId): boolean {
-    return this.vehicles.some(
-      (o) =>
-        o.originArm !== myArm &&
-        o.distanceAlongPath + o.length * 0.5 > o.stopLineDist + 0.5 &&
-        o.distanceAlongPath - o.length * 0.5 < o.exitLineDist
-    );
+  private hasLeftTurnMergeConflict(v: SimVehicle): boolean {
+    for (const other of this.vehicles) {
+      if (other.id === v.id) continue;
+      if (other.originArm === v.originArm) {
+        // Wait if a same-lane vehicle ahead is still entering/clearing the stop-line zone
+        if (
+          other.laneIndex === v.laneIndex &&
+          other.distanceAlongPath > v.distanceAlongPath &&
+          other.distanceAlongPath < other.stopLineDist + 6.0
+        ) {
+          return true;
+        }
+        continue;
+      }
+      if (other.destArm !== v.destArm) continue;
+      const inOrExitingMergeZone =
+        other.distanceAlongPath + other.length * 0.5 > other.stopLineDist - 2.0 &&
+        other.distanceAlongPath - other.length * 0.5 < other.exitLineDist + 4.0;
+      if (inOrExitingMergeZone) return true;
+      const otherLight = this.getArmLight(other.originArm);
+      if (otherLight !== 'red' && other.distanceAlongPath < other.stopLineDist) {
+        const otherDistToStop = other.stopLineDist - (other.distanceAlongPath + other.length * 0.5);
+        if (otherDistToStop < Math.max(8.0, other.speed * 1.8)) return true;
+      }
+    }
+    return false;
   }
 
-  /** Indonesian dilemma-zone behavior: majority of motorcycles (75-85%) and cars (60-70%) push through yellow when close/moving. */
   private shouldStopForYellow(v: SimVehicle, distToStop: number): boolean {
-    if (distToStop > v.speed * Math.max(0.1, this.phaseRemaining)) return true;
-    const comfortableStopDist = (v.speed * v.speed) / (2 * v.comfortDecel * (v.profile === 'aggressive' ? 1.65 : 1.3));
-    if (distToStop <= Math.max(4.0, comfortableStopDist * 0.65)) return false;
-
-    const bucket = v.id % 10;
-    if (v.vClass === 'motor') {
-      if (v.speed < 3.5 && distToStop > 4.0 && this.phaseRemaining < 1.0) return true;
-      if (distToStop > 24 && (v.profile === 'cautious' || bucket < 2)) return true;
-      if (v.profile === 'cautious' && distToStop > 16 && v.speed < 7.0) return true;
+    if (v.yellowCommitted) return false;
+    if (v.willRunRed && ((distToStop < 44.0 && v.speed > 1.5) || distToStop < 12.0)) {
+      v.yellowCommitted = true;
       return false;
     }
-    if (v.vClass === 'car') {
-      if (v.speed < 3.5 && distToStop > 5.0 && this.phaseRemaining < 1.0) return true;
-      if (distToStop > 24 && comfortableStopDist < distToStop) return true;
-      if (v.profile === 'cautious' && distToStop > 17 && comfortableStopDist * 1.15 < distToStop) return true;
-      if (bucket < 3 && distToStop > 18 && comfortableStopDist < distToStop) return true;
+    if (v.vClass !== 'heavy' && v.profile !== 'cautious' && distToStop < v.speed * (this.phaseRemaining + 0.45)) {
+      v.yellowCommitted = true;
       return false;
     }
-    return distToStop > 18 && comfortableStopDist < distToStop;
+    const reactTime = v.profile === 'aggressive' ? 0.65 : v.profile === 'normal' ? 0.8 : 0.95;
+    const brakeMult = v.profile === 'aggressive' ? 0.85 : v.profile === 'normal' ? 1.0 : 1.2;
+    const comfortableStopDist =
+      v.speed * reactTime + (v.speed * v.speed) / (2 * v.comfortDecel * brakeMult);
+    // If already too close to stop comfortably, commit to clearing yellow instead of impossible hard brake
+    if (distToStop < comfortableStopDist * 0.85) {
+      v.yellowCommitted = true;
+      return false;
+    }
+    return distToStop >= comfortableStopDist;
   }
 
   private updateVehicles(dt: number): void {
@@ -519,61 +642,61 @@ export class TrafficSimulation {
     for (const v of this.vehicles) {
       if (v.reactionTimer > 0) v.reactionTimer = Math.max(0, v.reactionTimer - dt);
       const light = this.getArmLight(v.originArm);
+      if (light === 'green') v.yellowCommitted = false;
 
       let desiredV = v.maxSpeed * v.speedFactor * widthSpeedFactor;
-      if (v.distanceAlongPath >= v.stopLineDist - 4 && v.distanceAlongPath <= v.exitLineDist) {
+      if (v.distanceAlongPath >= v.stopLineDist - 14 && v.distanceAlongPath <= v.exitLineDist) {
         const R = getTurnRadius(v.turn, v.laneIndex, this.config);
-        if (Number.isFinite(R)) desiredV = Math.min(desiredV, Math.max(4.0, Math.sqrt((v.vClass === 'heavy' ? 1.35 : 2.2) * R)));
+        if (Number.isFinite(R)) {
+          const curveV = Math.max(4.0, Math.sqrt((v.vClass === 'heavy' ? 1.35 : 2.2) * R));
+          if (v.distanceAlongPath < v.stopLineDist) {
+            const ramp = Math.max(0, Math.min(1, (v.stopLineDist - v.distanceAlongPath) / 14));
+            desiredV = Math.min(desiredV, curveV + (desiredV - curveV) * ramp);
+          } else {
+            desiredV = Math.min(desiredV, curveV);
+          }
+        }
       }
 
       let { nearestGap, leadSpeed, blockingLeader, isSqueezingPast } = findBlockingLeader(v, this.vehicles, lw);
 
-      // Watchdog & mutual-lock tie-breaker for vehicles stuck inside/straddling the intersection box
-      const inBox = v.distanceAlongPath + v.length * 0.5 > v.stopLineDist + 0.2 && !v.hasExitedIntersection;
-      let stuckTime = 0;
-      if (inBox && v.speed < 0.35) {
-        stuckTime = (this.boxStuckTimers.get(v.id) ?? 0) + dt;
-        this.boxStuckTimers.set(v.id, stuckTime);
-      } else {
-        this.boxStuckTimers.delete(v.id);
-      }
-
-      if (inBox && blockingLeader && blockingLeader.originArm !== v.originArm) {
-        const mutualTieBreak =
-          stuckTime > 1.5 &&
-          v.speed < 0.4 &&
-          blockingLeader.speed < 0.4 &&
-          (v.exitLineDist - v.distanceAlongPath < blockingLeader.exitLineDist - blockingLeader.distanceAlongPath ||
-            (Math.abs(v.exitLineDist - v.distanceAlongPath - (blockingLeader.exitLineDist - blockingLeader.distanceAlongPath)) < 0.5 &&
-              v.id < blockingLeader.id));
-        const watchdogClear = stuckTime > 2.5 && blockingLeader.destArm !== v.destArm;
-        if (mutualTieBreak || watchdogClear) {
-          nearestGap = Infinity;
-          leadSpeed = desiredV;
-          blockingLeader = null;
-          desiredV = Math.max(desiredV, 4.5);
-        }
-      }
-
       let stoppingForSignal = false;
+      let canLTOR = false;
       const distToStop = v.stopLineDist - (v.distanceAlongPath + v.length * 0.5);
       if (distToStop > 0) {
         const stopForYellow = light === 'yellow' && this.shouldStopForYellow(v, distToStop);
-        if ((light === 'red' || stopForYellow) && distToStop < nearestGap) {
+        if (light === 'yellow' && !stopForYellow && v.turn === 'straight') {
+          desiredV *= 1.2;
+        }
+        canLTOR =
+          this.config.leftTurnOnRed &&
+          v.turn === 'left' &&
+          light === 'red' &&
+          !this.isBoxOccupiedByOtherArm(v.originArm) &&
+          !this.hasLeftTurnMergeConflict(v);
+        if (canLTOR && distToStop < 12) {
+          desiredV = Math.min(desiredV, 6.0);
+        }
+        const canRunEarlyRed =
+          light === 'red' &&
+          this.isAllRed &&
+          v.originArm === ARM_ORDER[this.activeArmIndex] &&
+          Boolean(v.willRunRed || v.yellowCommitted) &&
+          distToStop < 8.5 &&
+          (v.speed > 2.0 || distToStop < 4.0) &&
+          distToStop / Math.max(2.0, v.speed) < this.phaseRemaining &&
+          !this.isBoxOccupiedByOtherArm(v.originArm);
+        const minBoxHoldDist = (v.speed * v.speed) / (2 * v.comfortDecel * 1.4);
+        const holdForOccupiedBox =
+          light === 'green' &&
+          this.phaseElapsed < 4.0 &&
+          distToStop < 16.0 &&
+          distToStop >= minBoxHoldDist &&
+          this.isBoxOccupiedByOtherArm(v.originArm);
+        if (((light === 'red' && !canRunEarlyRed && !canLTOR) || stopForYellow || holdForOccupiedBox) && distToStop < nearestGap) {
           nearestGap = Math.max(0.1, distToStop);
           leadSpeed = 0;
           stoppingForSignal = true;
-        }
-      }
-      // Creep forward slowly when green & previous arm is still clearing the intersection box
-      if (light === 'green' && distToStop > -2.5 && distToStop < 16 && this.isBoxOccupiedByOtherArm(v.originArm)) {
-        desiredV = Math.min(desiredV, distToStop > 1.5 ? 3.2 : 1.8);
-        if (distToStop <= 1.5 && distToStop > -2.0) {
-          const creepBarrier = distToStop + 0.4;
-          if (creepBarrier > 0 && creepBarrier < nearestGap) {
-            nearestGap = Math.max(0.1, creepBarrier);
-            leadSpeed = 0;
-          }
         }
       }
 
@@ -613,8 +736,8 @@ export class TrafficSimulation {
 
       // Smooth urban IDM with continuous brake curve & jerk limiting + responsive launch
       let nextSpeed = v.speed;
-      if (v.reactionTimer > 0 && light === 'green' && v.speed < 0.35) {
-        nextSpeed = Math.max(0, v.speed - 0.8 * dt);
+      if (v.reactionTimer > 0 && light === 'green' && v.speed < 0.05) {
+        nextSpeed = 0;
         v.prevAccel = 0;
       } else {
         if (v.speed < 0.15) v.prevAccel = Math.max(0, v.prevAccel ?? 0);
@@ -623,32 +746,42 @@ export class TrafficSimulation {
         const headway = (v.vClass === 'motor' && v.speed < 4.5 ? 0.5 : v.timeHeadway) * widthHeadwayFactor;
         const dv = v.speed - leadSpeed;
         const sStar = minGap + Math.max(0, v.speed * headway + (v.speed * dv) / (2 * Math.sqrt(effAccel * v.comfortDecel)));
-        const rawAccel = effAccel * (1 - Math.pow(v.speed / Math.max(1, desiredV), 4) - (Number.isFinite(nearestGap) ? Math.pow(sStar / Math.max(0.05, nearestGap), 2) : 0));
+        const freeRatioPow4 = Math.min(8, Math.pow(v.speed / Math.max(1, desiredV), 4));
+        const rawAccel = effAccel * (1 - freeRatioPow4 - (Number.isFinite(nearestGap) ? Math.pow(sStar / Math.max(0.05, nearestGap), 2) : 0));
         // Responsive launch from standstill when green and gap is open
         const canLaunch =
           v.speed < 2.5 &&
-          nearestGap >= minGap * 1.05 &&
-          (light === 'green' || v.distanceAlongPath >= v.stopLineDist) &&
-          (leadSpeed > 0.1 || nearestGap > minGap * 1.8) &&
-          !(leadSpeed < 0.5 && nearestGap < minGap * 1.35);
+          nearestGap >= minGap * 0.9 &&
+          (light === 'green' || v.distanceAlongPath >= v.stopLineDist || canLTOR) &&
+          (leadSpeed > 0.05 || nearestGap > minGap * 1.2) &&
+          (rawAccel > 0 || nearestGap > minGap * 2.5);
         const launchBoost = canLaunch ? effAccel * (0.78 * (1 - v.speed / 2.8)) : -Infinity;
         const closeT = Number.isFinite(nearestGap) ? Math.max(0, Math.min(1, (20 - nearestGap) / 16)) : 0;
-        const maxEmergencyDecel = v.vClass === 'motor' ? 7.5 : 5.5;
+        const maxEmergencyDecel = v.vClass === 'motor' ? 6.8 : 5.2;
         const brakeLimit = -(v.comfortDecel + (maxEmergencyDecel - v.comfortDecel) * closeT);
-        const hardBrakeLimit = nearestGap < minGap || stoppingForSignal ? -Math.max(maxEmergencyDecel * 1.6, 10.0) : brakeLimit;
+        const hardBrakeLimit =
+          nearestGap < minGap * 0.65 && leadSpeed < v.speed - 0.5
+            ? -Math.max(maxEmergencyDecel * 1.4, 8.8)
+            : brakeLimit;
         const targetAccel = Math.max(launchBoost, Math.max(hardBrakeLimit, Math.min(effAccel, rawAccel)));
 
         const prevA = v.prevAccel ?? 0;
+        const criticalStop = nearestGap < minGap * 0.9;
+        const imminentStop = nearestGap < minGap * 1.2 || (stoppingForSignal && nearestGap < minGap * 1.5);
+        const maxBrakeJerk = imminentStop ? -55.0 * dt : -14.0 * dt;
         const smoothedAccel =
-          targetAccel < prevA && (targetAccel <= -v.comfortDecel || nearestGap < minGap * 3.0 || stoppingForSignal)
+          targetAccel < prevA && criticalStop
             ? targetAccel
-            : prevA + Math.max(-12.0 * dt, Math.min(18.0 * dt, targetAccel - prevA));
+            : prevA + Math.max(maxBrakeJerk, Math.min(18.0 * dt, targetAccel - prevA));
         v.prevAccel = smoothedAccel;
         const candidateSpeed = Math.max(0, v.speed + smoothedAccel * dt);
         nextSpeed =
           candidateSpeed > desiredV * 1.05
             ? Math.min(candidateSpeed, Math.max(desiredV * 1.05, v.speed - v.comfortDecel * dt))
             : candidateSpeed;
+        if (nearestGap <= 0.1 && nextSpeed > leadSpeed) {
+          nextSpeed = Math.max(0, leadSpeed);
+        }
       }
 
       decisions.push({ v, nextSpeed, nextLat, nextLatVel });
@@ -659,9 +792,21 @@ export class TrafficSimulation {
       v.speed = nextSpeed; v.lateralOffset = nextLat; v.lateralVelocity = nextLatVel;
       v.distanceAlongPath += v.speed * dt;
       if (v.speed < 0.5 && v.distanceAlongPath < v.stopLineDist) v.waitingTime += dt;
+      if (v.distanceAlongPath + v.length * 0.5 > v.stopLineDist + 0.05 && !v.hasExitedIntersection) {
+        if (v.speed < 0.5) {
+          v.boxWaitTime = (v.boxWaitTime ?? 0) + dt;
+        } else if (v.speed >= 1.5) {
+          v.boxWaitTime = 0;
+        }
+      } else {
+        v.boxWaitTime = 0;
+      }
       if (!v.hasExitedIntersection && v.distanceAlongPath >= v.exitLineDist) {
         v.hasExitedIntersection = true;
         this.totalExitedAllTime += 1;
+        this.totalExitedWaitTime += v.waitingTime;
+        this.exitedWaitCount += 1;
+        if (v.waitingTime > this.maxWaitTimeObserved) this.maxWaitTimeObserved = v.waitingTime;
         this.currentPhaseExited[v.vClass] += 1; this.currentPhaseExited.total += 1;
         this.currentCycleExited[v.vClass] += 1; this.currentCycleExited.total += 1;
       }
@@ -672,7 +817,6 @@ export class TrafficSimulation {
       }
     }
     if (toRemove.size > 0) {
-      for (const id of toRemove) this.boxStuckTimers.delete(id);
       this.vehicles = this.vehicles.filter((v) => !toRemove.has(v.id));
     }
   }
@@ -681,17 +825,26 @@ export class TrafficSimulation {
     return this.vehicles.filter((v) => v.distanceAlongPath < v.stopLineDist && v.speed < QUEUE_SPEED_THRESHOLD).length;
   }
 
+  private countQueueForArm(arm: ArmId): number {
+    return this.vehicles.filter(
+      (v) => v.originArm === arm && v.distanceAlongPath < v.stopLineDist && v.speed < QUEUE_SPEED_THRESHOLD
+    ).length;
+  }
+
   public getSnapshot(): SimSnapshot {
     const queueByArm: Record<ArmId, number> = { north: 0, east: 0, south: 0, west: 0 };
     let activeQueueCount = 0;
+    let boxStuckCount = 0;
     for (const v of this.vehicles) {
       if (v.distanceAlongPath < v.stopLineDist && v.speed < QUEUE_SPEED_THRESHOLD) { queueByArm[v.originArm] += 1; activeQueueCount += 1; }
+      if (v.distanceAlongPath + v.length * 0.5 > v.stopLineDist + 0.05 && !v.hasExitedIntersection && (v.boxWaitTime ?? 0) >= 2.0) {
+        boxStuckCount += 1;
+      }
     }
     const activeArm = ARM_ORDER[this.activeArmIndex];
-    const adaptiveTarget =
-      this.config.adaptiveSignal && this.activeColor === 'green'
-        ? computeAdaptiveGreenTarget(this.vehicles, activeArm, this.config)
-        : undefined;
+    const avgWaitTime = this.exitedWaitCount > 0 ? +(this.totalExitedWaitTime / this.exitedWaitCount).toFixed(1) : 0;
+    const maxWaitTime = +this.maxWaitTimeObserved.toFixed(1);
+    const throughputPerHour = this.simTime > 1 ? Math.round((this.totalExitedAllTime / this.simTime) * 3600) : 0;
     return {
       config: { ...this.config },
       signal: {
@@ -700,16 +853,18 @@ export class TrafficSimulation {
         phaseRemaining: Math.max(0, this.phaseRemaining),
         phaseElapsed: this.phaseElapsed,
         cycleNumber: this.cycleNumber,
-        isExtended: this.isGreenExtended,
-        adaptiveTarget,
         armLights: { north: this.getArmLight('north'), east: this.getArmLight('east'), south: this.getArmLight('south'), west: this.getArmLight('west') },
       },
-      vehicles: this.vehicles.map(({ path: _p, targetLateralOffset: _t, lateralVelocity: _lv, speedFactor: _sf, accelFactor: _af, profile: _pr, reactionTimer: _rt, ...rest }) => rest),
+      vehicles: this.vehicles.map(({ path: _p, targetLateralOffset: _t, lateralVelocity: _lv, speedFactor: _sf, accelFactor: _af, profile: _pr, reactionTimer: _rt, boxWaitTime: _bw, willRunRed: _wr, ...rest }) => rest),
       stats: {
         simTime: this.simTime,
         currentPhaseExited: { ...this.currentPhaseExited },
         currentCycleExited: { ...this.currentCycleExited },
         totalExitedAllTime: this.totalExitedAllTime,
+        avgWaitTime,
+        maxWaitTime,
+        throughputPerHour,
+        boxStuckCount,
         activeQueueCount,
         queueByArm,
         phaseHistory: [...this.phaseHistory],

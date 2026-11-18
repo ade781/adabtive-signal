@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { getEffectiveRoadWidth } from '../engine/geometry';
 import { ArmId, SignalColor, SimConfig, SimSnapshot, Vehicle } from '../engine/types';
 import { getLoadedAsset, onAssetsLoaded, preloadSimulationAssets } from './assetLoader';
@@ -50,19 +50,16 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = ({
   }, []);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
     const container = containerRef.current;
-    if (!canvas || !container) return;
+    if (!container) return;
     const resize = () => {
       const rect = container.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
       const w = Math.max(1, Math.floor(rect.width));
       const h = Math.max(1, Math.floor(rect.height));
-      canvas.width = Math.floor(w * dpr);
-      canvas.height = Math.floor(h * dpr);
-      canvas.style.width = `${w}px`;
-      canvas.style.height = `${h}px`;
-      setSize({ width: w, height: h, dpr });
+      setSize((prev) =>
+        prev.width === w && prev.height === h && prev.dpr === dpr ? prev : { width: w, height: h, dpr }
+      );
     };
     resize();
     const ro = new ResizeObserver(resize);
@@ -83,14 +80,30 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = ({
     [halfRoad, halfBox]
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (typeof document === 'undefined') return;
+    const pixelW = Math.floor(size.width * size.dpr);
+    const pixelH = Math.floor(size.height * size.dpr);
+
+    const canvas = canvasRef.current;
+    if (canvas) {
+      if (canvas.width !== pixelW || canvas.height !== pixelH) {
+        canvas.width = pixelW;
+        canvas.height = pixelH;
+      }
+      canvas.style.width = `${size.width}px`;
+      canvas.style.height = `${size.height}px`;
+    }
+
     if (!staticCanvasRef.current) staticCanvasRef.current = document.createElement('canvas');
     const off = staticCanvasRef.current;
-    off.width = Math.floor(size.width * size.dpr);
-    off.height = Math.floor(size.height * size.dpr);
+    off.width = pixelW;
+    off.height = pixelH;
     const ctx = off.getContext('2d');
-    if (ctx) drawStaticRoadLayer(ctx, size.width, size.height, size.dpr, zoom, showGrid, halfRoad, halfBox, config);
+    if (ctx) {
+      ctx.clearRect(0, 0, pixelW, pixelH);
+      drawStaticRoadLayer(ctx, size.width, size.height, size.dpr, zoom, showGrid, halfRoad, halfBox, config);
+    }
   }, [size, zoom, showGrid, halfRoad, halfBox, config, assetVer]);
 
   const drawFrame = useCallback(() => {
@@ -101,6 +114,7 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = ({
 
     const { width, height, dpr } = size;
     ctx.save();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (staticCanvasRef.current) {
       ctx.drawImage(staticCanvasRef.current, 0, 0);
     }
@@ -151,13 +165,16 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = ({
       const sy = activeSig.arm === 'north' || activeSig.arm === 'west'
         ? cy + activeSig.y * pxPerMeter - Math.max(18, 4.0 * pxPerMeter)
         : cy + activeSig.y * pxPerMeter + Math.max(16, 3.8 * pxPerMeter);
-      const label = `${Math.ceil(signal.phaseRemaining)}s${signal.isExtended ? '+' : ''}`;
+      const label = `${Math.ceil(Math.max(0, signal.phaseRemaining))}s`;
       ctx.font = '700 11px "JetBrains Mono", monospace';
       const tw = ctx.measureText(label).width + 10;
       ctx.fillStyle = '#0F172A';
+      ctx.strokeStyle = SIGNAL_COLORS[signal.activeColor];
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.roundRect(sx - tw / 2, sy - 8, tw, 17, 4);
       ctx.fill();
+      ctx.stroke();
       ctx.fillStyle = '#FFFFFF';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -171,8 +188,12 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = ({
       drawVectorCompassFallback(ctx, width - 36, 36);
     }
 
-    const barPx = 10 * pxPerMeter;
-    if (barPx > 18 && barPx < 200) {
+    const scaleMeters = [10, 5, 2, 1, 20, 50].find((m) => {
+      const px = m * pxPerMeter;
+      return px > 18 && px < 200;
+    });
+    if (scaleMeters !== undefined) {
+      const barPx = scaleMeters * pxPerMeter;
       const bx = 16, by = height - 18;
       ctx.strokeStyle = '#0F172A';
       ctx.lineWidth = 2;
@@ -183,31 +204,63 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = ({
       ctx.font = '600 11px "JetBrains Mono", monospace';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'alphabetic';
-      ctx.fillText('10 m · LHT (ID)', bx, by - 7);
+      ctx.fillText(`${scaleMeters} m · LHT (ID)`, bx, by - 7);
     }
     ctx.restore();
   }, [size, zoom, halfBox, config.roadLength, sigPositions, snapshotRef]);
 
+  const drawFrameRef = useRef(drawFrame);
+  drawFrameRef.current = drawFrame;
+
   useEffect(() => {
-    if (!running) {
-      drawFrame();
-      return;
-    }
+    if (!running) return;
 
     let rafId = 0;
     const tick = () => {
-      drawFrame();
+      drawFrameRef.current();
       rafId = requestAnimationFrame(tick);
     };
     rafId = requestAnimationFrame(tick);
     return () => {
       cancelAnimationFrame(rafId);
     };
+  }, [running]);
+
+  useEffect(() => {
+    if (!running) {
+      drawFrameRef.current();
+    }
   }, [running, drawTick, zoom, showGrid, size, assetVer, config, drawFrame]);
 
+  const showHudPill = Boolean(
+    config.scenarioName || config.leftTurnOnRed || config.motorBoxEnabled || config.hasMedian
+  );
+
   return (
-    <div ref={containerRef} className="relative w-full h-full overflow-hidden bg-slate-100 rounded-lg border border-slate-200">
+    <div ref={containerRef} className="relative w-full h-full overflow-hidden bg-[#EDF2E7] rounded-lg border border-slate-200">
       <canvas ref={canvasRef} className="block w-full h-full" />
+      {showHudPill && (
+        <div className="pointer-events-none absolute top-3 left-3 flex flex-wrap items-center gap-1.5 rounded-lg border border-slate-200/90 bg-white/95 px-2.5 py-1.5 shadow-sm">
+          {config.scenarioName && (
+            <span className="text-[11px] font-semibold text-slate-800">{config.scenarioName}</span>
+          )}
+          {config.leftTurnOnRed && (
+            <span className="rounded bg-emerald-50 px-1.5 py-0.5 font-mono text-[10px] font-bold text-emerald-700 ring-1 ring-inset ring-emerald-600/20">
+              LTOR
+            </span>
+          )}
+          {config.motorBoxEnabled && (
+            <span className="rounded bg-rose-50 px-1.5 py-0.5 font-mono text-[10px] font-bold text-rose-700 ring-1 ring-inset ring-rose-600/20">
+              RHK
+            </span>
+          )}
+          {config.hasMedian && (
+            <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-bold text-slate-700 ring-1 ring-inset ring-slate-600/20">
+              Median
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 };

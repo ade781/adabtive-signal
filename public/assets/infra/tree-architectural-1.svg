@@ -1,25 +1,39 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none">
-  <!-- Soft architectural ground shadow -->
-  <circle cx="68" cy="68" r="46" fill="#0F172A" fill-opacity="0.06"/>
+  <defs>
+    <radialGradient id="ta1-outer" cx="40%" cy="38%" r="60%">
+      <stop offset="0%" stop-color="#22C55E"/>
+      <stop offset="65%" stop-color="#15803D"/>
+      <stop offset="100%" stop-color="#14532D"/>
+    </radialGradient>
+    <radialGradient id="ta1-mid" cx="38%" cy="36%" r="58%">
+      <stop offset="0%" stop-color="#4ADE80"/>
+      <stop offset="70%" stop-color="#16A34A"/>
+      <stop offset="100%" stop-color="#166534"/>
+    </radialGradient>
+  </defs>
 
-  <!-- Planter / tree pit ring -->
-  <circle cx="64" cy="64" r="48" stroke="#CBD5E1" stroke-width="1" stroke-dasharray="4 4"/>
+  <!-- Soft Tropical Ground Shadow (Sun from Top-Left) -->
+  <circle cx="69" cy="70" r="45" fill="#0F172A" fill-opacity="0.22"/>
 
-  <!-- Outer canopy (muted sage green) -->
-  <circle cx="64" cy="64" r="42" fill="#CAD2C5" fill-opacity="0.75" stroke="#52796F" stroke-width="1.5"/>
+  <!-- Tree Pit / Planter Ring (Bak Tanaman) -->
+  <circle cx="64" cy="64" r="48" stroke="#94A3B8" stroke-width="1" stroke-dasharray="4 4"/>
 
-  <!-- Mid canopy architectural lobes -->
-  <path d="M64 26 C81 26 95 36 99 52 C103 68 96 86 82 95 C68 104 49 101 38 90 C27 79 25 60 33 45 C40 32 52 26 64 26 Z" fill="#A3B18A" fill-opacity="0.65" stroke="#52796F" stroke-width="1"/>
+  <!-- Outer Organic Tropical Canopy (Trembesi / Angsana) -->
+  <path d="M64 18 C82 18 98 28 105 44 C112 60 107 82 94 95 C81 108 58 111 41 101 C24 91 16 70 21 50 C26 30 44 18 64 18 Z" fill="url(#ta1-outer)" stroke="#052E16" stroke-width="1.2"/>
 
-  <!-- Inner crown -->
-  <circle cx="64" cy="64" r="22" fill="#84A98C" fill-opacity="0.7" stroke="#354F52" stroke-width="1"/>
+  <!-- Mid Foliage Lobes -->
+  <path d="M62 27 C76 26 91 35 95 49 C99 63 93 80 80 89 C67 98 48 96 38 85 C28 74 28 55 36 42 C43 31 52 28 62 27 Z" fill="url(#ta1-mid)" fill-opacity="0.92"/>
 
-  <!-- Architectural branch crosshairs (CAD plan style) -->
-  <line x1="64" y1="36" x2="64" y2="92" stroke="#354F52" stroke-width="0.9" stroke-opacity="0.55"/>
-  <line x1="36" y1="64" x2="92" y2="64" stroke="#354F52" stroke-width="0.9" stroke-opacity="0.55"/>
-  <line x1="45" y1="45" x2="83" y2="83" stroke="#354F52" stroke-width="0.75" stroke-opacity="0.4"/>
-  <line x1="83" y1="45" x2="45" y2="83" stroke="#354F52" stroke-width="0.75" stroke-opacity="0.4"/>
+  <!-- Sunlit Upper Crown Clusters -->
+  <circle cx="52" cy="48" r="16" fill="#4ADE80" fill-opacity="0.8"/>
+  <circle cx="72" cy="54" r="14" fill="#22C55E" fill-opacity="0.85"/>
+  <circle cx="58" cy="70" r="15" fill="#16A34A" fill-opacity="0.85"/>
+  <circle cx="50" cy="46" r="8" fill="#86EFAC" fill-opacity="0.75"/>
 
-  <!-- Trunk center point -->
-  <circle cx="64" cy="64" r="4.5" fill="#52796F" stroke="#1E293B" stroke-width="1.25"/>
+  <!-- Subtle Inner Branch Hints -->
+  <g stroke="#14532D" stroke-width="1.2" stroke-opacity="0.45" stroke-linecap="round">
+    <line x1="64" y1="64" x2="48" y2="44"/>
+    <line x1="64" y1="64" x2="82" y2="50"/>
+    <line x1="64" y1="64" x2="54" y2="84"/>
+  </g>
 </svg>

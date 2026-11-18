@@ -1,35 +1,76 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 45 112" width="45" height="112" fill="none">
-  <!-- Side Mirrors -->
-  <rect x="1.5" y="33" width="3.5" height="7" rx="1.5" fill="#1E293B" stroke="#0F172A" stroke-width="0.9"/>
-  <rect x="40" y="33" width="3.5" height="7" rx="1.5" fill="#1E293B" stroke="#0F172A" stroke-width="0.9"/>
+  <defs>
+    <filter id="csn-shadow" x="-20%" y="-10%" width="140%" height="122%">
+      <feDropShadow dx="1" dy="2.5" stdDeviation="1.8" flood-color="#020617" flood-opacity="0.32"/>
+    </filter>
+    <linearGradient id="csn-body" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="22%" stop-color="#1E3A8A"/>
+      <stop offset="50%" stop-color="#2563EB" stop-opacity="0.9"/>
+      <stop offset="78%" stop-color="#1E3A8A"/>
+      <stop offset="100%" stop-color="#0F172A"/>
+    </linearGradient>
+    <linearGradient id="csn-roof" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1E40AF"/>
+      <stop offset="100%" stop-color="#172554"/>
+    </linearGradient>
+    <linearGradient id="csn-glass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#020617"/>
+      <stop offset="55%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#1E293B"/>
+    </linearGradient>
+  </defs>
 
-  <!-- Main Chassis -->
-  <rect x="4.5" y="3" width="36" height="106" rx="8.5" fill="#1E293B" stroke="#0F172A" stroke-width="1.1"/>
+  <g filter="url(#csn-shadow)">
+    <!-- Side Mirrors -->
+    <path d="M4.8 33 L1.4 34 L1.4 39.5 L4.8 40 Z" fill="#1E3A8A" stroke="#020617" stroke-width="0.8"/>
+    <path d="M40.2 33 L43.6 34 L43.6 39.5 L40.2 40 Z" fill="#1E3A8A" stroke="#020617" stroke-width="0.8"/>
 
-  <!-- Subtle Hood & Trunk Architectural Lines -->
-  <path d="M11 10 L12.5 26 M34 10 L32.5 26" stroke="#334155" stroke-width="0.8" stroke-linecap="round"/>
-  <path d="M9.5 96 L35.5 96" stroke="#0F172A" stroke-width="0.8" stroke-linecap="round"/>
+    <!-- Main Chassis -->
+    <rect x="4.5" y="3" width="36" height="106" rx="8.5" fill="url(#csn-body)" stroke="#020617" stroke-width="1.1"/>
 
-  <!-- Windshield -->
-  <path d="M9.5 27.5 C15 25.5 30 25.5 35.5 27.5 L38 43.5 C30 42 15 42 7 43.5 Z" fill="#0F172A" stroke="#334155" stroke-width="0.75"/>
-  <!-- Windshield Specular Highlight -->
-  <path d="M12 29.5 L16 28.8 L13.5 40.5 L10 41 Z" fill="#334155" opacity="0.45"/>
+    <!-- Front Grille & Hood Creases -->
+    <rect x="16" y="3.5" width="13" height="2" rx="1" fill="#0F172A"/>
+    <path d="M10.5 9.5 L12.5 26 M34.5 9.5 L32.5 26" stroke="#60A5FA" stroke-opacity="0.35" stroke-width="0.9" stroke-linecap="round"/>
+    <path d="M18 11 L18.8 25 M27 11 L26.2 25" stroke="#0F172A" stroke-opacity="0.4" stroke-width="0.7" stroke-linecap="round"/>
 
-  <!-- Side Windows -->
-  <path d="M6.8 45.5 L8.6 46.5 L8.6 77.5 L6.8 79 Z" fill="#0F172A"/>
-  <path d="M38.2 45.5 L36.4 46.5 L36.4 77.5 L38.2 79 Z" fill="#0F172A"/>
+    <!-- Trunk Seam -->
+    <path d="M9.5 96.5 Q22.5 98 35.5 96.5" stroke="#020617" stroke-opacity="0.55" stroke-width="0.9" stroke-linecap="round"/>
 
-  <!-- Roof Panel -->
-  <rect x="9" y="44.5" width="27" height="33.5" rx="3.5" fill="#273549" stroke="#334155" stroke-width="0.8"/>
+    <!-- Windshield -->
+    <path d="M9.5 27.5 C15 25.2 30 25.2 35.5 27.5 L38 43.5 C30 42 15 42 7 43.5 Z" fill="url(#csn-glass)" stroke="#334155" stroke-width="0.75"/>
+    <!-- Windshield Specular Highlight & Wipers -->
+    <path d="M11.5 29.2 L16.5 28.4 L13.8 40.5 L9.8 41 Z" fill="#93C5FD" opacity="0.22"/>
+    <line x1="12" y1="27.2" x2="21" y2="29.8" stroke="#475569" stroke-width="0.9" stroke-linecap="round"/>
+    <line x1="23.5" y1="27.2" x2="32.5" y2="29.8" stroke="#475569" stroke-width="0.9" stroke-linecap="round"/>
 
-  <!-- Rear Window -->
-  <path d="M8 80.5 C15 79.5 30 79.5 37 80.5 L34.5 92.5 C28 93.8 17 93.8 10.5 92.5 Z" fill="#0F172A" stroke="#334155" stroke-width="0.75"/>
+    <!-- Side Windows & B/C Pillars -->
+    <path d="M6.5 45 L8.8 46 L8.8 78 L6.5 79.5 Z" fill="#020617" stroke="#94A3B8" stroke-opacity="0.3" stroke-width="0.5"/>
+    <path d="M38.5 45 L36.2 46 L36.2 78 L38.5 79.5 Z" fill="#020617" stroke="#94A3B8" stroke-opacity="0.3" stroke-width="0.5"/>
+    <line x1="6.4" y1="60" x2="9" y2="60" stroke="#1E3A8A" stroke-width="1.8"/>
+    <line x1="36" y1="60" x2="38.6" y2="60" stroke="#1E3A8A" stroke-width="1.8"/>
 
-  <!-- Headlights (Front / North) -->
-  <path d="M7.5 6.5 C9 4.5 12 4 15 4.2 L14.5 6.8 L8.5 7.5 Z" fill="#F8FAFC"/>
-  <path d="M37.5 6.5 C36 4.5 33 4 30 4.2 L30.5 6.8 L36.5 7.5 Z" fill="#F8FAFC"/>
+    <!-- A & C Pillars -->
+    <line x1="9.5" y1="27.5" x2="7.2" y2="43.5" stroke="#1E3A8A" stroke-width="1.5"/>
+    <line x1="35.5" y1="27.5" x2="37.8" y2="43.5" stroke="#1E3A8A" stroke-width="1.5"/>
 
-  <!-- Taillights (Rear / South) -->
-  <rect x="7.5" y="104.8" width="8" height="2.6" rx="1" fill="#EF4444"/>
-  <rect x="29.5" y="104.8" width="8" height="2.6" rx="1" fill="#EF4444"/>
+    <!-- Roof Panel & Shark-fin Antenna -->
+    <rect x="9" y="44" width="27" height="34.5" rx="3.5" fill="url(#csn-roof)" stroke="#3B82F6" stroke-opacity="0.35" stroke-width="0.8"/>
+    <path d="M22.5 73 L21.3 77 L23.7 77 Z" fill="#0F172A"/>
+
+    <!-- Rear Window -->
+    <path d="M8 80.5 C15 79.3 30 79.3 37 80.5 L34.5 92.8 C28 94.2 17 94.2 10.5 92.8 Z" fill="url(#csn-glass)" stroke="#334155" stroke-width="0.75"/>
+    <line x1="13" y1="84" x2="32" y2="84" stroke="#334155" stroke-width="0.4" stroke-opacity="0.5"/>
+    <line x1="12.5" y1="87" x2="32.5" y2="87" stroke="#334155" stroke-width="0.4" stroke-opacity="0.5"/>
+
+    <!-- Crisp LED Headlights -->
+    <path d="M6.8 7 C8.2 4.6 11.8 4 15.2 4.3 L14.5 7.2 L7.8 8 Z" fill="#E0F2FE" stroke="#7DD3FC" stroke-width="0.5"/>
+    <path d="M38.2 7 C36.8 4.6 33.2 4 29.8 4.3 L30.5 7.2 L37.2 8 Z" fill="#E0F2FE" stroke="#7DD3FC" stroke-width="0.5"/>
+
+    <!-- Crisp LED Taillights -->
+    <rect x="7" y="105" width="8.5" height="2.6" rx="1" fill="#EF4444"/>
+    <rect x="29.5" y="105" width="8.5" height="2.6" rx="1" fill="#EF4444"/>
+    <rect x="8.5" y="105.6" width="5" height="1" rx="0.5" fill="#FCA5A5"/>
+    <rect x="31.5" y="105.6" width="5" height="1" rx="0.5" fill="#FCA5A5"/>
+  </g>
 </svg>

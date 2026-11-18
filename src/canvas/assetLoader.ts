@@ -41,8 +41,16 @@ const ASSET_URLS = [
   '/assets/infra/city/helipad-roof.svg',
   '/assets/infra/city/bus-shelter-top.svg',
   '/assets/infra/city/bench-architectural.svg',
+  '/assets/infra/city/streetlight-top.svg',
   '/assets/infra/city/tree-palm-top.svg',
   '/assets/infra/city/planter-box-long.svg',
+  '/assets/infra/city/landmark-mako-brimob.svg',
+  '/assets/infra/city/landmark-ruko-row.svg',
+  '/assets/infra/city/landmark-masjid-jami.svg',
+  '/assets/infra/city/landmark-pasar-tradisional.svg',
+  '/assets/infra/city/landmark-spbu-pertamina.svg',
+  '/assets/infra/city/landmark-kampus-wilis.svg',
+  '/assets/infra/city/landmark-stadion-corner.svg',
 ];
 
 const cache = new Map<string, HTMLImageElement>();

@@ -1,104 +1,102 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 62 225" width="62" height="225" fill="none">
   <defs>
+    <filter id="tb-shadow" x="-16%" y="-6%" width="132%" height="114%">
+      <feDropShadow dx="1.5" dy="3" stdDeviation="2.2" flood-color="#020617" flood-opacity="0.34"/>
+    </filter>
     <linearGradient id="tb-windshield" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#0F172A" />
-      <stop offset="65%" stop-color="#1E293B" />
-      <stop offset="100%" stop-color="#334155" />
+      <stop offset="0%" stop-color="#020617"/>
+      <stop offset="65%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#334155"/>
     </linearGradient>
-    <linearGradient id="tb-cab-roof" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#F1F5F9" />
-      <stop offset="50%" stop-color="#FFFFFF" />
-      <stop offset="100%" stop-color="#F1F5F9" />
+    <linearGradient id="tb-cab-amber" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#D97706"/>
+      <stop offset="22%" stop-color="#F59E0B"/>
+      <stop offset="50%" stop-color="#FBBF24"/>
+      <stop offset="78%" stop-color="#F59E0B"/>
+      <stop offset="100%" stop-color="#D97706"/>
     </linearGradient>
     <linearGradient id="tb-box-roof" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#E2E8F0" />
-      <stop offset="12%" stop-color="#FFFFFF" />
-      <stop offset="88%" stop-color="#FFFFFF" />
-      <stop offset="100%" stop-color="#E2E8F0" />
+      <stop offset="0%" stop-color="#CBD5E1"/>
+      <stop offset="12%" stop-color="#F8FAFC"/>
+      <stop offset="50%" stop-color="#FFFFFF"/>
+      <stop offset="88%" stop-color="#F8FAFC"/>
+      <stop offset="100%" stop-color="#CBD5E1"/>
     </linearGradient>
   </defs>
 
-  <!-- Wheels (tucked under body) -->
-  <g id="wheels" fill="#1E293B">
-    <!-- Front steer axle -->
-    <rect x="6" y="20" width="5" height="18" rx="2" />
-    <rect x="51" y="20" width="5" height="18" rx="2" />
-    <!-- Rear drive axle -->
-    <rect x="4" y="172" width="5" height="22" rx="2" />
-    <rect x="53" y="172" width="5" height="22" rx="2" />
-  </g>
-
-  <!-- Side Mirrors -->
-  <g id="mirrors" stroke="#1E293B" stroke-width="1.2">
-    <path d="M9 24 L4 22 L4 29 L9 27 Z" fill="#475569" />
-    <path d="M53 24 L58 22 L58 29 L53 27 Z" fill="#475569" />
-  </g>
-
-  <!-- Chassis Coupling / Frame -->
-  <rect x="17" y="55" width="28" height="10" fill="#334155" stroke="#1E293B" stroke-width="1.2" />
-  <line x1="23" y1="55" x2="23" y2="65" stroke="#64748B" stroke-width="1" />
-  <line x1="39" y1="55" x2="39" y2="65" stroke="#64748B" stroke-width="1" />
-
-  <!-- Cab -->
-  <g id="cab">
-    <!-- Front Bumper -->
-    <rect x="11" y="4" width="40" height="6" rx="3" fill="#CBD5E1" stroke="#1E293B" stroke-width="1.3" />
-    <!-- Cab Main Shell -->
-    <rect x="9" y="7" width="44" height="50" rx="7" fill="url(#tb-cab-roof)" stroke="#1E293B" stroke-width="1.5" />
-    <!-- Headlights -->
-    <rect x="12" y="7" width="8" height="3.5" rx="1.5" fill="#FEF08A" stroke="#D97706" stroke-width="0.8" />
-    <rect x="42" y="7" width="8" height="3.5" rx="1.5" fill="#FEF08A" stroke="#D97706" stroke-width="0.8" />
-    <!-- Grille / Front Hood Seam -->
-    <line x1="23" y1="10" x2="39" y2="10" stroke="#94A3B8" stroke-width="1.2" />
-    <!-- Panoramic Windshield -->
-    <path d="M12 16 Q31 12 50 16 L48 28 Q31 25 14 28 Z" fill="url(#tb-windshield)" stroke="#0F172A" stroke-width="1.2" />
-    <!-- Windshield Glare & Wipers -->
-    <path d="M16 17 Q31 14 46 17" stroke="#94A3B8" stroke-width="0.8" stroke-opacity="0.5" />
-    <line x1="20" y1="26" x2="28" y2="21" stroke="#64748B" stroke-width="0.9" />
-    <line x1="34" y1="26" x2="42" y2="21" stroke="#64748B" stroke-width="0.9" />
-    <!-- Cab Roof Aero Fairing & Amber Architectural Accent -->
-    <rect x="13" y="31" width="36" height="22" rx="3" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.1" />
-    <rect x="27" y="31" width="8" height="22" fill="#F59E0B" />
-    <rect x="17" y="35" width="7" height="5" rx="1" fill="#E2E8F0" stroke="#94A3B8" stroke-width="0.8" />
-    <rect x="38" y="35" width="7" height="5" rx="1" fill="#E2E8F0" stroke="#94A3B8" stroke-width="0.8" />
-    <!-- Roof Marker Lights -->
-    <circle cx="17" cy="30" r="1.2" fill="#F59E0B" />
-    <circle cx="31" cy="29.5" r="1.2" fill="#F59E0B" />
-    <circle cx="45" cy="30" r="1.2" fill="#F59E0B" />
-  </g>
-
-  <!-- Cargo Box Container -->
-  <g id="cargo-box">
-    <!-- Outer Box -->
-    <rect x="6" y="63" width="50" height="154" rx="3" fill="url(#tb-box-roof)" stroke="#1E293B" stroke-width="1.5" />
-    <!-- Inner Roof Frame -->
-    <rect x="9.5" y="66.5" width="43" height="147" rx="1.5" fill="none" stroke="#CBD5E1" stroke-width="1" />
-
-    <!-- Swiss Grid Roof Panel Seams -->
-    <g stroke="#CBD5E1" stroke-width="1">
-      <line x1="9.5" y1="88" x2="52.5" y2="88" />
-      <line x1="9.5" y1="110" x2="52.5" y2="110" />
-      <line x1="9.5" y1="132" x2="52.5" y2="132" />
-      <line x1="9.5" y1="154" x2="52.5" y2="154" />
-      <line x1="9.5" y1="176" x2="52.5" y2="176" />
-      <line x1="9.5" y1="198" x2="52.5" y2="198" />
+  <g filter="url(#tb-shadow)">
+    <!-- Wheels -->
+    <g fill="#0F172A">
+      <rect x="5.5" y="20" width="5" height="18" rx="2"/>
+      <rect x="51.5" y="20" width="5" height="18" rx="2"/>
+      <rect x="4" y="172" width="5" height="22" rx="2"/>
+      <rect x="53" y="172" width="5" height="22" rx="2"/>
     </g>
 
-    <!-- Architectural Amber Accent Bars -->
-    <rect x="9.5" y="66.5" width="43" height="4" fill="#F59E0B" />
-    <rect x="9.5" y="209.5" width="43" height="4" fill="#F59E0B" />
-    <rect x="29" y="70.5" width="4" height="139" fill="#FEF3C7" />
-    <line x1="31" y1="70.5" x2="31" y2="209.5" stroke="#F59E0B" stroke-width="1.2" stroke-dasharray="6 4" />
+    <!-- Side Mirrors -->
+    <g stroke="#0F172A" stroke-width="1.1">
+      <path d="M9 24 L3.5 21.5 L3.5 29 L9 27 Z" fill="#334155"/>
+      <path d="M53 24 L58.5 21.5 L58.5 29 L53 27 Z" fill="#334155"/>
+    </g>
 
-    <!-- Corner Clearance Lights -->
-    <rect x="6.5" y="64" width="2.5" height="3" rx="0.5" fill="#F59E0B" />
-    <rect x="53" y="64" width="2.5" height="3" rx="0.5" fill="#F59E0B" />
-    <rect x="6.5" y="213" width="2.5" height="3" rx="0.5" fill="#EF4444" />
-    <rect x="53" y="213" width="2.5" height="3" rx="0.5" fill="#EF4444" />
+    <!-- Chassis Coupling / Frame -->
+    <rect x="17" y="55" width="28" height="10" fill="#1E293B" stroke="#0F172A" stroke-width="1.2"/>
 
-    <!-- Rear Step Bumper & Taillights -->
-    <rect x="9" y="217" width="44" height="4.5" rx="1.5" fill="#475569" stroke="#1E293B" stroke-width="1.2" />
-    <rect x="11" y="217.8" width="7" height="2.8" rx="0.8" fill="#EF4444" />
-    <rect x="44" y="217.8" width="7" height="2.8" rx="0.8" fill="#EF4444" />
+    <!-- Indonesian Colt Diesel / Hino Style Amber Cab -->
+    <g>
+      <rect x="11" y="4" width="40" height="6" rx="3" fill="#475569" stroke="#0F172A" stroke-width="1.2"/>
+      <rect x="9" y="7" width="44" height="50" rx="7" fill="url(#tb-cab-amber)" stroke="#78350F" stroke-width="1.4"/>
+      <!-- Headlights -->
+      <rect x="12" y="7" width="8" height="3.5" rx="1.5" fill="#FEF9C3" stroke="#92400E" stroke-width="0.8"/>
+      <rect x="42" y="7" width="8" height="3.5" rx="1.5" fill="#FEF9C3" stroke="#92400E" stroke-width="0.8"/>
+      <!-- Grille Seam -->
+      <line x1="22" y1="10" x2="40" y2="10" stroke="#78350F" stroke-width="1.2"/>
+      <!-- Panoramic Windshield -->
+      <path d="M12 16 Q31 12 50 16 L48 28 Q31 25 14 28 Z" fill="url(#tb-windshield)" stroke="#0F172A" stroke-width="1.2"/>
+      <path d="M16 17 Q31 14 46 17" stroke="#94A3B8" stroke-width="0.8" stroke-opacity="0.5"/>
+      <!-- Twin Wipers -->
+      <line x1="18" y1="26" x2="27" y2="20.5" stroke="#64748B" stroke-width="1"/>
+      <line x1="34" y1="26" x2="43" y2="20.5" stroke="#64748B" stroke-width="1"/>
+      <!-- Cab Roof Fairing / Wind Deflector -->
+      <rect x="13" y="31" width="36" height="22" rx="3" fill="#FEF3C7" stroke="#D97706" stroke-width="1"/>
+      <rect x="27" y="31" width="8" height="22" fill="#D97706"/>
+      <!-- Roof Marker Lights -->
+      <circle cx="17" cy="30" r="1.2" fill="#FEF08A"/>
+      <circle cx="31" cy="29.5" r="1.2" fill="#FEF08A"/>
+      <circle cx="45" cy="30" r="1.2" fill="#FEF08A"/>
+    </g>
+
+    <!-- Corrugated Aluminum Cargo Box -->
+    <g>
+      <rect x="6" y="63" width="50" height="154" rx="3" fill="url(#tb-box-roof)" stroke="#334155" stroke-width="1.4"/>
+      <rect x="9.5" y="66.5" width="43" height="147" rx="1.5" fill="none" stroke="#94A3B8" stroke-width="1"/>
+
+      <!-- Corrugated Roof Panel Seams -->
+      <g stroke="#CBD5E1" stroke-width="1">
+        <line x1="9.5" y1="88" x2="52.5" y2="88"/>
+        <line x1="9.5" y1="110" x2="52.5" y2="110"/>
+        <line x1="9.5" y1="132" x2="52.5" y2="132"/>
+        <line x1="9.5" y1="154" x2="52.5" y2="154"/>
+        <line x1="9.5" y1="176" x2="52.5" y2="176"/>
+        <line x1="9.5" y1="198" x2="52.5" y2="198"/>
+      </g>
+
+      <!-- Indonesian Safety & Logistics Stripes -->
+      <rect x="9.5" y="66.5" width="43" height="4" fill="#F59E0B"/>
+      <rect x="9.5" y="209.5" width="43" height="4" fill="#EF4444"/>
+      <rect x="29" y="70.5" width="4" height="139" fill="#FEF3C7"/>
+      <line x1="31" y1="70.5" x2="31" y2="209.5" stroke="#D97706" stroke-width="1.2" stroke-dasharray="6 4"/>
+
+      <!-- Corner Clearance Lights -->
+      <rect x="6.5" y="64" width="2.5" height="3" rx="0.5" fill="#F59E0B"/>
+      <rect x="53" y="64" width="2.5" height="3" rx="0.5" fill="#F59E0B"/>
+      <rect x="6.5" y="213" width="2.5" height="3" rx="0.5" fill="#EF4444"/>
+      <rect x="53" y="213" width="2.5" height="3" rx="0.5" fill="#EF4444"/>
+
+      <!-- Rear Step Bumper & Taillights -->
+      <rect x="9" y="217" width="44" height="4.5" rx="1.5" fill="#334155" stroke="#0F172A" stroke-width="1.2"/>
+      <rect x="11" y="217.8" width="7" height="2.8" rx="0.8" fill="#EF4444"/>
+      <rect x="44" y="217.8" width="7" height="2.8" rx="0.8" fill="#EF4444"/>
+    </g>
   </g>
 </svg>

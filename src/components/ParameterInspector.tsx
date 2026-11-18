@@ -1,5 +1,7 @@
 import React, { useId, useRef, useState } from 'react';
-import { Sliders, CarFront, TrafficCone, RotateCcw } from 'lucide-react';
+import { Sliders, CarFront, TrafficCone, RotateCcw, MapPin } from 'lucide-react';
+import { getArmGreenDuration } from '../engine/constants';
+import { SCENARIO_PRESETS, ScenarioPreset } from '../engine/presets';
 import { ArmId, SimConfig } from '../engine/types';
 
 interface ParameterInspectorProps {
@@ -9,18 +11,6 @@ interface ParameterInspectorProps {
 }
 
 type TabId = 'geometry' | 'traffic' | 'signal';
-
-interface ScenarioPreset {
-  id: string;
-  label: string;
-  description: string;
-  patch: {
-    motorRate: number;
-    carRate: number;
-    heavyRate: number;
-    armWeights: Record<ArmId, number>;
-  };
-}
 
 const DEFAULT_ARM_WEIGHTS: Record<ArmId, number> = {
   north: 1,
@@ -34,53 +24,6 @@ const ARM_ITEMS: { id: ArmId; label: string }[] = [
   { id: 'east', label: 'Timur' },
   { id: 'south', label: 'Selatan' },
   { id: 'west', label: 'Barat' },
-];
-
-const SCENARIO_PRESETS: ScenarioPreset[] = [
-  {
-    id: 'balanced',
-    label: 'Seimbang',
-    description: 'Arus merata di semua lengan',
-    patch: {
-      motorRate: 30,
-      carRate: 22,
-      heavyRate: 5,
-      armWeights: { north: 1, east: 1, south: 1, west: 1 },
-    },
-  },
-  {
-    id: 'peak-ns',
-    label: 'Jam Sibuk U-S',
-    description: 'Koridor Utara-Selatan padat',
-    patch: {
-      motorRate: 56,
-      carRate: 40,
-      heavyRate: 8,
-      armWeights: { north: 1.8, east: 0.5, south: 1.8, west: 0.5 },
-    },
-  },
-  {
-    id: 'asymmetric',
-    label: 'Arus Timpang',
-    description: 'Beban dominan Utara & Timur',
-    patch: {
-      motorRate: 44,
-      carRate: 32,
-      heavyRate: 7,
-      armWeights: { north: 2.2, east: 1.3, south: 0.4, west: 0.5 },
-    },
-  },
-  {
-    id: 'heavy-corridor',
-    label: 'Koridor Berat',
-    description: 'Proporsi truk & bus tinggi',
-    patch: {
-      motorRate: 24,
-      carRate: 26,
-      heavyRate: 22,
-      armWeights: { north: 1.3, east: 1.0, south: 1.3, west: 1.0 },
-    },
-  },
 ];
 
 const TABS: { id: TabId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
@@ -99,6 +42,9 @@ function isPresetActive(
   preset: ScenarioPreset
 ): boolean {
   const { patch } = preset;
+  if (patch.scenarioName) {
+    return config.scenarioName === patch.scenarioName;
+  }
   if (
     config.motorRate !== patch.motorRate ||
     config.carRate !== patch.carRate ||
@@ -106,8 +52,9 @@ function isPresetActive(
   ) {
     return false;
   }
+  const targetWeights = patch.armWeights ?? DEFAULT_ARM_WEIGHTS;
   return (['north', 'east', 'south', 'west'] as const).every(
-    (arm) => Math.abs((armWeights[arm] ?? 1) - patch.armWeights[arm]) < 0.05
+    (arm) => Math.abs((armWeights[arm] ?? 1) - targetWeights[arm]) < 0.05
   );
 }
 
@@ -125,6 +72,33 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
   });
 
   const armWeights = config.armWeights ?? DEFAULT_ARM_WEIGHTS;
+  const activePreset = SCENARIO_PRESETS.find((p) => isPresetActive(config, armWeights, p));
+  const landmarkItems = activePreset?.landmarks
+    ? activePreset.landmarks.split(',').map((s) => s.trim()).filter(Boolean)
+    : [];
+
+  const handleManualChange = (partial: Partial<SimConfig>) => {
+    onChange({
+      ...partial,
+      scenarioName: undefined,
+      scenarioNotes: undefined,
+    });
+  };
+
+  const handleArmNameChange = (arm: ArmId, value: string) => {
+    const current = config.armNames ?? { north: '', east: '', south: '', west: '' };
+    const next: Record<ArmId, string> = {
+      north: current.north ?? '',
+      east: current.east ?? '',
+      south: current.south ?? '',
+      west: current.west ?? '',
+      [arm]: value,
+    };
+    const hasAny = Object.values(next).some((v) => v.trim().length > 0);
+    onChange({
+      armNames: hasAny ? next : undefined,
+    });
+  };
 
   const handleTurnChange = (key: 'turnLeftPct' | 'turnStraightPct' | 'turnRightPct', val: number) => {
     const clamped = snap5(Math.max(0, Math.min(100, val)));
@@ -136,7 +110,7 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
           ? snap5((config.turnStraightPct / otherSum) * remaining)
           : snap5(remaining * 0.7);
       const right = remaining - straight;
-      onChange({ turnLeftPct: clamped, turnStraightPct: straight, turnRightPct: right });
+      handleManualChange({ turnLeftPct: clamped, turnStraightPct: straight, turnRightPct: right });
     } else if (key === 'turnStraightPct') {
       const otherSum = config.turnLeftPct + config.turnRightPct;
       const left =
@@ -144,7 +118,7 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
           ? snap5((config.turnLeftPct / otherSum) * remaining)
           : snap5(remaining * 0.5);
       const right = remaining - left;
-      onChange({ turnLeftPct: left, turnStraightPct: clamped, turnRightPct: right });
+      handleManualChange({ turnLeftPct: left, turnStraightPct: clamped, turnRightPct: right });
     } else {
       const otherSum = config.turnLeftPct + config.turnStraightPct;
       const left =
@@ -152,29 +126,44 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
           ? snap5((config.turnLeftPct / otherSum) * remaining)
           : snap5(remaining * 0.3);
       const straight = remaining - left;
-      onChange({ turnLeftPct: left, turnStraightPct: straight, turnRightPct: clamped });
+      handleManualChange({ turnLeftPct: left, turnStraightPct: straight, turnRightPct: clamped });
     }
   };
 
   const handleLanesChange = (lanes: number) => {
-    onChange({
+    handleManualChange({
       lanesPerDirection: lanes,
       roadWidthPerDirection: +(lanes * config.laneWidth).toFixed(2),
     });
   };
 
   const handleLaneWidthChange = (lw: number) => {
-    onChange({
+    handleManualChange({
       laneWidth: lw,
       roadWidthPerDirection: +(config.lanesPerDirection * lw).toFixed(2),
     });
   };
 
   const handleArmWeightChange = (arm: ArmId, val: number) => {
-    onChange({
+    handleManualChange({
       armWeights: {
         ...armWeights,
         [arm]: +val.toFixed(1),
+      },
+    });
+  };
+
+  const handleArmGreenChange = (arm: ArmId, val: number) => {
+    const current: Record<ArmId, number> = {
+      north: getArmGreenDuration(config, 'north'),
+      east: getArmGreenDuration(config, 'east'),
+      south: getArmGreenDuration(config, 'south'),
+      west: getArmGreenDuration(config, 'west'),
+    };
+    handleManualChange({
+      armGreenDurations: {
+        ...current,
+        [arm]: Math.round(val),
       },
     });
   };
@@ -318,48 +307,174 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
               min={40}
               max={200}
               step={5}
-              onChange={(v) => onChange({ roadLength: v })}
+              onChange={(v) => handleManualChange({ roadLength: v })}
               hint="Jarak pengamatan antrean sebelum garis henti"
             />
+
+            <div className="pt-3 border-t border-slate-200 space-y-2">
+              <span className="text-xs font-semibold text-slate-700 block">
+                Kelengkapan Geometrik (RI)
+              </span>
+              <ToggleField
+                label="Median Tengah Fisik"
+                description="Pemisah fisik antar arah pada lengan pendekat"
+                checked={config.hasMedian}
+                onToggle={() => handleManualChange({ hasMedian: !config.hasMedian })}
+              />
+              <ToggleField
+                label="Kotak Khusus Motor (RHK)"
+                description="Ruang henti khusus motor di depan garis henti"
+                checked={config.motorBoxEnabled}
+                onToggle={() => handleManualChange({ motorBoxEnabled: !config.motorBoxEnabled })}
+              />
+            </div>
+
+            <div className="pt-3 border-t border-slate-200 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-700">Nama Ruas Jalan (Opsional)</span>
+                {config.armNames && (
+                  <button
+                    type="button"
+                    onClick={() => onChange({ armNames: undefined })}
+                    className="text-[10px] font-mono text-slate-500 hover:text-slate-900 underline"
+                  >
+                    Reset
+                  </button>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                {ARM_ITEMS.map((arm) => (
+                  <label key={arm.id} className="block">
+                    <span className="text-[10px] font-medium text-slate-500 block mb-0.5">
+                      {arm.label}
+                    </span>
+                    <input
+                      type="text"
+                      value={config.armNames?.[arm.id] ?? ''}
+                      onChange={(e) => handleArmNameChange(arm.id, e.target.value)}
+                      placeholder={`Jl. ${arm.label}`}
+                      className="w-full px-2 py-1 text-[11px] rounded border border-slate-200 bg-white text-slate-800 placeholder:text-slate-300 focus:outline-none focus:border-slate-400 transition-colors duration-100"
+                    />
+                  </label>
+                ))}
+              </div>
+            </div>
           </>
         )}
 
         {activeTab === 'traffic' && (
           <>
-            <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="text-xs font-semibold text-slate-700">Preset Skenario</span>
-                <span className="text-[10px] font-mono text-slate-400">LIVE</span>
-              </div>
-              <div role="group" aria-label="Preset skenario lalu lintas" className="grid grid-cols-2 gap-1.5">
-                {SCENARIO_PRESETS.map((preset) => {
-                  const active = isPresetActive(config, armWeights, preset);
-                  return (
-                    <button
-                      key={preset.id}
-                      type="button"
-                      aria-pressed={active}
-                      onClick={() => onChange(preset.patch)}
-                      title={preset.description}
-                      className={`px-2 py-1.5 rounded text-left border transition-colors duration-100 ${
-                        active
-                          ? 'bg-slate-900 text-white border-slate-900'
-                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                      }`}
-                    >
-                      <div className="text-[11px] font-semibold leading-tight">{preset.label}</div>
-                      <div
-                        className={`text-[10px] leading-tight mt-0.5 truncate ${
-                          active ? 'text-slate-300' : 'text-slate-400'
+            <div className="space-y-2.5">
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs font-semibold text-slate-700 flex items-center gap-1">
+                    <MapPin className="w-3 h-3 text-emerald-600" />
+                    Data Lapangan Nyata (RI)
+                  </span>
+                  <span className="text-[10px] font-mono text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                    RISET
+                  </span>
+                </div>
+                <div role="group" aria-label="Preset data lapangan nyata" className="grid grid-cols-1 gap-1.5">
+                  {SCENARIO_PRESETS.filter((p) => p.category === 'field').map((preset) => {
+                    const active = isPresetActive(config, armWeights, preset);
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => onChange(preset.patch)}
+                        title={preset.source ?? preset.description}
+                        className={`px-2.5 py-1.5 rounded text-left border transition-colors duration-100 ${
+                          active
+                            ? 'bg-emerald-900 text-white border-emerald-900'
+                            : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
                         }`}
                       >
-                        {preset.description}
-                      </div>
-                    </button>
-                  );
-                })}
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[11px] font-semibold leading-tight">{preset.label}</span>
+                          {preset.source && (
+                            <span className={`text-[9px] font-mono truncate max-w-[110px] ${active ? 'text-emerald-200' : 'text-slate-400'}`}>
+                              {preset.source.split('—')[0].trim()}
+                            </span>
+                          )}
+                        </div>
+                        <div
+                          className={`text-[10px] leading-tight mt-0.5 truncate ${
+                            active ? 'text-emerald-100' : 'text-slate-500'
+                          }`}
+                        >
+                          {preset.description}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs font-semibold text-slate-700">Preset Sintetis</span>
+                  <span className="text-[10px] font-mono text-slate-400">LIVE</span>
+                </div>
+                <div role="group" aria-label="Preset skenario sintetis" className="grid grid-cols-2 gap-1.5">
+                  {SCENARIO_PRESETS.filter((p) => p.category === 'synthetic').map((preset) => {
+                    const active = isPresetActive(config, armWeights, preset);
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => onChange(preset.patch)}
+                        title={preset.description}
+                        className={`px-2 py-1.5 rounded text-left border transition-colors duration-100 ${
+                          active
+                            ? 'bg-slate-900 text-white border-slate-900'
+                            : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                        }`}
+                      >
+                        <div className="text-[11px] font-semibold leading-tight">{preset.label}</div>
+                        <div
+                          className={`text-[10px] leading-tight mt-0.5 truncate ${
+                            active ? 'text-slate-300' : 'text-slate-400'
+                          }`}
+                        >
+                          {preset.description}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
+
+            {activePreset && (activePreset.city || landmarkItems.length > 0) && (
+              <div className="p-2.5 rounded-md bg-emerald-50/70 border border-emerald-200 space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-emerald-800 flex items-center gap-1">
+                    <MapPin className="w-3 h-3 text-emerald-600" />
+                    Konteks Lokasi Peta
+                  </span>
+                  {activePreset.city && (
+                    <span className="text-[10px] font-mono font-semibold text-emerald-700">
+                      {activePreset.city}
+                    </span>
+                  )}
+                </div>
+                {landmarkItems.length > 0 && (
+                  <div className="flex flex-wrap gap-1 pt-0.5">
+                    {landmarkItems.map((lm) => (
+                      <span
+                        key={lm}
+                        className="text-[10px] px-1.5 py-0.5 rounded bg-white text-emerald-800 border border-emerald-200"
+                      >
+                        {lm}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="pt-3 border-t border-slate-200 space-y-3">
               <div className="text-[11px] text-slate-500">
@@ -371,8 +486,8 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                 unit="kend/mnt"
                 min={0}
                 max={150}
-                step={2}
-                onChange={(v) => onChange({ motorRate: v })}
+                step={1}
+                onChange={(v) => handleManualChange({ motorRate: v })}
                 accent="bg-amber-500"
               />
               <SliderField
@@ -382,7 +497,7 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                 min={0}
                 max={100}
                 step={1}
-                onChange={(v) => onChange({ carRate: v })}
+                onChange={(v) => handleManualChange({ carRate: v })}
                 accent="bg-slate-800"
               />
               <SliderField
@@ -391,9 +506,15 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                 unit="kend/mnt"
                 min={0}
                 max={50}
-                step={1}
-                onChange={(v) => onChange({ heavyRate: v })}
+                step={0.1}
+                onChange={(v) => handleManualChange({ heavyRate: v })}
                 accent="bg-teal-600"
+              />
+              <ToggleField
+                label="Mode Swarm Motor (3–4 Kolom)"
+                description="Motor menyelip & menumpuk 3–4 kolom di antara antrean mobil"
+                checked={config.motorSwarmMode}
+                onToggle={() => handleManualChange({ motorSwarmMode: !config.motorSwarmMode })}
               />
             </div>
 
@@ -465,7 +586,7 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                 <button
                   type="button"
                   aria-pressed={config.adaptiveSignal}
-                  onClick={() => onChange({ adaptiveSignal: true })}
+                  onClick={() => handleManualChange({ adaptiveSignal: true })}
                   className={`py-1.5 rounded text-xs font-medium border transition-colors duration-100 ${
                     config.adaptiveSignal
                       ? 'bg-slate-900 text-white border-slate-900'
@@ -477,7 +598,7 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                 <button
                   type="button"
                   aria-pressed={!config.adaptiveSignal}
-                  onClick={() => onChange({ adaptiveSignal: false })}
+                  onClick={() => handleManualChange({ adaptiveSignal: false })}
                   className={`py-1.5 rounded text-xs font-medium border transition-colors duration-100 ${
                     !config.adaptiveSignal
                       ? 'bg-slate-900 text-white border-slate-900'
@@ -489,21 +610,54 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
               </div>
               <p className="text-[10px] text-slate-500 mt-1">
                 {config.adaptiveSignal
-                  ? 'Hijau dapat diperpanjang/dipotong otomatis sesuai antrean.'
+                  ? 'Hijau otomatis menyesuaikan antrean (maks. sesuai Durasi Hijau).'
                   : 'Durasi lampu mengikuti angka tetap di bawah ini.'}
               </p>
             </div>
 
+            <ToggleField
+              label="Belok Kiri Langsung (LTOR)"
+              description="Arus belok kiri boleh jalan terus saat lampu merah"
+              checked={config.leftTurnOnRed}
+              onToggle={() => handleManualChange({ leftTurnOnRed: !config.leftTurnOnRed })}
+            />
+
             <SliderField
-              label="Durasi Lampu Hijau"
+              label="Durasi Lampu Hijau Dasar"
               value={config.greenDuration}
               unit="detik"
               min={5}
-              max={60}
+              max={150}
               step={1}
-              onChange={(v) => onChange({ greenDuration: v })}
-              hint="Berlaku per lengan (4-fase bebas konflik)"
+              onChange={(v) => handleManualChange({ greenDuration: v, armGreenDurations: undefined })}
+              hint="Berlaku global (reset durasi per lengan)"
             />
+            <div className="pt-2 border-t border-slate-200 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-700">Durasi Hijau per Lengan</span>
+                {config.armGreenDurations && (
+                  <button
+                    type="button"
+                    onClick={() => handleManualChange({ armGreenDurations: undefined })}
+                    className="text-[10px] font-mono text-slate-500 hover:text-slate-900 underline"
+                  >
+                    Samakan
+                  </button>
+                )}
+              </div>
+              {ARM_ITEMS.map((arm) => (
+                <SliderField
+                  key={arm.id}
+                  label={`Hijau ${arm.label}`}
+                  value={getArmGreenDuration(config, arm.id)}
+                  unit="s"
+                  min={5}
+                  max={150}
+                  step={1}
+                  onChange={(v) => handleArmGreenChange(arm.id, v)}
+                />
+              ))}
+            </div>
             <SliderField
               label="Durasi Lampu Kuning"
               value={config.yellowDuration}
@@ -511,7 +665,7 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
               min={2}
               max={6}
               step={0.5}
-              onChange={(v) => onChange({ yellowDuration: v })}
+              onChange={(v) => handleManualChange({ yellowDuration: v })}
             />
             <SliderField
               label="Jeda Semua Merah (All-Red)"
@@ -520,7 +674,7 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
               min={0}
               max={5}
               step={0.5}
-              onChange={(v) => onChange({ allRedDuration: v })}
+              onChange={(v) => handleManualChange({ allRedDuration: v })}
               hint="Waktu pengosongan kotak simpang sebelum fase berikutnya"
             />
 
@@ -529,10 +683,14 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                 {config.adaptiveSignal ? 'Durasi Dasar 1 Siklus (Adaptif Aktif)' : 'Total Durasi 1 Siklus Penuh'}
               </div>
               <div className="text-lg font-mono tabular-nums font-bold text-slate-900">
-                {((config.greenDuration + config.yellowDuration + config.allRedDuration) * 4).toFixed(1)}s
+                {(['north', 'east', 'south', 'west'] as const)
+                  .reduce((sum, arm) => sum + getArmGreenDuration(config, arm) + config.yellowDuration + config.allRedDuration, 0)
+                  .toFixed(1)}s
               </div>
               <div className="text-[11px] text-slate-500">
-                Urutan Fase: Utara → Timur → Selatan → Barat
+                {config.adaptiveSignal
+                  ? 'Urutan Fase: Dinamis (berdasarkan antrean)'
+                  : 'Urutan Fase: Utara → Timur → Selatan → Barat'}
               </div>
             </div>
           </>
@@ -589,5 +747,42 @@ const SliderField: React.FC<SliderFieldProps> = ({
       />
       {hint && <p className="mt-1 text-[11px] text-slate-400">{hint}</p>}
     </div>
+  );
+};
+
+interface ToggleFieldProps {
+  label: string;
+  description?: string;
+  checked: boolean;
+  onToggle: () => void;
+}
+
+const ToggleField: React.FC<ToggleFieldProps> = ({ label, description, checked, onToggle }) => {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={onToggle}
+      className="w-full flex items-center justify-between gap-2.5 p-2 rounded-md border border-slate-200 bg-slate-50/70 hover:bg-slate-100/80 text-left transition-colors duration-100"
+    >
+      <div className="min-w-0">
+        <div className="text-xs font-medium text-slate-800 leading-tight">{label}</div>
+        {description && (
+          <div className="text-[10px] text-slate-500 leading-tight mt-0.5">{description}</div>
+        )}
+      </div>
+      <span
+        className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full border transition-colors duration-100 ${
+          checked ? 'bg-slate-900 border-slate-900' : 'bg-slate-200 border-slate-300'
+        }`}
+      >
+        <span
+          className={`inline-block h-3 w-3 rounded-full bg-white transition-transform duration-100 ${
+            checked ? 'translate-x-3.5' : 'translate-x-0.5'
+          }`}
+        />
+      </span>
+    </button>
   );
 };

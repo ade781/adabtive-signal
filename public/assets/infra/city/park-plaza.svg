@@ -1,11 +1,62 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" width="160" height="160">
-  <rect x="4" y="4" width="152" height="152" rx="8" fill="#ECFDF5" stroke="#A7F3D0" stroke-width="2"/>
-  <rect x="14" y="14" width="132" height="132" rx="6" fill="#D1FAE5"/>
-  <path d="M14 80 H146 M80 14 V146" stroke="#F8FAFC" stroke-width="14"/>
-  <circle cx="80" cy="80" r="24" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="2"/>
-  <circle cx="80" cy="80" r="14" fill="#BAE6FD" stroke="#38BDF8" stroke-width="1.5"/>
-  <circle cx="36" cy="36" r="12" fill="#84A98C"/>
-  <circle cx="124" cy="36" r="10" fill="#52796F"/>
-  <circle cx="36" cy="124" r="10" fill="#52796F"/>
-  <circle cx="124" cy="124" r="12" fill="#84A98C"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" width="160" height="160" fill="none">
+  <defs>
+    <radialGradient id="pp-grass" cx="50%" cy="50%" r="60%">
+      <stop offset="0%" stop-color="#4ADE80"/>
+      <stop offset="70%" stop-color="#22C55E"/>
+      <stop offset="100%" stop-color="#15803D"/>
+    </radialGradient>
+    <radialGradient id="pp-water" cx="45%" cy="40%" r="55%">
+      <stop offset="0%" stop-color="#7DD3FC"/>
+      <stop offset="70%" stop-color="#0284C7"/>
+      <stop offset="100%" stop-color="#0369A1"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Stone Border / Andesite Curb (Batu Alam) -->
+  <rect x="4" y="4" width="152" height="152" rx="8" fill="#CBD5E1" stroke="#64748B" stroke-width="1.5"/>
+
+  <!-- Tropical Lawn -->
+  <rect x="12" y="12" width="136" height="136" rx="6" fill="url(#pp-grass)"/>
+
+  <!-- Andesite Stone Walkways -->
+  <path d="M12 80 H148 M80 12 V148" stroke="#E2E8F0" stroke-width="15"/>
+  <path d="M12 80 H148 M80 12 V148" stroke="#94A3B8" stroke-width="1" stroke-dasharray="6 6"/>
+
+  <!-- Wooden Park Benches -->
+  <rect x="52" y="67" width="14" height="4" rx="1" fill="#92400E" stroke="#451A03" stroke-width="0.6"/>
+  <rect x="94" y="67" width="14" height="4" rx="1" fill="#92400E" stroke="#451A03" stroke-width="0.6"/>
+  <rect x="52" y="89" width="14" height="4" rx="1" fill="#92400E" stroke="#451A03" stroke-width="0.6"/>
+  <rect x="94" y="89" width="14" height="4" rx="1" fill="#92400E" stroke="#451A03" stroke-width="0.6"/>
+
+  <!-- Central Plaza Circle & Fountain Pool -->
+  <circle cx="80" cy="80" r="26" fill="#F1F5F9" stroke="#94A3B8" stroke-width="1.5"/>
+  <circle cx="80" cy="80" r="17" fill="url(#pp-water)" stroke="#075985" stroke-width="1.2"/>
+  <circle cx="80" cy="80" r="9" fill="none" stroke="#BAE6FD" stroke-width="0.8" stroke-opacity="0.7"/>
+  <circle cx="80" cy="80" r="3.5" fill="#E0F2FE"/>
+
+  <!-- Shaded Tropical Trees (4 Quadrants with Soft Ground Shadows) -->
+  <g>
+    <circle cx="38" cy="39" r="16" fill="#0F172A" fill-opacity="0.22"/>
+    <circle cx="35" cy="36" r="15" fill="#166534"/>
+    <circle cx="33" cy="34" r="10" fill="#22C55E"/>
+    <circle cx="31" cy="32" r="5" fill="#86EFAC"/>
+  </g>
+  <g>
+    <circle cx="127" cy="39" r="14" fill="#0F172A" fill-opacity="0.22"/>
+    <circle cx="124" cy="36" r="13" fill="#15803D"/>
+    <circle cx="122" cy="34" r="8.5" fill="#4ADE80"/>
+    <circle cx="120" cy="32" r="4" fill="#BBF7D0"/>
+  </g>
+  <g>
+    <circle cx="38" cy="127" r="14" fill="#0F172A" fill-opacity="0.22"/>
+    <circle cx="35" cy="124" r="13" fill="#15803D"/>
+    <circle cx="33" cy="122" r="8.5" fill="#4ADE80"/>
+    <circle cx="31" cy="120" r="4" fill="#BBF7D0"/>
+  </g>
+  <g>
+    <circle cx="127" cy="127" r="16" fill="#0F172A" fill-opacity="0.22"/>
+    <circle cx="124" cy="124" r="15" fill="#166534"/>
+    <circle cx="122" cy="122" r="10" fill="#22C55E"/>
+    <circle cx="120" cy="120" r="5" fill="#86EFAC"/>
+  </g>
 </svg>

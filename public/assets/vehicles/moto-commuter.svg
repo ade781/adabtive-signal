@@ -1,55 +1,81 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 80" width="32" height="80" fill="none">
   <defs>
-    <filter id="shadow-commuter" x="-25%" y="-10%" width="150%" height="125%">
-      <feDropShadow dx="0" dy="2" stdDeviation="1.4" flood-color="#0F172A" flood-opacity="0.16"/>
+    <filter id="mc-shadow" x="-30%" y="-12%" width="160%" height="130%">
+      <feDropShadow dx="1" dy="2.5" stdDeviation="1.6" flood-color="#0F172A" flood-opacity="0.28"/>
     </filter>
+    <linearGradient id="mc-tank" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#B91C1C"/>
+      <stop offset="45%" stop-color="#EF4444"/>
+      <stop offset="100%" stop-color="#991B1B"/>
+    </linearGradient>
+    <linearGradient id="mc-jacket" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#334155"/>
+      <stop offset="50%" stop-color="#1E293B"/>
+      <stop offset="100%" stop-color="#0F172A"/>
+    </linearGradient>
+    <radialGradient id="mc-helmet" cx="42%" cy="38%" r="60%">
+      <stop offset="0%" stop-color="#F8FAFC"/>
+      <stop offset="65%" stop-color="#CBD5E1"/>
+      <stop offset="100%" stop-color="#64748B"/>
+    </radialGradient>
   </defs>
 
-  <g filter="url(#shadow-commuter)">
-    <!-- Front & Rear Tires -->
-    <rect x="13.75" y="5" width="4.5" height="14" rx="2.25" fill="#1E293B"/>
-    <rect x="13.75" y="61" width="4.5" height="14" rx="2.25" fill="#1E293B"/>
+  <g filter="url(#mc-shadow)">
+    <!-- Front & Rear Tires with tread hint -->
+    <rect x="13.5" y="4" width="5" height="15" rx="2.5" fill="#0F172A"/>
+    <rect x="13.5" y="61" width="5" height="15" rx="2.5" fill="#0F172A"/>
+    <line x1="16" y1="6" x2="16" y2="17" stroke="#334155" stroke-width="0.7" stroke-dasharray="1.5 1.5"/>
+    <line x1="16" y1="63" x2="16" y2="74" stroke="#334155" stroke-width="0.7" stroke-dasharray="1.5 1.5"/>
 
-    <!-- Front Fender & Headlight -->
-    <rect x="13.5" y="11" width="5" height="7" rx="1.5" fill="#E2E8F0" stroke="#334155" stroke-width="1"/>
-    <path d="M13.5 11.5 C13.5 9.5, 18.5 9.5, 18.5 11.5 Z" fill="#FEF08A" stroke="#334155" stroke-width="0.9"/>
+    <!-- Front Fender & Crisp LED Headlight -->
+    <path d="M13 11.5 C13 9.5, 19 9.5, 19 11.5 L18.5 19 L13.5 19 Z" fill="#1E293B" stroke="#0F172A" stroke-width="0.8"/>
+    <path d="M13.3 10.6 C14 8.6, 18 8.6, 18.7 10.6 Z" fill="#FEF9C3" stroke="#CA8A04" stroke-width="0.7"/>
+    <ellipse cx="16" cy="9.6" rx="1.6" ry="0.7" fill="#FFFFFF"/>
 
     <!-- Mirrors -->
-    <line x1="7" y1="20" x2="5" y2="17" stroke="#334155" stroke-width="1.1" stroke-linecap="round"/>
-    <line x1="25" y1="20" x2="27" y2="17" stroke="#334155" stroke-width="1.1" stroke-linecap="round"/>
-    <rect x="3.5" y="15.5" width="3" height="2" rx="0.8" fill="#94A3B8" stroke="#1E293B" stroke-width="0.8"/>
-    <rect x="25.5" y="15.5" width="3" height="2" rx="0.8" fill="#94A3B8" stroke="#1E293B" stroke-width="0.8"/>
+    <line x1="8" y1="20" x2="5" y2="16.8" stroke="#334155" stroke-width="1.1" stroke-linecap="round"/>
+    <line x1="24" y1="20" x2="27" y2="16.8" stroke="#334155" stroke-width="1.1" stroke-linecap="round"/>
+    <rect x="2.8" y="15" width="3.6" height="2.2" rx="1" fill="#475569" stroke="#0F172A" stroke-width="0.7"/>
+    <rect x="25.6" y="15" width="3.6" height="2.2" rx="1" fill="#475569" stroke="#0F172A" stroke-width="0.7"/>
 
     <!-- Handlebars & Grips -->
-    <path d="M5 22 L11 20 L21 20 L27 22" stroke="#334155" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-    <rect x="4" y="20.6" width="4" height="2.6" rx="1.2" transform="rotate(-18 6 21.9)" fill="#0F172A"/>
-    <rect x="24" y="20.6" width="4" height="2.6" rx="1.2" transform="rotate(18 26 21.9)" fill="#0F172A"/>
+    <path d="M4.5 22.2 L11 19.6 L21 19.6 L27.5 22.2" stroke="#475569" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="3.5" y="20.6" width="4.2" height="2.6" rx="1.2" transform="rotate(-18 5.6 21.9)" fill="#0F172A"/>
+    <rect x="24.3" y="20.6" width="4.2" height="2.6" rx="1.2" transform="rotate(18 26.4 21.9)" fill="#0F172A"/>
 
-    <!-- Chassis / Engine / Exhaust Hints -->
-    <rect x="12" y="22" width="8" height="38" rx="3" fill="#CBD5E1" stroke="#334155" stroke-width="1"/>
-    <rect x="20" y="45" width="2" height="17" rx="1" fill="#64748B" stroke="#334155" stroke-width="0.7"/>
+    <!-- Chassis, Engine & Chrome Exhaust -->
+    <rect x="11.5" y="21.5" width="9" height="40" rx="3.5" fill="#475569" stroke="#0F172A" stroke-width="0.9"/>
+    <rect x="20.2" y="43" width="2.4" height="20" rx="1.1" fill="#94A3B8" stroke="#334155" stroke-width="0.7"/>
+    <rect x="20.7" y="45" width="1.2" height="15" rx="0.6" fill="#E2E8F0"/>
 
-    <!-- Fuel Tank -->
-    <path d="M11.5 23 C11.5 20.5, 20.5 20.5, 20.5 23 L19.5 34 C19.5 35.5, 12.5 35.5, 12.5 34 Z" fill="#F8FAFC" stroke="#334155" stroke-width="1.1"/>
-    <rect x="15" y="22" width="2" height="12" rx="1" fill="#D97706"/>
+    <!-- Fuel Tank (Indonesian Red Commuter) -->
+    <path d="M11.2 22.8 C11.2 20, 20.8 20, 20.8 22.8 L19.6 34.5 C19.6 36, 12.4 36, 12.4 34.5 Z" fill="url(#mc-tank)" stroke="#7F1D1D" stroke-width="0.9"/>
+    <rect x="15.1" y="21.8" width="1.8" height="12" rx="0.9" fill="#0F172A" fill-opacity="0.35"/>
 
     <!-- Rear Seat & Tail -->
-    <rect x="12.5" y="46" width="7" height="17" rx="2.5" fill="#475569" stroke="#1E293B" stroke-width="1"/>
-    <rect x="13.5" y="62.5" width="5" height="2" rx="0.8" fill="#EF4444"/>
+    <rect x="12.2" y="46" width="7.6" height="18" rx="2.8" fill="#1E293B" stroke="#0F172A" stroke-width="0.9"/>
+    <!-- Taillight & Plate -->
+    <rect x="13.2" y="64" width="5.6" height="2.2" rx="0.8" fill="#EF4444" stroke="#7F1D1D" stroke-width="0.5"/>
+    <rect x="14.2" y="64.5" width="3.6" height="1" rx="0.4" fill="#FCA5A5"/>
+    <rect x="14" y="67.5" width="4" height="2" rx="0.4" fill="#0F172A"/>
 
-    <!-- Rider Arms -->
-    <path d="M10.5 35 L7 23" stroke="#64748B" stroke-width="3.2" stroke-linecap="round"/>
-    <path d="M21.5 35 L25 23" stroke="#64748B" stroke-width="3.2" stroke-linecap="round"/>
-    <circle cx="6.8" cy="22.4" r="1.5" fill="#1E293B"/>
-    <circle cx="25.2" cy="22.4" r="1.5" fill="#1E293B"/>
+    <!-- Rider Arms & Gloves -->
+    <path d="M10.2 35.5 L6.6 22.8" stroke="#1E293B" stroke-width="3.4" stroke-linecap="round"/>
+    <path d="M21.8 35.5 L25.4 22.8" stroke="#1E293B" stroke-width="3.4" stroke-linecap="round"/>
+    <circle cx="6.4" cy="22.2" r="1.6" fill="#0F172A"/>
+    <circle cx="25.6" cy="22.2" r="1.6" fill="#0F172A"/>
 
-    <!-- Rider Shoulders / Jacket -->
-    <rect x="9" y="33.5" width="14" height="12" rx="5.5" fill="#475569" stroke="#1E293B" stroke-width="1.1"/>
-    <line x1="16" y1="34" x2="16" y2="45" stroke="#334155" stroke-width="0.9"/>
+    <!-- Rider Shoulders / Commuter Jacket + Backpack -->
+    <rect x="8.8" y="33.5" width="14.4" height="13" rx="5.5" fill="url(#mc-jacket)" stroke="#0F172A" stroke-width="1"/>
+    <rect x="11" y="40" width="10" height="7" rx="2.5" fill="#334155" stroke="#0F172A" stroke-width="0.8"/>
+    <line x1="12.5" y1="42" x2="19.5" y2="42" stroke="#94A3B8" stroke-width="0.8"/>
 
-    <!-- Rider Helmet -->
-    <circle cx="16" cy="38" r="5.3" fill="#F8FAFC" stroke="#1E293B" stroke-width="1.2"/>
-    <path d="M11.8 35.2 C13.2 33.4, 18.8 33.4, 20.2 35.2 L19.2 36.6 C17.8 35.6, 14.2 35.6, 12.8 36.6 Z" fill="#1E293B"/>
-    <rect x="15.3" y="37" width="1.4" height="5.5" rx="0.7" fill="#D97706"/>
+    <!-- Rider Helmet (Silver/White Indonesian Half-Face) -->
+    <circle cx="16" cy="37.5" r="5.4" fill="url(#mc-helmet)" stroke="#0F172A" stroke-width="1.1"/>
+    <!-- Dark Visor -->
+    <path d="M11.6 34.4 C13.2 32.3, 18.8 32.3, 20.4 34.4 L19.4 36.2 C17.8 35, 14.2 35, 12.6 36.2 Z" fill="#0F172A"/>
+    <path d="M13 33.8 C14.5 33, 17.5 33, 19 33.8" stroke="#38BDF8" stroke-width="0.6" stroke-opacity="0.7"/>
+    <!-- Helmet Vent -->
+    <rect x="15.2" y="36.8" width="1.6" height="5" rx="0.8" fill="#EF4444"/>
   </g>
 </svg>

@@ -1,14 +1,16 @@
 import React from 'react';
-import { Play, Pause, RotateCcw, Grid, ZoomIn, ZoomOut } from 'lucide-react';
-import { SignalState } from '../engine/types';
+import { Play, Pause, RotateCcw, Grid, ZoomIn, ZoomOut, Download, MapPin } from 'lucide-react';
+import { SignalState, SimConfig } from '../engine/types';
 
 interface TopBarProps {
   running: boolean;
   onToggleRun: () => void;
   onReset: () => void;
+  onDownloadReport: () => void;
   speed: number;
   onSpeedChange: (s: number) => void;
   signal: SignalState;
+  config: SimConfig;
   phaseDuration: number;
   simTime: number;
   zoom: number;
@@ -42,9 +44,11 @@ export const TopBar: React.FC<TopBarProps> = ({
   running,
   onToggleRun,
   onReset,
+  onDownloadReport,
   speed,
   onSpeedChange,
   signal,
+  config,
   phaseDuration,
   simTime,
   zoom,
@@ -54,11 +58,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   onZoomOut,
   onZoomReset,
 }) => {
-  const isExtended = Boolean(signal.isExtended);
-  const displayRemaining =
-    isExtended && signal.adaptiveTarget !== undefined
-      ? Math.max(0, signal.adaptiveTarget - signal.phaseElapsed)
-      : signal.phaseRemaining;
+  const displayRemaining = Math.max(0, signal.phaseRemaining);
   const pct = phaseDuration > 0 ? Math.max(0, Math.min(100, (displayRemaining / phaseDuration) * 100)) : 0;
 
   return (
@@ -84,10 +84,37 @@ export const TopBar: React.FC<TopBarProps> = ({
             >
               {running ? 'RUNNING' : 'PAUSED'}
             </span>
+            {config.leftTurnOnRed && (
+              <span
+                className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded border bg-sky-50 text-sky-700 border-sky-200"
+                title="Belok Kiri Langsung (LTOR) aktif"
+              >
+                LTOR
+              </span>
+            )}
+            {config.motorSwarmMode && (
+              <span
+                className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded border bg-amber-50 text-amber-700 border-amber-200"
+                title="Mode Swarm Motor 3-4 Kolom aktif"
+              >
+                SWARM
+              </span>
+            )}
           </div>
-          <p className="text-[11px] text-slate-500 leading-none">
-            Simulasi Simpang 4 · Lajur Kiri (ID)
-          </p>
+          <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+            <p className="text-[11px] text-slate-500 leading-none">
+              Simulasi Simpang 4 · Lajur Kiri (ID)
+            </p>
+            {config.scenarioName && (
+              <span
+                className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 max-w-[220px] truncate"
+                title={config.scenarioName}
+              >
+                <MapPin className="w-2.5 h-2.5 shrink-0" />
+                <span className="truncate">{config.scenarioName}</span>
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
@@ -181,6 +208,16 @@ export const TopBar: React.FC<TopBarProps> = ({
             <Grid className="w-3.5 h-3.5" />
           </button>
         </div>
+
+        <button
+          type="button"
+          onClick={onDownloadReport}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition-colors duration-100 ml-1"
+          title="Download Laporan Evaluasi Excel (.xlsx)"
+        >
+          <Download className="w-3.5 h-3.5" />
+          <span>Report .xlsx</span>
+        </button>
       </div>
 
       {/* Active Cycle & Phase */}
@@ -201,10 +238,10 @@ export const TopBar: React.FC<TopBarProps> = ({
           <div className="flex items-center justify-between gap-2">
             <span className="flex items-center gap-1.5">
               <span className={`w-2 h-2 rounded-full ${PROGRESS_BAR[signal.activeColor]}`} />
-              {ARM_LABELS[signal.activeArm]}
+              {signal.activeColor === 'red' ? 'All-Red' : ARM_LABELS[signal.activeArm]}
             </span>
             <span>
-              {Math.ceil(displayRemaining)}s{isExtended ? ' +EXT' : ''}
+              {Math.ceil(displayRemaining)}s
             </span>
           </div>
           <div className="w-full h-1 rounded-full bg-white/70 overflow-hidden">

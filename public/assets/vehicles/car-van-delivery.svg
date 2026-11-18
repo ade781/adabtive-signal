@@ -1,13 +1,72 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 124" width="48" height="124">
-  <rect x="4" y="6" width="40" height="112" rx="9" fill="#F1F5F9" stroke="#0F172A" stroke-width="1.5"/>
-  <rect x="8" y="24" width="32" height="70" rx="6" fill="#E2E8F0" stroke="#0F172A" stroke-width="1"/>
-  <path d="M10 26 L38 26 L36 38 L12 38 Z" fill="#1E293B" opacity="0.88"/>
-  <path d="M12 90 L36 90 L38 100 L10 100 Z" fill="#1E293B" opacity="0.82"/>
-  <rect x="2" y="32" width="3" height="7" rx="1" fill="#F1F5F9" stroke="#0F172A" stroke-width="0.8"/>
-  <rect x="43" y="32" width="3" height="7" rx="1" fill="#F1F5F9" stroke="#0F172A" stroke-width="0.8"/>
-  <rect x="7" y="7" width="8" height="3" rx="1" fill="#FEF08A"/>
-  <rect x="33" y="7" width="8" height="3" rx="1" fill="#FEF08A"/>
-  <rect x="7" y="114" width="8" height="3" rx="1" fill="#EF4444"/>
-  <rect x="33" y="114" width="8" height="3" rx="1" fill="#EF4444"/>
-  <line x1="12" y1="62" x2="36" y2="62" stroke="#94A3B8" stroke-width="1.2"/><line x1="12" y1="74" x2="36" y2="74" stroke="#94A3B8" stroke-width="1.2"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 124" width="48" height="124" fill="none">
+  <defs>
+    <filter id="cvd-shadow" x="-20%" y="-10%" width="140%" height="122%">
+      <feDropShadow dx="1" dy="2.8" stdDeviation="1.9" flood-color="#0F172A" flood-opacity="0.3"/>
+    </filter>
+    <linearGradient id="cvd-body" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#CBD5E1"/>
+      <stop offset="16%" stop-color="#F8FAFC"/>
+      <stop offset="50%" stop-color="#FFFFFF"/>
+      <stop offset="84%" stop-color="#F8FAFC"/>
+      <stop offset="100%" stop-color="#CBD5E1"/>
+    </linearGradient>
+    <linearGradient id="cvd-glass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#020617"/>
+      <stop offset="60%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#1E293B"/>
+    </linearGradient>
+  </defs>
+
+  <g filter="url(#cvd-shadow)">
+    <!-- Side Mirrors -->
+    <path d="M4.5 23 L1 24 L1 30 L4.5 30.5 Z" fill="#334155" stroke="#0F172A" stroke-width="0.9"/>
+    <path d="M43.5 23 L47 24 L47 30 L43.5 30.5 Z" fill="#334155" stroke="#0F172A" stroke-width="0.9"/>
+
+    <!-- Main Van Chassis (Gran Max / Blind Van Profile) -->
+    <rect x="4" y="4" width="40" height="116" rx="7.5" fill="url(#cvd-body)" stroke="#475569" stroke-width="1.2"/>
+
+    <!-- Short Cab Nose & Grille -->
+    <rect x="15" y="4.5" width="18" height="2" rx="1" fill="#334155"/>
+    <line x1="10" y1="12" x2="38" y2="12" stroke="#E2E8F0" stroke-width="0.9"/>
+
+    <!-- Panoramic Van Windshield -->
+    <path d="M8.5 16 C16 13.8 32 13.8 39.5 16 L41 30.5 C32 29 16 29 7 30.5 Z" fill="url(#cvd-glass)" stroke="#334155" stroke-width="0.8"/>
+    <path d="M11 17.5 L16 16.8 L13.5 28 L9.5 28.5 Z" fill="#94A3B8" opacity="0.25"/>
+    <!-- Wipers -->
+    <line x1="12" y1="15.8" x2="21.5" y2="18.5" stroke="#64748B" stroke-width="0.95" stroke-linecap="round"/>
+    <line x1="25.5" y1="15.8" x2="35" y2="18.5" stroke="#64748B" stroke-width="0.95" stroke-linecap="round"/>
+
+    <!-- Cab Side Windows -->
+    <path d="M6.2 32.5 L8.5 33.5 L8.5 47 L6.2 48 Z" fill="#0F172A"/>
+    <path d="M41.8 32.5 L39.5 33.5 L39.5 47 L41.8 48 Z" fill="#0F172A"/>
+
+    <!-- Indonesian Logistics Livery Stripes (Blue & Orange Courier Accent) -->
+    <rect x="7" y="34" width="3" height="80" rx="1" fill="#2563EB"/>
+    <rect x="38" y="34" width="3" height="80" rx="1" fill="#F97316"/>
+
+    <!-- Ribbed Cargo Roof Panel -->
+    <rect x="10.5" y="34" width="27" height="79" rx="2.5" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="0.9"/>
+    <g stroke="#CBD5E1" stroke-width="1">
+      <line x1="13" y1="48" x2="35" y2="48"/>
+      <line x1="13" y1="60" x2="35" y2="60"/>
+      <line x1="13" y1="72" x2="35" y2="72"/>
+      <line x1="13" y1="84" x2="35" y2="84"/>
+      <line x1="13" y1="96" x2="35" y2="96"/>
+    </g>
+
+    <!-- Utility Roof Rack Bar -->
+    <rect x="9" y="53" width="30" height="2.4" rx="1" fill="#64748B" stroke="#334155" stroke-width="0.6"/>
+    <rect x="9" y="89" width="30" height="2.4" rx="1" fill="#64748B" stroke="#334155" stroke-width="0.6"/>
+
+    <!-- Rear Door Split Seam -->
+    <line x1="24" y1="113" x2="24" y2="119" stroke="#64748B" stroke-width="1"/>
+
+    <!-- Headlights -->
+    <rect x="7" y="6.2" width="7.5" height="3.2" rx="1.2" fill="#FEF9C3" stroke="#94A3B8" stroke-width="0.6"/>
+    <rect x="33.5" y="6.2" width="7.5" height="3.2" rx="1.2" fill="#FEF9C3" stroke="#94A3B8" stroke-width="0.6"/>
+
+    <!-- Taillights -->
+    <rect x="6.5" y="116.2" width="7.5" height="2.8" rx="1" fill="#EF4444"/>
+    <rect x="34" y="116.2" width="7.5" height="2.8" rx="1" fill="#EF4444"/>
+  </g>
 </svg>
