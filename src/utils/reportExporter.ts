@@ -90,7 +90,7 @@ export function exportSimulationReportXlsx(snapshot: SimSnapshot): boolean {
   const phasesChronological = [...stats.phaseHistory].reverse();
   const sheet2Rows: (string | number)[][] = [
     ['HASIL SIMULASI PER FASE HIJAU (PhaseRecord)'],
-    ['Urutan kronologis dari fase paling awal ke terbaru.'],
+    ['Urutan kronologis dari fase paling awal ke terbaru. Catatan: log detail menyimpan maksimal 200 fase terbaru; ringkasan kumulatif penuh tersedia di Sheet 4.'],
     [
       'Siklus_Ke',
       'Fase_Ke',
@@ -123,7 +123,7 @@ export function exportSimulationReportXlsx(snapshot: SimSnapshot): boolean {
   const cyclesChronological = [...stats.cycleHistory].reverse();
   const sheet3Rows: (string | number)[][] = [
     ['REKAPITULASI PER SIKLUS SIMULASI (CycleRecord)'],
-    ['Ringkasan 4 fase per siklus penuh.'],
+    ['Ringkasan 4 fase per siklus penuh. Catatan: log rekap siklus menyimpan maksimal 60 siklus terbaru; ringkasan kumulatif penuh tersedia di Sheet 4.'],
     [
       'Siklus_Ke',
       'Total_Durasi_Hijau (s)',
@@ -134,7 +134,7 @@ export function exportSimulationReportXlsx(snapshot: SimSnapshot): boolean {
       'Rata2_Antrean_Sisa',
     ],
     ...cyclesChronological.map((c) => {
-      const directGreen = (c as { totalGreenDuration?: number }).totalGreenDuration;
+      const directGreen = c.totalGreenDuration;
       const cyclePhases = phasesChronological.filter((p) => p.cycleNumber === c.cycleNumber);
       const totalGreenDuration =
         typeof directGreen === 'number'
@@ -179,11 +179,9 @@ export function exportSimulationReportXlsx(snapshot: SimSnapshot): boolean {
 
   const arrivalPerHour = Math.round((config.motorRate + config.carRate + config.heavyRate) * 60);
   const capacityRatioPct =
-    arrivalPerHour === 0 && stats.totalExitedAllTime === 0
-      ? 0
-      : arrivalPerHour > 0
+    arrivalPerHour > 0
       ? +((stats.throughputPerHour / arrivalPerHour) * 100).toFixed(1)
-      : 100;
+      : 0;
   const los =
     stats.totalExitedAllTime === 0
       ? 'Belum ada data (0 kend keluar)'
@@ -202,7 +200,7 @@ export function exportSimulationReportXlsx(snapshot: SimSnapshot): boolean {
   const sheet4Rows: (string | number | null)[][] = [
     ['RINGKASAN EVALUASI PERFORMA SIMULASI'],
     ['Digunakan untuk mengevaluasi efektivitas kontrol sinyal dan kalibrasi terhadap data lapangan.'],
-    [null, null, null],
+    ['Catatan cakupan data: metrik utama di bawah merangkum seluruh simulasi secara kumulatif, sedangkan log detail Sheet 2 & Sheet 3 dibatasi hingga 200 fase / 60 siklus terbaru.', null, null],
     ['Metrik Utama', 'Nilai', 'Satuan'],
     ['Skenario', locationName, 'Teks'],
     ['Mode Kontrol Sinyal', config.adaptiveSignal ? 'Adaptif' : 'Fixed-Time', 'Mode'],

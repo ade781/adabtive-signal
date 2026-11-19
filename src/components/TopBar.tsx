@@ -125,6 +125,7 @@ export const TopBar: React.FC<TopBarProps> = ({
         <button
           type="button"
           onClick={onToggleRun}
+          title={running ? 'Jeda Simulasi (Space)' : 'Jalankan Simulasi (Space)'}
           className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border transition-colors duration-100 ${
             running
               ? 'bg-slate-900 text-white border-slate-900 hover:bg-slate-800'
@@ -139,7 +140,7 @@ export const TopBar: React.FC<TopBarProps> = ({
           type="button"
           onClick={onReset}
           className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 transition-colors duration-100"
-          title="Reset Simulasi"
+          title="Reset Simulasi (R)"
         >
           <RotateCcw className="w-3.5 h-3.5" />
           Reset
@@ -224,7 +225,10 @@ export const TopBar: React.FC<TopBarProps> = ({
       </div>
 
       {/* Active Cycle & Phase */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2 sm:gap-3">
+        <div className="sm:hidden px-2 py-1 rounded-md bg-slate-50 border border-slate-200 text-[11px] font-mono tabular-nums font-semibold text-slate-700 whitespace-nowrap">
+          {simTime.toFixed(1)}s · #{signal.cycleNumber}
+        </div>
         <div className="text-right hidden sm:block">
           <div className="text-[10px] uppercase tracking-wider text-slate-400 font-medium">
             Waktu Simulasi

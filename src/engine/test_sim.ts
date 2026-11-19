@@ -169,8 +169,10 @@ runScenario('3. Heavy-Dominant Mix', { motorRate: 5, carRate: 5, heavyRate: 15, 
 
 const mutSim = runScenario('4a. Dynamic Pre-Mutation (4 lanes, 120m)', { laneWidth: 3.5, lanesPerDirection: 4, roadLength: 120 }, 60);
 mutSim.updateConfig({ lanesPerDirection: 1, laneWidth: 3.0, roadLength: 45, allRedDuration: 0 });
+const mutStuck = new Map<number, number>();
 for (let s = 0; s < 1200; s++) {
   mutSim.step(0.05);
+  trackBoxStuck(mutSim, 0.05, mutStuck, '4b. Dynamic Post-Mutation');
   if (s % 20 === 0) checkSnapshotIntegrity(mutSim, '4b. Dynamic Post-Mutation');
 }
 const finalSnap = mutSim.getSnapshot();
@@ -295,8 +297,10 @@ assert(wideOut > narrowOut, `Expected wide 4.0m lane (${wideOut}) > narrow 2.8m 
     ...brimob!.patch,
     adaptiveSignal: false,
   });
+  const fieldStuck = new Map<number, number>();
   for (let s = 0; s < 2400; s++) {
     fieldSim.step(0.05);
+    trackBoxStuck(fieldSim, 0.05, fieldStuck, '9. Brimob Yogya Fixed-Time');
     if (s % 40 === 0) checkSnapshotIntegrity(fieldSim, '9. Brimob Yogya Fixed-Time');
   }
   const snap = fieldSim.getSnapshot();
@@ -352,9 +356,11 @@ assert(wideOut > narrowOut, `Expected wide 4.0m lane (${wideOut}) > narrow 2.8m 
   const brimob = SCENARIO_PRESETS.find((p) => p.id === 'brimob-yogya')!;
   const swarmOn = new TrafficSimulation({ ...brimob.patch, motorRate: 140, adaptiveSignal: false, motorSwarmMode: true });
   const swarmOff = new TrafficSimulation({ ...brimob.patch, motorRate: 140, adaptiveSignal: false, motorSwarmMode: false });
+  const swarmStuck = new Map<number, number>();
   for (let s = 0; s < 2400; s++) {
     swarmOn.step(0.05);
     swarmOff.step(0.05);
+    trackBoxStuck(swarmOn, 0.05, swarmStuck, '10b. Motor Swarm On');
     if (s % 40 === 0) checkSnapshotIntegrity(swarmOn, '10b. Motor Swarm On');
   }
   const swarmOnSnap = swarmOn.getSnapshot();
@@ -376,8 +382,10 @@ assert(wideOut > narrowOut, `Expected wide 4.0m lane (${wideOut}) > narrow 2.8m 
     for (const adaptive of [false, true]) {
       const label = `11. ${preset.id} (${adaptive ? 'adaptive' : 'fixed'})`;
       const sim = new TrafficSimulation({ ...preset.patch, adaptiveSignal: adaptive });
+      const stuck = new Map<number, number>();
       for (let s = 0; s < 1200; s++) {
         sim.step(0.05);
+        trackBoxStuck(sim, 0.05, stuck, label);
         if (s % 40 === 0) checkSnapshotIntegrity(sim, label);
       }
       const snap = sim.getSnapshot();
@@ -447,8 +455,10 @@ assert(wideOut > narrowOut, `Expected wide 4.0m lane (${wideOut}) > narrow 2.8m 
   const expandSim = new TrafficSimulation({ lanesPerDirection: 1, roadLength: 60, motorRate: 40, carRate: 25 });
   for (let s = 0; s < 300; s++) expandSim.step(0.05);
   expandSim.updateConfig({ lanesPerDirection: 3, roadLength: 120 });
+  const expandStuck = new Map<number, number>();
   for (let s = 0; s < 300; s++) {
     expandSim.step(0.05);
+    trackBoxStuck(expandSim, 0.05, expandStuck, '13c. Expand Config');
     if (s % 25 === 0) checkSnapshotIntegrity(expandSim, '13c. Expand Config');
   }
   console.log(`[PASS] 13. Reset Determinism, Zero Spawn, Extreme dt & Upward Config Expansion`);

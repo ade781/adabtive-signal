@@ -46,6 +46,15 @@ function measureArm(vehicles: readonly SimVehicle[], arm: ArmId): ArmMetrics {
   return { queued, approaching, nearStopLine, maxWait };
 }
 
+function measureAllArms(vehicles: readonly SimVehicle[]): Record<ArmId, ArmMetrics> {
+  return {
+    north: measureArm(vehicles, 'north'),
+    east: measureArm(vehicles, 'east'),
+    south: measureArm(vehicles, 'south'),
+    west: measureArm(vehicles, 'west'),
+  };
+}
+
 function getStarvationWait(config?: SimConfig): number {
   if (!config) return 60;
   const avgBaseGreen =
@@ -60,7 +69,7 @@ function getStarvationWait(config?: SimConfig): number {
  */
 export function getAdaptiveGreenBounds(config: SimConfig, arm?: ArmId): { minGreen: number; maxGreen: number } {
   const baseGreen = arm ? getArmGreenDuration(config, arm) : config.greenDuration;
-  const minGreen = Math.max(4, Math.min(baseGreen, Math.min(12, Math.round(baseGreen * 0.35))));
+  const minGreen = Math.max(3, Math.min(baseGreen, Math.min(12, Math.round(baseGreen * 0.35))));
   const maxGreen = Math.max(minGreen, baseGreen);
   return { minGreen, maxGreen };
 }
@@ -69,24 +78,20 @@ function scoreMetrics(m: ArmMetrics): number {
   return m.queued * 2 + m.approaching + Math.min(m.maxWait, 60) * 0.15;
 }
 
-/**
- * Computes the adaptive target green duration (seconds) for `activeArm`,
- * clamped between `minGreen` and `maxGreen` based on active vs. opposing arm demand.
- */
-export function computeAdaptiveGreenTarget(
-  vehicles: readonly SimVehicle[],
+function computeAdaptiveGreenTargetFromMetrics(
+  armMetrics: Record<ArmId, ArmMetrics>,
   activeArm: ArmId,
   config: SimConfig
 ): number {
   const { minGreen, maxGreen } = getAdaptiveGreenBounds(config, activeArm);
-  const active = measureArm(vehicles, activeArm);
+  const active = armMetrics[activeArm];
   const activeDemand = active.queued * 2 + active.approaching;
 
   let totalRedDemand = 0;
   let maxRedDemand = 0;
   for (const arm of ALL_ARMS) {
     if (arm === activeArm) continue;
-    const redScore = scoreMetrics(measureArm(vehicles, arm));
+    const redScore = scoreMetrics(armMetrics[arm]);
     totalRedDemand += redScore;
     if (redScore > maxRedDemand) maxRedDemand = redScore;
   }
@@ -113,6 +118,18 @@ export function computeAdaptiveGreenTarget(
 }
 
 /**
+ * Computes the adaptive target green duration (seconds) for `activeArm`,
+ * clamped between `minGreen` and `maxGreen` based on active vs. opposing arm demand.
+ */
+export function computeAdaptiveGreenTarget(
+  vehicles: readonly SimVehicle[],
+  activeArm: ArmId,
+  config: SimConfig
+): number {
+  return computeAdaptiveGreenTargetFromMetrics(measureAllArms(vehicles), activeArm, config);
+}
+
+/**
  * Determines whether the current green phase on `activeArm` should continue,
  * enforcing `[minGreen, maxGreen]` bounds, anti-starvation yield, and early gap-out
  * when the active approach clears while other arms have waiting queues.
@@ -128,12 +145,13 @@ export function shouldExtendGreenPhase(
   if (phaseElapsed >= maxGreen) return false;
 
   const starvationWait = getStarvationWait(config);
-  const active = measureArm(vehicles, activeArm);
+  const armMetrics = measureAllArms(vehicles);
+  const active = armMetrics[activeArm];
   let hasWaitingRedArm = false;
   let maxRedWait = 0;
   for (const arm of ALL_ARMS) {
     if (arm === activeArm) continue;
-    const red = measureArm(vehicles, arm);
+    const red = armMetrics[arm];
     if (red.maxWait > maxRedWait) maxRedWait = red.maxWait;
     if (red.queued > 0) {
       hasWaitingRedArm = true;
@@ -153,7 +171,7 @@ export function shouldExtendGreenPhase(
     return false;
   }
 
-  const target = computeAdaptiveGreenTarget(vehicles, activeArm, config);
+  const target = computeAdaptiveGreenTargetFromMetrics(armMetrics, activeArm, config);
   return phaseElapsed < target;
 }
 

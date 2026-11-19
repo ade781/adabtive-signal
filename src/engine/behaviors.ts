@@ -302,7 +302,11 @@ export function updateMotorcycleSeepage(
     nearestGap >= 24.0 ||
     (v.distanceAlongPath >= v.stopLineDist - 20.0 && v.laneIndex === blockingLeader.laneIndex && v.turn !== blockingLeader.turn) ||
     (blockingLeader.speed >= desiredV - 0.8 && blockingLeader.speed >= 3.5) ||
-    !canFilterSideBySide(v.width, blockingLeader.width, roadW)
+    !canFilterSideBySide(
+      v.width,
+      blockingLeader.width,
+      v.turn === 'straight' && config.lanesPerDirection >= 2 ? roadW : lw
+    )
   ) {
     return;
   }
@@ -388,6 +392,7 @@ export function updateMotorcycleSeepage(
         v.exitLineDist = v.path.exitLineDist;
         v.totalPathLength = v.path.totalPathLength;
         v.lateralOffset += (old - targetLane) * lw;
+        v.laneChangeDir = targetLane > old ? 'left' : 'right';
       }
     }
     v.targetLateralOffset = bestCand - (v.laneIndex + 0.5) * lw;

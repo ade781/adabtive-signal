@@ -176,7 +176,7 @@ export class TrafficSimulation {
 
       for (const v of this.vehicles) {
         v.laneIndex = Math.min(v.laneIndex, maxLane);
-        if (v.vClass !== 'motor' || lw < 2.8) {
+        if (v.vClass !== 'motor') {
           v.lateralOffset = 0; v.targetLateralOffset = 0; v.lateralVelocity = 0; v.laneChangeDir = null;
         } else {
           const maxLat = Math.max(0, lw * 0.5 - 0.42);
@@ -475,14 +475,20 @@ export class TrafficSimulation {
     const lw = getLaneWidth(this.config);
 
     let lateralOffset = 0;
-    if (vClass === 'motor' && lw >= 3.1) {
-      if (turn === 'left') lateralOffset = this.rng() < 0.9 ? lw * 0.24 : lw * 0.1;
-      else if (turn === 'right') lateralOffset = this.rng() < 0.9 ? -lw * 0.24 : -lw * 0.1;
-      else if (this.config.motorSwarmMode) {
-        const cols = [-0.34 * lw, -0.11 * lw, 0.11 * lw, 0.34 * lw];
-        lateralOffset = cols[Math.floor(this.rng() * cols.length)];
-      } else {
-        lateralOffset = this.rng() < 0.5 ? -lw * 0.27 : lw * 0.27;
+    if (vClass === 'motor') {
+      if (lw >= 3.1) {
+        if (turn === 'left') lateralOffset = this.rng() < 0.9 ? lw * 0.24 : lw * 0.1;
+        else if (turn === 'right') lateralOffset = this.rng() < 0.9 ? -lw * 0.24 : -lw * 0.1;
+        else if (this.config.motorSwarmMode) {
+          const cols = [-0.34 * lw, -0.11 * lw, 0.11 * lw, 0.34 * lw];
+          lateralOffset = cols[Math.floor(this.rng() * cols.length)];
+        } else {
+          lateralOffset = this.rng() < 0.5 ? -lw * 0.27 : lw * 0.27;
+        }
+      } else if (this.config.motorSwarmMode && lw >= 2.8) {
+        if (turn === 'left') lateralOffset = 0.52;
+        else if (turn === 'right') lateralOffset = -0.52;
+        else lateralOffset = this.rng() < 0.5 ? -0.52 : 0.52;
       }
     } else if (vClass === 'car') {
       lateralOffset = (this.rng() - 0.5) * 0.16;
@@ -674,19 +680,25 @@ export class TrafficSimulation {
       let { nearestGap, leadSpeed, blockingLeader, isSqueezingPast } = findBlockingLeader(v, this.vehicles, lw);
       const physicalGap = nearestGap;
       const physicalLeadSpeed = leadSpeed;
+      const frontBumper = v.distanceAlongPath + v.length * 0.5;
+      const vInsideBox = frontBumper > v.stopLineDist + 0.05 && !v.hasExitedIntersection;
       const hasBlockingLeader =
         !isSqueezingPast &&
         blockingLeader !== null &&
         ((blockingLeader.originArm === v.originArm &&
           (blockingLeader.laneIndex === v.laneIndex || blockingLeader.turn === v.turn)) ||
-          blockingLeader.destArm === v.destArm);
+          blockingLeader.destArm === v.destArm ||
+          (vInsideBox && blockingLeader.originArm !== v.originArm && blockingLeader.destArm !== v.destArm));
 
       let stoppingForSignal = false;
       let canLTOR = false;
+      const rhkStopDist = v.stopLineDist - 3.5;
       const effectiveStopDist =
-        this.config.motorBoxEnabled && v.vClass !== 'motor' ? v.stopLineDist - 3.5 : v.stopLineDist;
-      const distToStop = effectiveStopDist - (v.distanceAlongPath + v.length * 0.5);
-      const alreadyInBox = v.distanceAlongPath + v.length * 0.5 > v.stopLineDist + 0.25;
+        this.config.motorBoxEnabled && v.vClass !== 'motor' && frontBumper <= rhkStopDist + 0.5
+          ? rhkStopDist
+          : v.stopLineDist;
+      const distToStop = effectiveStopDist - frontBumper;
+      const alreadyInBox = frontBumper > v.stopLineDist + 0.25;
       if (v.distanceAlongPath < v.stopLineDist && !alreadyInBox) {
         const stopForYellow = light === 'yellow' && this.shouldStopForYellow(v, distToStop);
         if (light === 'yellow' && !stopForYellow && v.turn === 'straight') {
@@ -885,7 +897,7 @@ export class TrafficSimulation {
         cycleNumber: this.cycleNumber,
         armLights: { north: this.getArmLight('north'), east: this.getArmLight('east'), south: this.getArmLight('south'), west: this.getArmLight('west') },
       },
-      vehicles: this.vehicles.map(({ path: _p, targetLateralOffset: _t, lateralVelocity: _lv, speedFactor: _sf, accelFactor: _af, profile: _pr, reactionTimer: _rt, boxWaitTime: _bw, willRunRed: _wr, ...rest }) => rest),
+      vehicles: this.vehicles.map(({ path: _p, targetLateralOffset: _t, lateralVelocity: _lv, speedFactor: _sf, accelFactor: _af, profile: _pr, reactionTimer: _rt, prevAccel: _pa, boxWaitTime: _bw, willRunRed: _wr, yellowCommitted: _yc, ...rest }) => rest),
       stats: {
         simTime: this.simTime,
         currentPhaseExited: { ...this.currentPhaseExited },

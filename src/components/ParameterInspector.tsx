@@ -1,4 +1,4 @@
-import React, { useId, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { Sliders, CarFront, TrafficCone, RotateCcw, MapPin } from 'lucide-react';
 import { getArmGreenDuration } from '../engine/constants';
 import { SCENARIO_PRESETS, ScenarioPreset } from '../engine/presets';
@@ -77,11 +77,18 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<TabId>('geometry');
   const tabsId = useId();
+  const tabPanelRef = useRef<HTMLDivElement | null>(null);
   const tabRefs = useRef<Record<TabId, HTMLButtonElement | null>>({
     geometry: null,
     traffic: null,
     signal: null,
   });
+
+  useEffect(() => {
+    if (tabPanelRef.current) {
+      tabPanelRef.current.scrollTop = 0;
+    }
+  }, [activeTab]);
 
   const armWeights = config.armWeights ?? DEFAULT_ARM_WEIGHTS;
   const activePreset = SCENARIO_PRESETS.find((p) => isPresetActive(config, armWeights, p));
@@ -94,6 +101,7 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
       ...partial,
       scenarioName: undefined,
       scenarioNotes: undefined,
+      environmentId: undefined,
     });
   };
 
@@ -251,6 +259,7 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
 
       {/* Tab Body */}
       <div
+        ref={tabPanelRef}
         id={`${tabsId}-panel-${activeTab}`}
         role="tabpanel"
         aria-labelledby={`${tabsId}-tab-${activeTab}`}

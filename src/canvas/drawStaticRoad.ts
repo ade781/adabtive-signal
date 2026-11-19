@@ -73,6 +73,42 @@ function getEnvironmentCorners(envKey: string): CornerSpec[] {
   }
 }
 
+function drawImageContain(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  x: number,
+  y: number,
+  boxW: number,
+  boxH: number
+): void {
+  const nw = img.naturalWidth || boxW;
+  const nh = img.naturalHeight || boxH;
+  if (nw <= 0 || nh <= 0) {
+    ctx.drawImage(img, x, y, boxW, boxH);
+    return;
+  }
+  const scale = Math.min(boxW / nw, boxH / nh);
+  const w = nw * scale;
+  const h = nh * scale;
+  ctx.drawImage(img, x + (boxW - w) / 2, y + (boxH - h) / 2, w, h);
+}
+
+function drawRotatedImage(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  cx: number,
+  cy: number,
+  w: number,
+  h: number,
+  angle: number
+): void {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angle);
+  ctx.drawImage(img, -w / 2, -h / 2, w, h);
+  ctx.restore();
+}
+
 export function drawStaticRoadLayer(
   ctx: CanvasRenderingContext2D,
   width: number,
@@ -135,8 +171,8 @@ export function drawStaticRoadLayer(
     ctx.fillRect(rx, ry, bw, bw);
 
     // Martapura river/canal edge for Banjarmasin east quadrants
+    const riverOffset = c.riverEdge ? Math.max(42, config.roadLength * 0.56) : bw;
     if (c.riverEdge) {
-      const riverOffset = Math.max(42, config.roadLength * 0.56);
       const riverX = bx + riverOffset;
       const riverW = Math.max(12, bw - riverOffset);
       ctx.fillStyle = '#94A3B8';
@@ -159,7 +195,7 @@ export function drawStaticRoadLayer(
     ctx.fillRect(
       rx,
       c.sy < 0 ? by - soilStrip : by,
-      bw,
+      c.riverEdge ? Math.min(bw, riverOffset) : bw,
       soilStrip
     );
 
@@ -182,15 +218,34 @@ export function drawStaticRoadLayer(
     const pX = c.sx < 0 ? bx - 5.5 - bSize : bx + 5.5;
     const pY = c.sy < 0 ? by - 5.5 - bSize : by + 5.5;
     const pImg = getLoadedAsset(c.primary);
-    if (pImg) ctx.drawImage(pImg, pX, pY, bSize, bSize);
+    if (pImg) drawImageContain(ctx, pImg, pX, pY, bSize, bSize);
 
     if (config.roadLength >= 55) {
       const sImg = getLoadedAsset(c.secondary);
       const sSize = bSize * 0.85;
-      if (sImg) ctx.drawImage(sImg, c.sx < 0 ? bx - 5.5 - bSize - sSize - 4 : bx + 5.5 + bSize + 4, c.sy < 0 ? by - 5.5 - sSize : by + 5.5, sSize, sSize);
+      if (sImg) {
+        drawImageContain(
+          ctx,
+          sImg,
+          c.sx < 0 ? bx - 5.5 - bSize - sSize - 4 : bx + 5.5 + bSize + 4,
+          c.sy < 0 ? by - 5.5 - sSize : by + 5.5,
+          sSize,
+          sSize
+        );
+      }
 
+      const tLabelOffset = c.label ? 4.8 : 0;
       const tImg = getLoadedAsset(c.tertiary);
-      if (tImg) ctx.drawImage(tImg, c.sx < 0 ? bx - 5.5 - sSize : bx + 5.5, c.sy < 0 ? by - 5.5 - bSize - sSize - 4 : by + 5.5 + bSize + 4, sSize, sSize);
+      if (tImg) {
+        drawImageContain(
+          ctx,
+          tImg,
+          c.sx < 0 ? bx - 5.5 - sSize : bx + 5.5,
+          c.sy < 0 ? by - 5.5 - bSize - sSize - 4 - tLabelOffset : by + 5.5 + bSize + 4 + tLabelOffset,
+          sSize,
+          sSize
+        );
+      }
     }
 
     // Landmark caption badge inside the corner plot
@@ -213,18 +268,18 @@ export function drawStaticRoadLayer(
     }
 
     const planterImg = getLoadedAsset('/assets/infra/city/planter-box-long.svg');
-    if (planterImg) ctx.drawImage(planterImg, bx + c.sx * 1.4 - 4.5, by + c.sy * 20 - 1.2, 9, 2.4);
+    if (planterImg) drawRotatedImage(ctx, planterImg, bx + c.sx * 1.4, by + c.sy * 20, 9, 2.4, Math.PI / 2);
 
     // Streetlights & bus shelter along sidewalks
     const lampImg = getLoadedAsset('/assets/infra/city/streetlight-top.svg');
     if (lampImg) {
-      ctx.drawImage(lampImg, bx + c.sx * -1.4 - 1.4, by + c.sy * 16 - 0.7, 2.8, 1.4);
+      drawRotatedImage(ctx, lampImg, bx + c.sx * -1.4, by + c.sy * 16, 2.8, 1.4, Math.PI / 2);
       ctx.drawImage(lampImg, bx + c.sx * 16 - 1.4, by + c.sy * -1.4 - 0.7, 2.8, 1.4);
     }
     if (config.roadLength >= 65 && (c.sx * c.sy > 0 || envKey === 'laswi-bandung')) {
       const shelterImg = getLoadedAsset('/assets/infra/city/bus-shelter-top.svg');
       if (shelterImg) {
-        ctx.drawImage(shelterImg, bx + c.sx * -1.6 - 3.2, by + c.sy * 28 - 1.4, 6.4, 2.8);
+        drawRotatedImage(ctx, shelterImg, bx + c.sx * -1.6, by + c.sy * 28, 6.4, 2.8, Math.PI / 2);
       }
     }
 
@@ -376,12 +431,13 @@ export function drawStaticRoadLayer(
   // Kotak Khusus Sepeda Motor / RHK (4.5m red-tinted pocket behind stop line)
   if (config.motorBoxEnabled) {
     const rhkDepth = 4.5;
+    const innerMargin = config.hasMedian ? 0.50 : 0.12;
     for (const rot of [0, Math.PI / 2, Math.PI, -Math.PI / 2]) {
       ctx.save();
       ctx.rotate(rot);
       const rx = -halfRoad + 0.12;
       const ry = halfBox + 0.45;
-      const rw = halfRoad - 0.24;
+      const rw = Math.max(0.5, halfRoad - 0.12 - innerMargin);
       ctx.fillStyle = 'rgba(220, 38, 38, 0.26)';
       ctx.fillRect(rx, ry, rw, rhkDepth);
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
@@ -389,7 +445,7 @@ export function drawStaticRoadLayer(
       ctx.strokeRect(rx, ry, rw, rhkDepth);
 
       // Subtle motorcycle stencil + RHK label
-      const cxBox = -halfRoad / 2;
+      const cxBox = rx + rw / 2;
       const cyBox = ry + rhkDepth / 2;
       ctx.fillStyle = 'rgba(255, 255, 255, 0.72)';
       ctx.fillRect(cxBox - 0.35, cyBox - 0.85, 0.7, 0.22); // handlebar

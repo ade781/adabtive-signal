@@ -1,3 +1,4 @@
+import { exportSimulationReportXlsx } from '../utils/reportExporter';
 import { computeAdaptiveGreenTarget, getAdaptiveGreenBounds, pickNextArmAdaptive } from './adaptiveController';
 import { SimVehicle } from './behaviors';
 import { ARM_ORDER, DEFAULT_CONFIG, QUEUE_SPEED_THRESHOLD } from './constants';
@@ -311,4 +312,53 @@ function makeMockVehicle(
   console.log('[PASS] 4. Empty Telemetry & waitingTime Threshold: fresh/reset zeros and creeping waitTime verified');
 }
 
-console.log('--- ALL ADAPTIVE & EXPORT TESTS PASSED ---');
+// 5. Excel Report Exporter Smoke Test (Empty & Populated SimSnapshot)
+async function runExportTest() {
+  const sim = new TrafficSimulation({
+    ...DEFAULT_CONFIG,
+    scenarioName: 'Test Export Simpang',
+    motorRate: 40,
+    carRate: 25,
+    heavyRate: 5,
+    greenDuration: 10,
+    yellowDuration: 2,
+    allRedDuration: 1,
+  });
+
+  const emptySnap = sim.getSnapshot();
+  for (let i = 0; i < 600; i++) sim.step(0.05);
+  const populatedSnap = sim.getSnapshot();
+  assert(populatedSnap.stats.phaseHistory.length > 0, '[5] Expected populated phaseHistory');
+
+  const loadNodeModule = new Function('specifier', 'return import(specifier)') as (
+    specifier: string
+  ) => Promise<Record<string, (...args: unknown[]) => unknown>>;
+  const fs = await loadNodeModule('node:fs');
+  const os = await loadNodeModule('node:os');
+  const path = await loadNodeModule('node:path');
+  const proc = (globalThis as { process?: { cwd: () => string; chdir: (dir: string) => void } }).process;
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'adaptive-signal-export-')) as string;
+  const prevCwd = proc?.cwd();
+  try {
+    if (proc) proc.chdir(tmpDir);
+    const okEmpty = exportSimulationReportXlsx(emptySnap);
+    const okPopulated = exportSimulationReportXlsx(populatedSnap);
+    assert(okEmpty === true, '[5] Expected exportSimulationReportXlsx(emptySnap) to return true');
+    assert(okPopulated === true, '[5] Expected exportSimulationReportXlsx(populatedSnap) to return true');
+    const files = (fs.readdirSync(tmpDir) as string[]).filter((f: string) => f.endsWith('.xlsx'));
+    assert(files.length >= 1, '[5] Expected generated .xlsx file(s) in temp dir');
+  } finally {
+    if (proc && prevCwd) proc.chdir(prevCwd);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+
+  console.log('[PASS] 5. Excel Report Exporter: empty and populated SimSnapshot exported cleanly');
+  console.log('--- ALL ADAPTIVE & EXPORT TESTS PASSED ---');
+}
+
+void runExportTest().catch((err) => {
+  console.error(err);
+  const proc = (globalThis as { process?: { exit: (code: number) => void } }).process;
+  if (proc) proc.exit(1);
+});

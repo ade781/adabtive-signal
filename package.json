@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "tsx src/engine/test_sim.ts"
+    "test": "tsx src/engine/test_sim.ts && tsx src/engine/test_adaptive_and_export.ts"
   },
   "dependencies": {
     "lucide-react": "^0.469.0",

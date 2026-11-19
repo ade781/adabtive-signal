@@ -181,7 +181,7 @@ export const TelemetryStrip: React.FC<TelemetryStripProps> = ({ stats, signal, a
       </div>
 
       {/* Card 4: Recent History (Per Phase & Per Cycle) */}
-      <div className="bg-white border border-slate-200 rounded-lg p-2.5 flex flex-col justify-between">
+      <div className="bg-white border border-slate-200 rounded-lg p-2.5 flex flex-col justify-start gap-2">
         <div className="flex items-center justify-between mb-1">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
             Riwayat Periode

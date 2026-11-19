@@ -140,6 +140,10 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = React.memo(
     config.leftTurnOnRed,
     config.environmentId,
     config.scenarioName,
+    config.armNames?.north,
+    config.armNames?.east,
+    config.armNames?.south,
+    config.armNames?.west,
   ]);
 
   const drawFrame = useCallback(() => {
