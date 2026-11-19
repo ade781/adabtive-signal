@@ -32,10 +32,6 @@ const TABS: { id: TabId; label: string; icon: React.ComponentType<{ className?: 
   { id: 'signal', label: 'Lampu', icon: TrafficCone },
 ];
 
-function snap5(val: number): number {
-  return Math.round(val / 5) * 5;
-}
-
 function isPresetActive(
   config: SimConfig,
   armWeights: Record<ArmId, number>,
@@ -43,12 +39,28 @@ function isPresetActive(
 ): boolean {
   const { patch } = preset;
   if (patch.scenarioName) {
-    return config.scenarioName === patch.scenarioName;
+    if (config.scenarioName === patch.scenarioName) {
+      return true;
+    }
+    const isBalancedDefault =
+      preset.id === 'balanced' &&
+      !config.scenarioName &&
+      (!config.environmentId || config.environmentId === 'default');
+    if (!isBalancedDefault) {
+      return false;
+    }
   }
   if (
     config.motorRate !== patch.motorRate ||
     config.carRate !== patch.carRate ||
     config.heavyRate !== patch.heavyRate
+  ) {
+    return false;
+  }
+  if (
+    (patch.turnLeftPct !== undefined && config.turnLeftPct !== patch.turnLeftPct) ||
+    (patch.turnStraightPct !== undefined && config.turnStraightPct !== patch.turnStraightPct) ||
+    (patch.turnRightPct !== undefined && config.turnRightPct !== patch.turnRightPct)
   ) {
     return false;
   }
@@ -101,30 +113,30 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
   };
 
   const handleTurnChange = (key: 'turnLeftPct' | 'turnStraightPct' | 'turnRightPct', val: number) => {
-    const clamped = snap5(Math.max(0, Math.min(100, val)));
+    const clamped = Math.round(Math.max(0, Math.min(100, val)));
     const remaining = 100 - clamped;
     if (key === 'turnLeftPct') {
       const otherSum = config.turnStraightPct + config.turnRightPct;
       const straight =
         otherSum > 0
-          ? snap5((config.turnStraightPct / otherSum) * remaining)
-          : snap5(remaining * 0.7);
+          ? Math.round((config.turnStraightPct / otherSum) * remaining)
+          : Math.round(remaining * 0.7);
       const right = remaining - straight;
       handleManualChange({ turnLeftPct: clamped, turnStraightPct: straight, turnRightPct: right });
     } else if (key === 'turnStraightPct') {
       const otherSum = config.turnLeftPct + config.turnRightPct;
       const left =
         otherSum > 0
-          ? snap5((config.turnLeftPct / otherSum) * remaining)
-          : snap5(remaining * 0.5);
+          ? Math.round((config.turnLeftPct / otherSum) * remaining)
+          : Math.round(remaining * 0.5);
       const right = remaining - left;
       handleManualChange({ turnLeftPct: left, turnStraightPct: clamped, turnRightPct: right });
     } else {
       const otherSum = config.turnLeftPct + config.turnStraightPct;
       const left =
         otherSum > 0
-          ? snap5((config.turnLeftPct / otherSum) * remaining)
-          : snap5(remaining * 0.3);
+          ? Math.round((config.turnLeftPct / otherSum) * remaining)
+          : Math.round(remaining * 0.3);
       const straight = remaining - left;
       handleManualChange({ turnLeftPct: left, turnStraightPct: straight, turnRightPct: clamped });
     }
@@ -188,7 +200,7 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
   };
 
   return (
-    <aside className="w-full lg:w-[350px] bg-white border border-slate-200 rounded-lg flex flex-col shrink-0 overflow-hidden">
+    <aside className="w-full lg:w-[350px] lg:min-h-0 bg-white border border-slate-200 rounded-lg flex flex-col shrink-0 overflow-hidden">
       {/* Header */}
       <div className="px-4 py-2.5 border-b border-slate-200 flex items-center justify-between">
         <span className="text-xs font-semibold uppercase tracking-wider text-slate-700">
@@ -548,7 +560,7 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                 unit="%"
                 min={0}
                 max={100}
-                step={5}
+                step={1}
                 onChange={(v) => handleTurnChange('turnLeftPct', v)}
               />
               <SliderField
@@ -557,7 +569,7 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                 unit="%"
                 min={0}
                 max={100}
-                step={5}
+                step={1}
                 onChange={(v) => handleTurnChange('turnStraightPct', v)}
               />
               <SliderField
@@ -566,7 +578,7 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                 unit="%"
                 min={0}
                 max={100}
-                step={5}
+                step={1}
                 onChange={(v) => handleTurnChange('turnRightPct', v)}
               />
             </div>

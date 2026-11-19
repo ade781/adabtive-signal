@@ -6,7 +6,6 @@ import { IntersectionCanvas } from './canvas/IntersectionCanvas';
 import { TopBar } from './components/TopBar';
 import { ParameterInspector } from './components/ParameterInspector';
 import { TelemetryStrip } from './components/TelemetryStrip';
-import { exportSimulationReportXlsx } from './utils/reportExporter';
 
 const UI_THROTTLE_MS = 80;
 
@@ -14,7 +13,50 @@ const MemoTopBar = React.memo(TopBar);
 const MemoParameterInspector = React.memo(ParameterInspector);
 const MemoTelemetryStrip = React.memo(TelemetryStrip);
 
-export function App() {
+interface ErrorBoundaryState {
+  hasError: boolean;
+  message: string;
+}
+
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, ErrorBoundaryState> {
+  state: ErrorBoundaryState = { hasError: false, message: '' };
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, message: error.message || 'Terjadi kesalahan runtime pada aplikasi.' };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo): void {
+    console.error('Adaptive Signal ErrorBoundary:', error, info);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen w-full flex items-center justify-center bg-slate-50 p-6 text-slate-900">
+          <div className="max-w-md w-full bg-white border border-slate-200 rounded-lg p-5 space-y-3 shadow-sm">
+            <div className="text-sm font-semibold text-rose-700">Terjadi Kesalahan Tampilan</div>
+            <p className="text-xs text-slate-600 font-mono break-words">{this.state.message}</p>
+            <button
+              type="button"
+              onClick={() => this.setState({ hasError: false, message: '' })}
+              className="px-3 py-1.5 rounded-md text-xs font-medium bg-slate-900 text-white hover:bg-slate-800 transition-colors duration-100"
+            >
+              Muat Ulang Tampilan
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+interface ExportStatus {
+  type: 'success' | 'warning' | 'error';
+  message: string;
+}
+
+function AppContent() {
   const [sim] = useState(() => new TrafficSimulation());
   const snapshotRef = useRef<SimSnapshot>(sim.getSnapshot());
   const [uiSnapshot, setUiSnapshot] = useState<SimSnapshot>(() => snapshotRef.current);
@@ -26,6 +68,9 @@ export function App() {
   const [speed, setSpeed] = useState(1);
   const [zoom, setZoom] = useState(1);
   const [showGrid, setShowGrid] = useState(true);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportStatus, setExportStatus] = useState<ExportStatus | null>(null);
+  const exportTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!running) {
@@ -101,9 +146,52 @@ export function App() {
   const handleZoomIn = useCallback(() => setZoom((z) => Math.min(2.2, +(z + 0.1).toFixed(1))), []);
   const handleZoomOut = useCallback(() => setZoom((z) => Math.max(0.6, +(z - 0.1).toFixed(1))), []);
   const handleZoomReset = useCallback(() => setZoom(1), []);
-  const handleDownloadReport = useCallback(() => {
-    exportSimulationReportXlsx(sim.getSnapshot());
-  }, [sim]);
+  const showExportToast = useCallback((status: ExportStatus) => {
+    setExportStatus(status);
+    if (exportTimerRef.current !== null) {
+      window.clearTimeout(exportTimerRef.current);
+    }
+    exportTimerRef.current = window.setTimeout(() => {
+      setExportStatus(null);
+      exportTimerRef.current = null;
+    }, 4000);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (exportTimerRef.current !== null) {
+        window.clearTimeout(exportTimerRef.current);
+      }
+    };
+  }, []);
+
+  const handleDownloadReport = useCallback(async () => {
+    if (isExporting) return;
+    setIsExporting(true);
+    try {
+      const snapshot = sim.getSnapshot();
+      const { exportSimulationReportXlsx } = await import('./utils/reportExporter');
+      exportSimulationReportXlsx(snapshot);
+      if (snapshot.stats.totalExitedAllTime === 0) {
+        showExportToast({
+          type: 'warning',
+          message: 'Laporan .xlsx diunduh (belum ada kendaraan keluar)',
+        });
+      } else {
+        showExportToast({
+          type: 'success',
+          message: 'Laporan .xlsx berhasil diunduh',
+        });
+      }
+    } catch (err) {
+      showExportToast({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Gagal mengekspor laporan .xlsx',
+      });
+    } finally {
+      setIsExporting(false);
+    }
+  }, [sim, isExporting, showExportToast]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -137,12 +225,13 @@ export function App() {
       : Math.max(0.5, uiSnapshot.config.allRedDuration);
 
   return (
-    <div className="min-h-screen lg:h-screen w-full flex flex-col bg-slate-50 text-slate-900 lg:overflow-hidden">
+    <div className="min-h-screen lg:h-screen w-full flex flex-col bg-slate-50 text-slate-900 overflow-x-hidden">
       <MemoTopBar
         running={running}
         onToggleRun={handleToggleRun}
         onReset={handleReset}
         onDownloadReport={handleDownloadReport}
+        isExporting={isExporting}
         speed={speed}
         onSpeedChange={setSpeed}
         signal={uiSnapshot.signal}
@@ -157,8 +246,8 @@ export function App() {
         onZoomReset={handleZoomReset}
       />
 
-      <main className="flex-1 min-h-0 p-2.5 flex flex-col gap-2.5 lg:overflow-hidden">
-        <div className="flex-1 min-h-0 flex flex-col lg:flex-row gap-2.5 lg:overflow-hidden">
+      <main className="flex-1 min-h-0 p-2.5 flex flex-col gap-2.5 overflow-y-auto">
+        <div className="flex-1 min-h-0 flex flex-col lg:flex-row gap-2.5">
           <div className="flex-1 min-h-[340px] min-w-0">
             <IntersectionCanvas
               snapshotRef={snapshotRef}
@@ -182,7 +271,39 @@ export function App() {
           armNames={inspectorConfig.armNames}
         />
       </main>
+
+      {exportStatus && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`fixed bottom-4 right-4 z-50 flex items-center gap-2 px-3 py-2 rounded-md border text-xs font-medium shadow-sm ${
+            exportStatus.type === 'success'
+              ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+              : exportStatus.type === 'warning'
+              ? 'bg-amber-50 text-amber-800 border-amber-200'
+              : 'bg-rose-50 text-rose-800 border-rose-200'
+          }`}
+        >
+          <span>{exportStatus.message}</span>
+          <button
+            type="button"
+            onClick={() => setExportStatus(null)}
+            aria-label="Tutup notifikasi"
+            className="text-[11px] opacity-60 hover:opacity-100 px-1"
+          >
+            ✕
+          </button>
+        </div>
+      )}
     </div>
+  );
+}
+
+export function App() {
+  return (
+    <ErrorBoundary>
+      <AppContent />
+    </ErrorBoundary>
   );
 }
 

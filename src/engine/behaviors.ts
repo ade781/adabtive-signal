@@ -35,13 +35,25 @@ export function assignReactionWave(vehicles: SimVehicle[], arm: ArmId, lanes: nu
       .sort((a, b) => b.distanceAlongPath - a.distanceAlongPath);
 
     let prev = 0;
+    let prevDist = Infinity;
+    let rowIdx = 0;
     for (let i = 0; i < queued.length; i++) {
       const v = queued[i];
+      const sameRowSideBySide =
+        i > 0 &&
+        v.vClass === 'motor' &&
+        Math.abs(prevDist - v.distanceAlongPath) < 1.2;
+      if (i > 0 && !sameRowSideBySide) {
+        rowIdx++;
+      }
       const base = v.vClass === 'motor' ? 0.04 : v.vClass === 'car' ? 0.1 : 0.18;
       const scale = v.profile === 'aggressive' ? 0.7 : v.profile === 'cautious' ? 1.2 : 1.0;
-      const own = base * scale + Math.min(5, i) * 0.04;
-      v.reactionTimer = i === 0 ? own : Math.max(prev + 0.04, own);
-      prev = v.reactionTimer;
+      const own = base * scale + Math.min(5, rowIdx) * 0.04;
+      v.reactionTimer = rowIdx === 0 ? own : Math.max(prev + (sameRowSideBySide ? 0 : 0.04), own);
+      if (!sameRowSideBySide) {
+        prev = v.reactionTimer;
+        prevDist = v.distanceAlongPath;
+      }
     }
   }
 }
@@ -99,13 +111,16 @@ export function findBlockingLeader(
         other.speed > 0.2
           ? 0.85
           : 0;
-      if (latSep >= minLatNeed + tailSwingPad1 && ((!crossingTurnInLane && !sameTurnTightCurve) || longOverlap)) {
+      if (
+        latSep >= minLatNeed + tailSwingPad1 &&
+        ((!crossingTurnInLane && !sameTurnTightCurve) || (longOverlap && (!sameTurnTightCurve || other.distanceAlongPath - v.distanceAlongPath < 0.3)))
+      ) {
         if (v.vClass === 'motor' && latSep < minLatNeed + 0.45 && Math.abs(other.distanceAlongPath - v.distanceAlongPath) < 4.5) {
           isSqueezingPast = true;
         }
         continue;
       }
-      if (longOverlap && latSep >= minLatNeed + tailSwingPad1) continue;
+      if (longOverlap && latSep >= minLatNeed + tailSwingPad1 && !sameTurnTightCurve) continue;
       const gapAlong = other.distanceAlongPath - v.distanceAlongPath - (other.length + v.length) * 0.5;
       if (gapAlong < nearestGap) {
         nearestGap = Math.max(0.05, gapAlong);
@@ -127,7 +142,7 @@ export function findBlockingLeader(
     ) {
       // Same-arm, same-turn curve following: arc-length gap remains exact even across 90-degree Bezier bends.
       // Also skip vehicles behind/beside on the same turn so they never fall through to rotated 2D OBB.
-      if (other.originArm === v.originArm && other.turn === v.turn) {
+      if (other.originArm === v.originArm && other.turn === v.turn && other.laneIndex === v.laneIndex) {
         if (other.distanceAlongPath > v.distanceAlongPath) {
           const otherCurLat = getGlobalLat(other.laneIndex, other.lateralOffset, lw);
           const otherPredLat = getGlobalLat(other.laneIndex, other.lateralOffset + other.lateralVelocity * 0.25, lw);
@@ -136,7 +151,7 @@ export function findBlockingLeader(
             v.turn !== 'straight' && v.laneIndex === other.laneIndex
               ? v.vClass === 'motor' && other.vClass === 'motor'
                 ? 0.35
-                : 0.75
+                : 0.5
               : 1.0;
           const latSep = rawLatSep * turnScale;
           if (latSep < minLatNeed) {
@@ -197,17 +212,15 @@ export function findBlockingLeader(
           ? -v.length * 0.25
           : 0;
       if (forwardProj <= minForwardProj) continue;
-      if (other.originArm !== v.originArm && gapAlong <= -0.4 && forwardProj < v.length * 0.5) continue;
 
       if (gapAlong < nearestGap) {
-        // Symmetric box deadlock resolution: only ignore perpendicular blockers that are ALSO stalled,
-        // never ignore same-destArm leaders, and use a single symmetric tie-breaker so two vehicles
-        // cannot simultaneously ghost through each other.
+        const notOverlapping = gapAlong > 0 || latProj >= myEffW * 0.5 + otherProjLat - 0.05;
         if (
           vInsideBox &&
+          notOverlapping &&
           other.originArm !== v.originArm &&
           other.destArm !== v.destArm &&
-          v.speed < 0.4 &&
+          v.speed < 0.8 &&
           other.speed < 0.4 &&
           ((v.boxWaitTime ?? 0) >= 1.0 || (other.boxWaitTime ?? 0) >= 1.0)
         ) {

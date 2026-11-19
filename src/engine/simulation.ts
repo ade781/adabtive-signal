@@ -119,6 +119,7 @@ export class TrafficSimulation {
   private currentCycleQueueSum = 0;
   private currentCycleQueueTime = 0;
   private currentCycleDuration = 0;
+  private currentCycleGreenDuration = 0;
   private totalExitedAllTime = 0;
   private totalExitedWaitTime = 0;
   private exitedWaitCount = 0;
@@ -154,6 +155,7 @@ export class TrafficSimulation {
     this.currentCycleQueueSum = 0;
     this.currentCycleQueueTime = 0;
     this.currentCycleDuration = 0;
+    this.currentCycleGreenDuration = 0;
     this.totalExitedAllTime = 0;
     this.totalExitedWaitTime = 0;
     this.exitedWaitCount = 0;
@@ -356,6 +358,7 @@ export class TrafficSimulation {
     const finishedArm = ARM_ORDER[this.activeArmIndex];
     this.phaseCounter += 1;
     this.currentCycleDuration += this.phaseElapsed;
+    this.currentCycleGreenDuration += this.greenElapsed;
     this.phaseHistory.unshift({
       phaseIndex: this.phaseCounter,
       cycleNumber: this.cycleNumber,
@@ -382,6 +385,7 @@ export class TrafficSimulation {
       this.cycleHistory.unshift({
         cycleNumber: this.cycleNumber,
         totalDuration: Math.round(this.currentCycleDuration * 10) / 10,
+        totalGreenDuration: Math.round(this.currentCycleGreenDuration * 10) / 10,
         exitedMotor: this.currentCycleExited.motor,
         exitedCar: this.currentCycleExited.car,
         exitedHeavy: this.currentCycleExited.heavy,
@@ -395,6 +399,7 @@ export class TrafficSimulation {
       this.currentCycleQueueSum = 0;
       this.currentCycleQueueTime = 0;
       this.currentCycleDuration = 0;
+      this.currentCycleGreenDuration = 0;
     }
 
     const nextArm = ARM_ORDER[this.activeArmIndex];
@@ -637,7 +642,15 @@ export class TrafficSimulation {
     const widthSpeedFactor = Math.max(0.84, Math.min(1.08, 0.84 + (lw - 2.8) * 0.1714));
     const widthHeadwayFactor = Math.max(0.92, Math.min(1.18, 1.18 - (lw - 2.8) * 0.1857));
 
-    const decisions: { v: SimVehicle; nextSpeed: number; nextLat: number; nextLatVel: number }[] = [];
+    const decisions: {
+      v: SimVehicle;
+      nextSpeed: number;
+      nextLat: number;
+      nextLatVel: number;
+      physicalGap: number;
+      physicalLeadSpeed: number;
+      hasBlockingLeader: boolean;
+    }[] = [];
 
     for (const v of this.vehicles) {
       if (v.reactionTimer > 0) v.reactionTimer = Math.max(0, v.reactionTimer - dt);
@@ -659,11 +672,22 @@ export class TrafficSimulation {
       }
 
       let { nearestGap, leadSpeed, blockingLeader, isSqueezingPast } = findBlockingLeader(v, this.vehicles, lw);
+      const physicalGap = nearestGap;
+      const physicalLeadSpeed = leadSpeed;
+      const hasBlockingLeader =
+        !isSqueezingPast &&
+        blockingLeader !== null &&
+        ((blockingLeader.originArm === v.originArm &&
+          (blockingLeader.laneIndex === v.laneIndex || blockingLeader.turn === v.turn)) ||
+          blockingLeader.destArm === v.destArm);
 
       let stoppingForSignal = false;
       let canLTOR = false;
-      const distToStop = v.stopLineDist - (v.distanceAlongPath + v.length * 0.5);
-      if (distToStop > 0) {
+      const effectiveStopDist =
+        this.config.motorBoxEnabled && v.vClass !== 'motor' ? v.stopLineDist - 3.5 : v.stopLineDist;
+      const distToStop = effectiveStopDist - (v.distanceAlongPath + v.length * 0.5);
+      const alreadyInBox = v.distanceAlongPath + v.length * 0.5 > v.stopLineDist + 0.25;
+      if (v.distanceAlongPath < v.stopLineDist && !alreadyInBox) {
         const stopForYellow = light === 'yellow' && this.shouldStopForYellow(v, distToStop);
         if (light === 'yellow' && !stopForYellow && v.turn === 'straight') {
           desiredV *= 1.2;
@@ -784,14 +808,20 @@ export class TrafficSimulation {
         }
       }
 
-      decisions.push({ v, nextSpeed, nextLat, nextLatVel });
+      decisions.push({ v, nextSpeed, nextLat, nextLatVel, physicalGap, physicalLeadSpeed, hasBlockingLeader });
     }
 
     const toRemove = new Set<number>();
-    for (const { v, nextSpeed, nextLat, nextLatVel } of decisions) {
+    for (const { v, nextSpeed, nextLat, nextLatVel, physicalGap, physicalLeadSpeed, hasBlockingLeader } of decisions) {
       v.speed = nextSpeed; v.lateralOffset = nextLat; v.lateralVelocity = nextLatVel;
-      v.distanceAlongPath += v.speed * dt;
-      if (v.speed < 0.5 && v.distanceAlongPath < v.stopLineDist) v.waitingTime += dt;
+      const minBuffer = 0.05;
+      const rawAdvance = v.speed * dt;
+      const maxAdvance =
+        hasBlockingLeader && Number.isFinite(physicalGap)
+          ? Math.max(0, physicalGap + Math.max(0, physicalLeadSpeed) * dt - minBuffer)
+          : rawAdvance;
+      v.distanceAlongPath += Math.min(rawAdvance, maxAdvance);
+      if (v.speed < QUEUE_SPEED_THRESHOLD && v.distanceAlongPath < v.stopLineDist) v.waitingTime += dt;
       if (v.distanceAlongPath + v.length * 0.5 > v.stopLineDist + 0.05 && !v.hasExitedIntersection) {
         if (v.speed < 0.5) {
           v.boxWaitTime = (v.boxWaitTime ?? 0) + dt;

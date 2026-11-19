@@ -40,7 +40,6 @@ const ASSET_URLS = [
   '/assets/infra/city/parking-lot-top.svg',
   '/assets/infra/city/helipad-roof.svg',
   '/assets/infra/city/bus-shelter-top.svg',
-  '/assets/infra/city/bench-architectural.svg',
   '/assets/infra/city/streetlight-top.svg',
   '/assets/infra/city/tree-palm-top.svg',
   '/assets/infra/city/planter-box-long.svg',

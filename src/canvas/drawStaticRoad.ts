@@ -408,7 +408,7 @@ export function drawStaticRoadLayer(
       ctx.save();
       ctx.rotate(rot);
       const lx = -halfRoad - 1.45;
-      const ly = halfBox + 6.2;
+      const ly = halfBox + 8.8;
 
       ctx.fillStyle = 'rgba(16, 185, 129, 0.16)';
       ctx.strokeStyle = '#10B981';

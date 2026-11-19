@@ -70,13 +70,6 @@ function scoreMetrics(m: ArmMetrics): number {
 }
 
 /**
- * Scores an arm's traffic demand from EMP-weighted queued/approaching vehicles and max waiting time.
- */
-export function getArmDemandScore(vehicles: readonly SimVehicle[], arm: ArmId): number {
-  return scoreMetrics(measureArm(vehicles, arm));
-}
-
-/**
  * Computes the adaptive target green duration (seconds) for `activeArm`,
  * clamped between `minGreen` and `maxGreen` based on active vs. opposing arm demand.
  */
@@ -90,17 +83,19 @@ export function computeAdaptiveGreenTarget(
   const activeDemand = active.queued * 2 + active.approaching;
 
   let totalRedDemand = 0;
+  let maxRedDemand = 0;
   for (const arm of ALL_ARMS) {
     if (arm === activeArm) continue;
-    const red = measureArm(vehicles, arm);
-    totalRedDemand += scoreMetrics(red);
+    const redScore = scoreMetrics(measureArm(vehicles, arm));
+    totalRedDemand += redScore;
+    if (redScore > maxRedDemand) maxRedDemand = redScore;
   }
 
   if (activeDemand === 0 && totalRedDemand > 0) {
     return minGreen;
   }
 
-  if (totalRedDemand === 0 && activeDemand >= 1) {
+  if (totalRedDemand === 0 && activeDemand > 0) {
     return maxGreen;
   }
 
@@ -109,7 +104,8 @@ export function computeAdaptiveGreenTarget(
   const saturationCap = 6 * Math.max(1, config.lanesPerDirection);
   const saturationRatio = Math.min(1, activeDemand / saturationCap);
   const avgRedDemand = totalRedDemand / (ALL_ARMS.length - 1);
-  const pressureRatio = activeDemand / Math.max(1, activeDemand + avgRedDemand);
+  const effectiveRedDemand = Math.max(avgRedDemand, maxRedDemand * 0.7);
+  const pressureRatio = activeDemand / Math.max(1, activeDemand + effectiveRedDemand);
   const effectiveRatio = Math.max(saturationRatio, pressureRatio);
   const rawTarget = minGreen + (maxGreen - minGreen) * effectiveRatio;
 

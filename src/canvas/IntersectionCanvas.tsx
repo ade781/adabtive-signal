@@ -20,7 +20,7 @@ const SIGNAL_IMG: Record<SignalColor, string> = {
   red: '/assets/infra/signal-red.svg',
 };
 
-export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = ({
+export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = React.memo(({
   snapshotRef,
   config,
   running,
@@ -64,7 +64,26 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = ({
     resize();
     const ro = new ResizeObserver(resize);
     ro.observe(container);
-    return () => ro.disconnect();
+
+    let mqCleanup: (() => void) | undefined;
+    const watchDpr = () => {
+      mqCleanup?.();
+      if (typeof window.matchMedia !== 'function') return;
+      const dpr = window.devicePixelRatio || 1;
+      const mq = window.matchMedia(`(resolution: ${dpr}dppx)`);
+      const onChange = () => {
+        resize();
+        watchDpr();
+      };
+      mq.addEventListener('change', onChange, { once: true });
+      mqCleanup = () => mq.removeEventListener('change', onChange);
+    };
+    watchDpr();
+
+    return () => {
+      ro.disconnect();
+      mqCleanup?.();
+    };
   }, []);
 
   const halfRoad = getEffectiveRoadWidth(config);
@@ -104,7 +123,24 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = ({
       ctx.clearRect(0, 0, pixelW, pixelH);
       drawStaticRoadLayer(ctx, size.width, size.height, size.dpr, zoom, showGrid, halfRoad, halfBox, config);
     }
-  }, [size, zoom, showGrid, halfRoad, halfBox, config, assetVer]);
+    drawFrameRef.current();
+  }, [
+    size,
+    zoom,
+    showGrid,
+    halfRoad,
+    halfBox,
+    assetVer,
+    config.lanesPerDirection,
+    config.laneWidth,
+    config.roadLength,
+    config.roadWidthPerDirection,
+    config.motorBoxEnabled,
+    config.hasMedian,
+    config.leftTurnOnRed,
+    config.environmentId,
+    config.scenarioName,
+  ]);
 
   const drawFrame = useCallback(() => {
     const canvas = canvasRef.current;
@@ -238,7 +274,16 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = ({
 
   return (
     <div ref={containerRef} className="relative w-full h-full overflow-hidden bg-[#EDF2E7] rounded-lg border border-slate-200">
-      <canvas ref={canvasRef} className="block w-full h-full" />
+      <canvas
+        ref={canvasRef}
+        className="block w-full h-full"
+        role="img"
+        aria-label={
+          config.scenarioName
+            ? `Traffic intersection simulation: ${config.scenarioName}`
+            : 'Traffic intersection simulation canvas'
+        }
+      />
       {showHudPill && (
         <div className="pointer-events-none absolute top-3 left-3 flex flex-wrap items-center gap-1.5 rounded-lg border border-slate-200/90 bg-white/95 px-2.5 py-1.5 shadow-sm">
           {config.scenarioName && (
@@ -263,7 +308,7 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = ({
       )}
     </div>
   );
-};
+});
 
 function drawVectorCompassFallback(ctx: CanvasRenderingContext2D, cx: number, cy: number) {
   ctx.save();

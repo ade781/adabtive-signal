@@ -7,6 +7,7 @@ interface TopBarProps {
   onToggleRun: () => void;
   onReset: () => void;
   onDownloadReport: () => void;
+  isExporting?: boolean;
   speed: number;
   onSpeedChange: (s: number) => void;
   signal: SignalState;
@@ -45,6 +46,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   onToggleRun,
   onReset,
   onDownloadReport,
+  isExporting = false,
   speed,
   onSpeedChange,
   signal,
@@ -212,11 +214,12 @@ export const TopBar: React.FC<TopBarProps> = ({
         <button
           type="button"
           onClick={onDownloadReport}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition-colors duration-100 ml-1"
+          disabled={isExporting}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 disabled:opacity-60 disabled:cursor-wait transition-colors duration-100 ml-1"
           title="Download Laporan Evaluasi Excel (.xlsx)"
         >
           <Download className="w-3.5 h-3.5" />
-          <span>Report .xlsx</span>
+          <span>{isExporting ? 'Mengekspor...' : 'Report .xlsx'}</span>
         </button>
       </div>
 

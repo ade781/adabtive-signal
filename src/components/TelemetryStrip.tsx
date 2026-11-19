@@ -55,7 +55,10 @@ function MixBar({ motor, car, heavy }: { motor: number; car: number; heavy: numb
 }
 
 export const TelemetryStrip: React.FC<TelemetryStripProps> = ({ stats, signal, armNames }) => {
-  const los = getLosBadge(stats.avgWaitTime);
+  const hasExitedData = stats.totalExitedAllTime > 0;
+  const los = hasExitedData
+    ? getLosBadge(stats.avgWaitTime)
+    : { grade: '—', label: 'Menunggu data', className: 'bg-slate-100 text-slate-500 border-slate-200' };
   return (
     <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 shrink-0">
       {/* Card 1: Per-Phase Exited (1x Lampu Hijau Lengan Aktif) */}
@@ -126,9 +129,13 @@ export const TelemetryStrip: React.FC<TelemetryStripProps> = ({ stats, signal, a
           <div className="flex items-center gap-1.5">
             <span
               className={`text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded border ${los.className}`}
-              title={`Level of Service (PKJI/HCM): ${los.grade} — ${los.label} (rata-rata tunggu ${stats.avgWaitTime.toFixed(1)}s)`}
+              title={
+                hasExitedData
+                  ? `Level of Service (PKJI/HCM): ${los.grade} — ${los.label} (rata-rata tunggu ${stats.avgWaitTime.toFixed(1)}s)`
+                  : 'Level of Service (PKJI/HCM): Menunggu data kendaraan keluar'
+              }
             >
-              LOS {los.grade}
+              {hasExitedData ? `LOS ${los.grade}` : 'LOS —'}
             </span>
             <span className="text-[10px] font-mono tabular-nums text-slate-500">
               ALL: <strong className="text-slate-800">{stats.totalExitedAllTime}</strong>

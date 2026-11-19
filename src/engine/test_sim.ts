@@ -69,11 +69,10 @@ function checkSnapshotIntegrity(sim: TrafficSimulation, label: string) {
           );
         }
       } else if (
-        (a.originArm === b.originArm || a.destArm === b.destArm) &&
         obbOverlap(a.x, a.y, a.heading, a.length * 0.85, aEffW * 0.85, b.x, b.y, b.heading, b.length * 0.85, bEffW * 0.85)
       ) {
         throw new Error(
-          `[${label}] 2D Turning/Merge OBB Overlap between v#${a.id}(${a.vClass}, ${a.originArm}->${a.destArm}, d=${a.distanceAlongPath.toFixed(1)}) and v#${b.id}(${b.vClass}, ${b.originArm}->${b.destArm}, d=${b.distanceAlongPath.toFixed(1)})`
+          `[${label}] 2D Turning/Merge/Crossing OBB Overlap between v#${a.id}(${a.vClass}, ${a.originArm}->${a.destArm}, d=${a.distanceAlongPath.toFixed(1)}) and v#${b.id}(${b.vClass}, ${b.originArm}->${b.destArm}, d=${b.distanceAlongPath.toFixed(1)})`
         );
       }
     }
@@ -351,8 +350,8 @@ assert(wideOut > narrowOut, `Expected wide 4.0m lane (${wideOut}) > narrow 2.8m 
   );
 
   const brimob = SCENARIO_PRESETS.find((p) => p.id === 'brimob-yogya')!;
-  const swarmOn = new TrafficSimulation({ ...brimob.patch, adaptiveSignal: false, motorSwarmMode: true });
-  const swarmOff = new TrafficSimulation({ ...brimob.patch, adaptiveSignal: false, motorSwarmMode: false });
+  const swarmOn = new TrafficSimulation({ ...brimob.patch, motorRate: 140, adaptiveSignal: false, motorSwarmMode: true });
+  const swarmOff = new TrafficSimulation({ ...brimob.patch, motorRate: 140, adaptiveSignal: false, motorSwarmMode: false });
   for (let s = 0; s < 2400; s++) {
     swarmOn.step(0.05);
     swarmOff.step(0.05);
@@ -367,6 +366,92 @@ assert(wideOut > narrowOut, `Expected wide 4.0m lane (${wideOut}) > narrow 2.8m 
   console.log(
     `[PASS] 10. LTOR & Motor Swarm: LTOR_on=${ltorOnSnap.stats.totalExitedAllTime} vs LTOR_off=${ltorOffSnap.stats.totalExitedAllTime} | Swarm_on=${swarmOnSnap.stats.throughputPerHour}/h vs Swarm_off=${swarmOffSnap.stats.throughputPerHour}/h`
   );
+}
+
+// 11. All 5 Real-World RI Field Presets (Fixed & Adaptive)
+{
+  const fieldPresets = SCENARIO_PRESETS.filter((p) => p.category === 'field');
+  assert(fieldPresets.length === 5, `[11. RI Field Presets] Expected 5 field presets, got ${fieldPresets.length}`);
+  for (const preset of fieldPresets) {
+    for (const adaptive of [false, true]) {
+      const label = `11. ${preset.id} (${adaptive ? 'adaptive' : 'fixed'})`;
+      const sim = new TrafficSimulation({ ...preset.patch, adaptiveSignal: adaptive });
+      for (let s = 0; s < 1200; s++) {
+        sim.step(0.05);
+        if (s % 40 === 0) checkSnapshotIntegrity(sim, label);
+      }
+      const snap = sim.getSnapshot();
+      assert(snap.stats.totalExitedAllTime > 0, `[${label}] Expected exited > 0, got ${snap.stats.totalExitedAllTime}`);
+      assert(Number.isFinite(snap.stats.avgWaitTime), `[${label}] avgWaitTime not finite`);
+    }
+  }
+  console.log(`[PASS] 11. All 5 Real-World RI Field Presets verified (Fixed & Adaptive, 0 collisions)`);
+}
+
+// 12. RHK (motorBoxEnabled) Stop-Line Pocket Check
+{
+  const sim = new TrafficSimulation({
+    adaptiveSignal: false,
+    greenDuration: 25,
+    yellowDuration: 2,
+    allRedDuration: 1,
+    lanesPerDirection: 2,
+    motorRate: 30,
+    carRate: 40,
+    heavyRate: 0,
+    turnLeftPct: 0,
+    turnStraightPct: 100,
+    turnRightPct: 0,
+    motorBoxEnabled: true,
+    armWeights: { north: 0, east: 1, south: 0, west: 0 },
+  });
+  for (let s = 0; s < 350; s++) {
+    sim.step(0.05);
+  }
+  const snap = sim.getSnapshot();
+  const eastCarsStopped = snap.vehicles.filter(
+    (v) => v.originArm === 'east' && v.vClass === 'car' && v.speed < 0.5 && v.distanceAlongPath < v.stopLineDist
+  );
+  for (const car of eastCarsStopped) {
+    const frontBumper = car.distanceAlongPath + car.length * 0.5;
+    assert(
+      frontBumper <= car.stopLineDist - 2.8,
+      `[12. RHK] Expected stopped car front bumper (${frontBumper.toFixed(2)}) <= stopLineDist - 2.8 (${(car.stopLineDist - 2.8).toFixed(2)})`
+    );
+  }
+  console.log(`[PASS] 12. RHK (motorBoxEnabled): ${eastCarsStopped.length} stopped cars held behind RHK pocket`);
+}
+
+// 13. Reset Determinism, Zero Spawn, Extreme dt & Upward Config Expansion
+{
+  const simA = new TrafficSimulation({ lanesPerDirection: 2, roadLength: 75 });
+  for (let s = 0; s < 300; s++) simA.step(0.05);
+  const run1 = simA.getSnapshot();
+  simA.reset();
+  for (let s = 0; s < 300; s++) simA.step(0.05);
+  const run2 = simA.getSnapshot();
+  assert(
+    run1.stats.totalExitedAllTime === run2.stats.totalExitedAllTime &&
+      run1.vehicles.length === run2.vehicles.length,
+    `[13a. Reset Determinism] Mismatch: run1=${run1.stats.totalExitedAllTime}/${run1.vehicles.length} vs run2=${run2.stats.totalExitedAllTime}/${run2.vehicles.length}`
+  );
+
+  const zeroSim = new TrafficSimulation({ motorRate: 0, carRate: 0, heavyRate: 0 });
+  zeroSim.step(0);
+  zeroSim.step(-1);
+  zeroSim.step(Number.NaN);
+  for (let s = 0; s < 100; s++) zeroSim.step(0.05);
+  const zSnap = zeroSim.getSnapshot();
+  assert(zSnap.vehicles.length === 0 && zSnap.stats.totalExitedAllTime === 0, `[13b. Zero Spawn/Extreme dt] Expected 0 vehicles`);
+
+  const expandSim = new TrafficSimulation({ lanesPerDirection: 1, roadLength: 60, motorRate: 40, carRate: 25 });
+  for (let s = 0; s < 300; s++) expandSim.step(0.05);
+  expandSim.updateConfig({ lanesPerDirection: 3, roadLength: 120 });
+  for (let s = 0; s < 300; s++) {
+    expandSim.step(0.05);
+    if (s % 25 === 0) checkSnapshotIntegrity(expandSim, '13c. Expand Config');
+  }
+  console.log(`[PASS] 13. Reset Determinism, Zero Spawn, Extreme dt & Upward Config Expansion`);
 }
 
 console.log('--- ALL TESTS PASSED ---');

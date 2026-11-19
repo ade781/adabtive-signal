@@ -22,7 +22,7 @@ function slugify(text: string): string {
     .slice(0, 32) || 'simulasi';
 }
 
-export function exportSimulationReportXlsx(snapshot: SimSnapshot): void {
+export function exportSimulationReportXlsx(snapshot: SimSnapshot): boolean {
   const { config, stats } = snapshot;
   const now = new Date();
   const observedAt = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
@@ -134,9 +134,12 @@ export function exportSimulationReportXlsx(snapshot: SimSnapshot): void {
       'Rata2_Antrean_Sisa',
     ],
     ...cyclesChronological.map((c) => {
+      const directGreen = (c as { totalGreenDuration?: number }).totalGreenDuration;
       const cyclePhases = phasesChronological.filter((p) => p.cycleNumber === c.cycleNumber);
       const totalGreenDuration =
-        cyclePhases.length > 0
+        typeof directGreen === 'number'
+          ? +directGreen.toFixed(1)
+          : cyclePhases.length > 0
           ? +cyclePhases.reduce((s, p) => s + p.greenDuration, 0).toFixed(1)
           : 0;
       const avgRemainingQueue =
@@ -175,9 +178,16 @@ export function exportSimulationReportXlsx(snapshot: SimSnapshot): void {
   });
 
   const arrivalPerHour = Math.round((config.motorRate + config.carRate + config.heavyRate) * 60);
-  const capacityRatioPct = arrivalPerHour > 0 ? +((stats.throughputPerHour / arrivalPerHour) * 100).toFixed(1) : 100;
+  const capacityRatioPct =
+    arrivalPerHour === 0 && stats.totalExitedAllTime === 0
+      ? 0
+      : arrivalPerHour > 0
+      ? +((stats.throughputPerHour / arrivalPerHour) * 100).toFixed(1)
+      : 100;
   const los =
-    stats.avgWaitTime <= 5
+    stats.totalExitedAllTime === 0
+      ? 'Belum ada data (0 kend keluar)'
+      : stats.avgWaitTime <= 5
       ? 'A (Sangat Baik)'
       : stats.avgWaitTime <= 15
       ? 'B (Baik)'
@@ -261,5 +271,12 @@ export function exportSimulationReportXlsx(snapshot: SimSnapshot): void {
   XLSX.utils.book_append_sheet(wb, ws4, '4_Evaluasi_Performa');
 
   const filename = `laporan-adaptive-signal-${slugify(locationName)}-${formatTimestampForFilename(now)}.xlsx`;
-  XLSX.writeFile(wb, filename);
+  try {
+    XLSX.writeFile(wb, filename);
+    return true;
+  } catch (err) {
+    throw new Error(
+      `Gagal mengekspor file Excel (${filename}): ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
 }

@@ -91,6 +91,7 @@ export interface PhaseRecord {
 export interface CycleRecord {
   cycleNumber: number;
   totalDuration: number;
+  totalGreenDuration?: number;
   exitedMotor: number;
   exitedCar: number;
   exitedHeavy: number;
