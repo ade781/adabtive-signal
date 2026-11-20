@@ -4,7 +4,7 @@ import { PathCache } from './geometry';
 import { SpatialHashGrid } from './spatialHash';
 import { predictSweptCollisionTTC } from './steeringAI';
 import { CompiledMovementPath, CompiledTopology } from './topologyTypes';
-import { SignalColor, SimConfig, Vehicle, VehicleClass } from './types';
+import { SimConfig, Vehicle, VehicleClass } from './types';
 
 export interface SimVehicle extends Vehicle {
   path: PathCache['north']['straight'][number];

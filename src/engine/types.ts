@@ -106,6 +106,7 @@ export interface PhaseRecord {
   phaseIndex: number;
   cycleNumber: number;
   arm: ArmId;
+  phaseArmIds?: string[];
   phaseLabel?: string;
   greenDuration: number;
   exitedMotor: number;

@@ -66,7 +66,16 @@ export const DrawInspector: React.FC<DrawInspectorProps> = ({
         ) : (
           <div className="p-2 rounded-md bg-emerald-50 border border-emerald-200 text-[10px] text-emerald-800 flex items-center gap-1.5">
             <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-600" />
-            <span>Topologi valid & siap disimulasikan ({topology.phases.length} fase sinyal).</span>
+            <span>Topologi valid &amp; siap disimulasikan ({topology.phases.length} fase sinyal).</span>
+          </div>
+        )}
+
+        {validation.warnings.length > 0 && (
+          <div className="p-2 rounded-md bg-amber-50 border border-amber-200 text-[10px] text-amber-800 space-y-0.5">
+            <div className="font-semibold">Catatan Geometri:</div>
+            {validation.warnings.map((warn, i) => (
+              <div key={i}>• {warn}</div>
+            ))}
           </div>
         )}
 
@@ -271,15 +280,15 @@ export const DrawInspector: React.FC<DrawInspectorProps> = ({
                 </div>
               </div>
 
-              {/* Per-Lane Widths (Asymmetric individual lane widths!) */}
-              <div className="space-y-1.5">
-                <span className="text-[10px] font-semibold text-slate-600 block">
-                  Lebar Individual Lajur Masuk (m)
-                </span>
+              {/* Per-Lane Widths (Asymmetric individual lane widths for BOTH inbound and outbound!) */}
+              <div className="space-y-2">
                 <div className="space-y-1">
+                  <span className="text-[10px] font-semibold text-emerald-700 block">
+                    Lebar Lajur Masuk (m)
+                  </span>
                   {selectedArm.inLaneWidths.map((w, idx) => (
                     <div key={`in-${idx}`} className="flex items-center gap-2 text-[10px]">
-                      <span className="font-mono text-slate-500 w-12">L{idx + 1}</span>
+                      <span className="font-mono text-slate-500 w-10">M{idx + 1}</span>
                       <input
                         type="range"
                         min={2.6}
@@ -288,6 +297,26 @@ export const DrawInspector: React.FC<DrawInspectorProps> = ({
                         value={w}
                         onChange={(e) => handleLaneWidthChange('in', idx, Number(e.target.value))}
                         className="flex-1 h-1.5 accent-emerald-600"
+                      />
+                      <span className="font-mono font-semibold text-slate-800 w-9 text-right">{w.toFixed(1)}m</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="space-y-1">
+                  <span className="text-[10px] font-semibold text-amber-700 block">
+                    Lebar Lajur Keluar (m)
+                  </span>
+                  {selectedArm.outLaneWidths.map((w, idx) => (
+                    <div key={`out-${idx}`} className="flex items-center gap-2 text-[10px]">
+                      <span className="font-mono text-slate-500 w-10">K{idx + 1}</span>
+                      <input
+                        type="range"
+                        min={2.6}
+                        max={4.6}
+                        step={0.1}
+                        value={w}
+                        onChange={(e) => handleLaneWidthChange('out', idx, Number(e.target.value))}
+                        className="flex-1 h-1.5 accent-amber-600"
                       />
                       <span className="font-mono font-semibold text-slate-800 w-9 text-right">{w.toFixed(1)}m</span>
                     </div>
@@ -463,6 +492,21 @@ export const DrawInspector: React.FC<DrawInspectorProps> = ({
                         </div>
                       )}
                     </div>
+                    <label className="flex items-center justify-between text-[10px] text-emerald-900 pt-1 border-t border-emerald-200/70">
+                      <span>Aturan Gabung Lajur Tujuan</span>
+                      <select
+                        value={selectedArm.slipLane.yieldControl}
+                        onChange={(e) =>
+                          onUpdateArm(selectedArm.id, {
+                            slipLane: { ...selectedArm.slipLane!, yieldControl: e.target.value as 'yield' | 'free' },
+                          })
+                        }
+                        className="px-1.5 py-0.5 rounded border border-emerald-200 bg-white text-[10px] font-mono text-emerald-900"
+                      >
+                        <option value="yield">Yield (Mengalah)</option>
+                        <option value="free">Bebas Hambatan</option>
+                      </select>
+                    </label>
                   </div>
                 )}
               </div>

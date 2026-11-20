@@ -341,7 +341,15 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                   )}
                   <button
                     type="button"
-                    onClick={() => onChange({ customTopology: undefined, scenarioName: undefined })}
+                    onClick={() =>
+                      onChange({
+                        customTopology: undefined,
+                        scenarioName: undefined,
+                        scenarioNotes: undefined,
+                        environmentId: undefined,
+                        signalPhasePreset: '4-phase-split',
+                      })
+                    }
                     className="px-2 py-1 rounded text-[11px] font-medium bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 transition-colors duration-100"
                   >
                     Simpang 4 Standar

@@ -370,12 +370,16 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = React.memo(
 
   const phaseLabel = PHASE_PRESET_LABELS[config.signalPhasePreset ?? '4-phase-split'] ?? '4-Fase';
   const weatherMode = config.environment?.weather ?? 'clear';
+  const customArms = config.customTopology?.arms;
+  const hasLtor = customArms ? customArms.some((a) => a.leftTurnOnRed || a.slipLane?.enabled) : config.leftTurnOnRed;
+  const hasRhk = customArms ? customArms.some((a) => a.motorBoxEnabled) : config.motorBoxEnabled;
+  const hasMedianHud = customArms ? customArms.some((a) => a.medianWidth > 0.05) : config.hasMedian;
   const showHudPill = Boolean(
     config.scenarioName ||
       config.customTopology ||
-      config.leftTurnOnRed ||
-      config.motorBoxEnabled ||
-      config.hasMedian ||
+      hasLtor ||
+      hasRhk ||
+      hasMedianHud ||
       config.yellowBoxEnabled ||
       (config.signalPhasePreset && config.signalPhasePreset !== '4-phase-split') ||
       weatherMode !== 'clear'
@@ -403,12 +407,12 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = React.memo(
           <span className="rounded bg-indigo-50 px-1.5 py-0.5 font-mono text-[10px] font-bold text-indigo-700 ring-1 ring-inset ring-indigo-600/20">
             {phaseLabel}
           </span>
-          {config.leftTurnOnRed && (
+          {hasLtor && (
             <span className="rounded bg-emerald-50 px-1.5 py-0.5 font-mono text-[10px] font-bold text-emerald-700 ring-1 ring-inset ring-emerald-600/20">
               LTOR
             </span>
           )}
-          {config.motorBoxEnabled && (
+          {hasRhk && (
             <span className="rounded bg-rose-50 px-1.5 py-0.5 font-mono text-[10px] font-bold text-rose-700 ring-1 ring-inset ring-rose-600/20">
               RHK
             </span>
@@ -418,7 +422,7 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = React.memo(
               YELLOW BOX
             </span>
           )}
-          {config.hasMedian && (
+          {hasMedianHud && (
             <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-bold text-slate-700 ring-1 ring-inset ring-slate-600/20">
               Median
             </span>

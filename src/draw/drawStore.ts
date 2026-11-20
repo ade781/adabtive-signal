@@ -239,24 +239,52 @@ export function validateTopology(topo: IntersectionTopology): TopologyValidation
 
 const STORAGE_KEY = 'adaptive-signal:saved-draw-topologies:v1';
 
+export function isValidTopologyPayload(obj: unknown): obj is IntersectionTopology {
+  if (!obj || typeof obj !== 'object') return false;
+  const t = obj as Partial<IntersectionTopology>;
+  if (!Array.isArray(t.arms) || t.arms.length < 3 || t.arms.length > 5) return false;
+  return t.arms.every(
+    (a) =>
+      a &&
+      typeof a.id === 'string' &&
+      a.id.length > 0 &&
+      Number.isFinite(a.angleDeg) &&
+      Number.isFinite(a.length) &&
+      Number.isFinite(a.inLanes) &&
+      Number.isFinite(a.outLanes) &&
+      Array.isArray(a.inLaneWidths) &&
+      Array.isArray(a.outLaneWidths)
+  );
+}
+
 export function loadSavedTopologies(): IntersectionTopology[] {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? parsed.filter(isValidTopologyPayload) : [];
   } catch {
     return [];
   }
 }
 
-export function saveTopologyLocal(topo: IntersectionTopology): IntersectionTopology[] {
+export function saveTopologyLocal(topo: IntersectionTopology): { ok: boolean; items: IntersectionTopology[] } {
   const existing = loadSavedTopologies().filter((t) => t.id !== topo.id);
   const next = [topo, ...existing].slice(0, 12);
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    return { ok: true, items: next };
   } catch {
-    // ignore quota errors
+    return { ok: false, items: existing };
+  }
+}
+
+export function deleteSavedTopologyLocal(id: string): IntersectionTopology[] {
+  const next = loadSavedTopologies().filter((t) => t.id !== id);
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // ignore storage errors
   }
   return next;
 }

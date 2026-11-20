@@ -574,10 +574,11 @@ export function drawTopologyRoadWorld(
       drawLaneArrowLocal(ctx, arm.setback + 6.5, yOff, -Math.PI / 2, mode);
     }
 
-    // Per-arm LTOR indicator badge on outer left side
+    // Per-arm LTOR / SLIP indicator badge on outer left side (clear of slip channel!)
     if (arm.def.leftTurnOnRed || arm.def.slipLane?.enabled) {
       const lx = arm.setback + 9.2;
-      const ly = inOuter + flare + 1.5;
+      const slipExtra = arm.def.slipLane?.enabled ? arm.def.slipLane.width + 2.4 : 0;
+      const ly = inOuter + flare + 1.5 + slipExtra;
       ctx.fillStyle = 'rgba(16, 185, 129, 0.2)';
       ctx.strokeStyle = '#10B981';
       ctx.lineWidth = 0.14;

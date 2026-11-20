@@ -1,14 +1,18 @@
 import React from 'react';
-import { PlusCircle, CornerUpLeft, Columns, Maximize2, Bike, RotateCcw, ArrowRightLeft, MapPin } from 'lucide-react';
+import { PlusCircle, CornerUpLeft, Columns, Maximize2, Bike, RotateCcw, ArrowRightLeft, MapPin, Bookmark, Trash2 } from 'lucide-react';
 import { STATIC_SAMPLING_BLUEPRINTS, StaticSamplingBlueprint } from '../engine/samplingBlueprints';
+import { IntersectionTopology } from '../engine/topologyTypes';
 import { DrawModuleKind } from './drawStore';
 
 interface DrawPaletteProps {
   activeTopologyId: string;
   selectedArmId: string | null;
   armCount: number;
+  savedTopologies?: IntersectionTopology[];
   onApplyModule: (kind: DrawModuleKind) => void;
   onLoadBlueprint: (bp: StaticSamplingBlueprint) => void;
+  onLoadSavedTopology?: (topo: IntersectionTopology) => void;
+  onDeleteSavedTopology?: (id: string) => void;
 }
 
 const MODULES: {
@@ -81,8 +85,11 @@ export const DrawPalette: React.FC<DrawPaletteProps> = ({
   activeTopologyId,
   selectedArmId,
   armCount,
+  savedTopologies = [],
   onApplyModule,
   onLoadBlueprint,
+  onLoadSavedTopology,
+  onDeleteSavedTopology,
 }) => {
   const fieldLocations = STATIC_SAMPLING_BLUEPRINTS.filter((b) => b.category === 'field');
   const templates = STATIC_SAMPLING_BLUEPRINTS.filter((b) => b.category === 'template');
@@ -181,6 +188,47 @@ export const DrawPalette: React.FC<DrawPaletteProps> = ({
             );
           })}
         </div>
+
+        {/* Saved Local Topologies (localStorage) */}
+        {savedTopologies.length > 0 && onLoadSavedTopology && (
+          <div className="pt-3 border-t border-slate-200 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-semibold text-slate-700 flex items-center gap-1">
+                <Bookmark className="w-3 h-3 text-sky-600" />
+                Peta Tersimpan ({savedTopologies.length})
+              </span>
+            </div>
+            {savedTopologies.map((st) => (
+              <div key={st.id} className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => onLoadSavedTopology(st)}
+                  className={`flex-1 min-w-0 px-2.5 py-1.5 rounded-md border text-left transition-colors duration-100 ${
+                    activeTopologyId === st.id
+                      ? 'bg-sky-900 text-white border-sky-900'
+                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  <div className="text-[11px] font-semibold truncate">{st.name}</div>
+                  <div className={`text-[10px] truncate ${activeTopologyId === st.id ? 'text-sky-200' : 'text-slate-500'}`}>
+                    {st.arms.length} lengan · {st.phasePreset}
+                  </div>
+                </button>
+                {onDeleteSavedTopology && (
+                  <button
+                    type="button"
+                    onClick={() => onDeleteSavedTopology(st.id)}
+                    aria-label={`Hapus ${st.name}`}
+                    title="Hapus peta tersimpan"
+                    className="p-1.5 rounded border border-slate-200 text-slate-400 hover:text-rose-600 hover:border-rose-200 transition-colors duration-100"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Multi-Arm Templates (No. 6) */}
         <div className="pt-3 border-t border-slate-200 space-y-1.5">

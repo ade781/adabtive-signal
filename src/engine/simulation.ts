@@ -565,6 +565,7 @@ export class TrafficSimulation {
       phaseIndex: this.phaseCounter,
       cycleNumber: this.cycleNumber,
       arm: finishedArmLegacy,
+      phaseArmIds: Array.from(finishedArms),
       phaseLabel: activePhase?.label,
       greenDuration: Math.round(this.greenElapsed * 10) / 10,
       exitedMotor: this.currentPhaseExited.motor,

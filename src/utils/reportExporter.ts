@@ -1,6 +1,7 @@
 import * as XLSX from 'xlsx';
 import { getArmGreenDuration } from '../engine/constants';
 import { ArmId, SimSnapshot } from '../engine/types';
+import { evaluateLos } from './trafficMetrics';
 
 const ARM_LABELS: Record<ArmId, string> = {
   north: 'Utara',
@@ -165,16 +166,25 @@ export function exportSimulationReportXlsx(snapshot: SimSnapshot): boolean {
   // Sheet 4: 4_Evaluasi_Performa (for quick AI & user evaluation)
   const customArms = config.customTopology?.arms;
   const armSummaryRows = customArms && customArms.length >= 3
-    ? customArms.map((arm) => ({
-        arm: arm.id,
-        label: arm.label,
-        count: phasesChronological.filter((p) => p.arm === arm.id || p.phaseLabel?.includes(arm.label)).length,
-        configuredGreen: arm.baseGreenDuration ?? config.greenDuration,
-        avgGreen: +(arm.baseGreenDuration ?? config.greenDuration).toFixed(1),
-        avgExited: 0,
-        avgRemQueue: 0,
-        currentQueue: stats.queueByArmId?.[arm.id] ?? 0,
-      }))
+    ? customArms.map((arm) => {
+        const armPhases = phasesChronological.filter((p) =>
+          p.phaseArmIds ? p.phaseArmIds.includes(arm.id) : p.arm === arm.id
+        );
+        const count = armPhases.length;
+        const avgGreen = count > 0 ? +(armPhases.reduce((s, p) => s + p.greenDuration, 0) / count).toFixed(1) : +(arm.baseGreenDuration ?? config.greenDuration).toFixed(1);
+        const avgExited = count > 0 ? +(armPhases.reduce((s, p) => s + p.exitedTotal, 0) / count).toFixed(1) : 0;
+        const avgRemQueue = count > 0 ? +(armPhases.reduce((s, p) => s + p.queueAtEnd, 0) / count).toFixed(1) : 0;
+        return {
+          arm: arm.id,
+          label: arm.label,
+          count,
+          configuredGreen: arm.baseGreenDuration ?? config.greenDuration,
+          avgGreen,
+          avgExited,
+          avgRemQueue,
+          currentQueue: stats.queueByArmId?.[arm.id] ?? 0,
+        };
+      })
     : (['north', 'east', 'south', 'west'] as const).map((arm) => {
         const armPhases = phasesChronological.filter((p) => p.arm === arm);
         const count = armPhases.length;
@@ -198,20 +208,7 @@ export function exportSimulationReportXlsx(snapshot: SimSnapshot): boolean {
     arrivalPerHour > 0
       ? +((stats.throughputPerHour / arrivalPerHour) * 100).toFixed(1)
       : 0;
-  const los =
-    stats.totalExitedAllTime === 0
-      ? 'Belum ada data (0 kend keluar)'
-      : stats.avgWaitTime <= 5
-      ? 'A (Sangat Baik)'
-      : stats.avgWaitTime <= 15
-      ? 'B (Baik)'
-      : stats.avgWaitTime <= 25
-      ? 'C (Cukup)'
-      : stats.avgWaitTime <= 40
-      ? 'D (Mendekati Jenuh)'
-      : stats.avgWaitTime <= 60
-      ? 'E (Jenuh)'
-      : 'F (Sangat Jenuh / Macet)';
+  const los = evaluateLos(stats.avgWaitTime, stats.totalExitedAllTime).fullText;
 
   const sheet4Rows: (string | number | null)[][] = [
     ['RINGKASAN EVALUASI PERFORMA SIMULASI'],

@@ -1,6 +1,5 @@
 import { SimVehicle } from './behaviors';
 import { WeatherPhysicsProfile } from './environmentDynamics';
-import { wrapAngleRad } from './topologyBuilder';
 import { CompiledMovementPath } from './topologyTypes';
 import { VehicleClass } from './types';
 

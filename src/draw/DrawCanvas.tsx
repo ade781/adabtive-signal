@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { onAssetsLoaded } from '../canvas/assetLoader';
 import { drawTopologyRoadWorld } from '../canvas/drawStaticRoad';
 import { CanvasViewport, computeViewport, screenToWorld, worldToScreen, zoomAroundScreenPoint } from '../canvas/viewport';
 import { CompiledTopology, IntersectionTopology } from '../engine/topologyTypes';
@@ -9,6 +10,7 @@ interface DrawCanvasProps {
   compiled: CompiledTopology;
   selectedArmId: string | null;
   onSelectArm: (armId: string | null) => void;
+  onDragStartRecord?: () => void;
   onArmAngleDrag: (armId: string, newAngleDeg: number) => void;
   onArmWidthDrag: (armId: string, side: 'in' | 'out', newAvgLaneWidth: number) => void;
   onSlipSetbackDrag: (armId: string, newSetback: number) => void;
@@ -34,6 +36,7 @@ export const DrawCanvas: React.FC<DrawCanvasProps> = ({
   compiled,
   selectedArmId,
   onSelectArm,
+  onDragStartRecord,
   onArmAngleDrag,
   onArmWidthDrag,
   onSlipSetbackDrag,
@@ -51,9 +54,14 @@ export const DrawCanvas: React.FC<DrawCanvasProps> = ({
   const [size, setSize] = useState({ width: 800, height: 600, dpr: 1 });
   const dragRef = useRef<DragState>({ kind: 'none' });
   const [hoverArmId, setHoverArmId] = useState<string | null>(null);
+  const [hoverCursor, setHoverCursor] = useState<'default' | 'pointer' | 'grab' | 'grabbing'>('default');
+  const [dragReadout, setDragReadout] = useState<{ x: number; y: number; text: string } | null>(null);
+  const [assetVer, setAssetVer] = useState(0);
   const [dropPreview, setDropPreview] = useState<{ armId: string; moduleKind: DrawModuleKind; worldPt: { x: number; y: number } } | null>(null);
   const [staticMapImg, setStaticMapImg] = useState<HTMLImageElement | null>(null);
   const [staticMapMissing, setStaticMapMissing] = useState(false);
+
+  useEffect(() => onAssetsLoaded(() => setAssetVer((v) => v + 1)), []);
 
   // Load optional static reference map image (No. 5B hook) when enabled
   useEffect(() => {
@@ -333,7 +341,7 @@ export const DrawCanvas: React.FC<DrawCanvasProps> = ({
     }
 
     ctx.restore();
-  }, [size, vp, compiled, selectedArmId, hoverArmId, showSplines, showConflicts, showStaticMap, staticMapImg, showGrid, gizmos, dropPreview, totalExtent]);
+  }, [size, vp, compiled, selectedArmId, hoverArmId, showSplines, showConflicts, showStaticMap, staticMapImg, showGrid, gizmos, dropPreview, totalExtent, assetVer]);
 
   const getLocalScreenPt = (e: React.MouseEvent | React.DragEvent) => {
     const rect = canvasRef.current!.getBoundingClientRect();
@@ -346,6 +354,7 @@ export const DrawCanvas: React.FC<DrawCanvasProps> = ({
     // Middle/Right click or Shift+Alt pans
     if (e.button === 1 || e.button === 2) {
       dragRef.current = { kind: 'pan', startX: pt.x, startY: pt.y, origPanX: pan.x, origPanY: pan.y };
+      setHoverCursor('grabbing');
       return;
     }
 
@@ -353,7 +362,9 @@ export const DrawCanvas: React.FC<DrawCanvasProps> = ({
     for (const sl of gizmos.slipHandles) {
       const sc = worldToScreen(vp, sl.x, sl.y);
       if (Math.hypot(pt.x - sc.x, pt.y - sc.y) <= 13) {
+        onDragStartRecord?.();
         dragRef.current = { kind: 'slip', armId: sl.armId };
+        setHoverCursor('grabbing');
         return;
       }
     }
@@ -361,7 +372,9 @@ export const DrawCanvas: React.FC<DrawCanvasProps> = ({
     for (const w of gizmos.widthHandles) {
       const sc = worldToScreen(vp, w.x, w.y);
       if (Math.hypot(pt.x - sc.x, pt.y - sc.y) <= 13) {
+        onDragStartRecord?.();
         dragRef.current = { kind: 'width', armId: w.armId, side: w.side };
+        setHoverCursor('grabbing');
         return;
       }
     }
@@ -370,7 +383,9 @@ export const DrawCanvas: React.FC<DrawCanvasProps> = ({
       const sc = worldToScreen(vp, h.x, h.y);
       if (Math.hypot(pt.x - sc.x, pt.y - sc.y) <= 14) {
         onSelectArm(h.armId);
+        onDragStartRecord?.();
         dragRef.current = { kind: 'angle', armId: h.armId };
+        setHoverCursor('grabbing');
         return;
       }
     }
@@ -382,6 +397,7 @@ export const DrawCanvas: React.FC<DrawCanvasProps> = ({
       onSelectArm(hitArm);
     } else {
       dragRef.current = { kind: 'pan', startX: pt.x, startY: pt.y, origPanX: pan.x, origPanY: pan.y };
+      setHoverCursor('grabbing');
     }
   };
 
@@ -403,7 +419,9 @@ export const DrawCanvas: React.FC<DrawCanvasProps> = ({
       let deg = (Math.atan2(wpt.y, wpt.x) * 180) / Math.PI;
       if (deg < 0) deg += 360;
       if (e.shiftKey) deg = Math.round(deg / 15) * 15;
-      onArmAngleDrag(d.armId, Math.round(deg));
+      const rounded = Math.round(deg) % 360;
+      onArmAngleDrag(d.armId, rounded);
+      setDragReadout({ x: pt.x, y: pt.y, text: `Sudut: ${rounded}°` });
       return;
     }
 
@@ -415,6 +433,7 @@ export const DrawCanvas: React.FC<DrawCanvasProps> = ({
       const laneCount = d.side === 'in' ? arm.def.inLanes : arm.def.outLanes;
       const avgW = Math.max(2.6, Math.min(4.6, +(rawCarriageway / Math.max(1, laneCount)).toFixed(1)));
       onArmWidthDrag(d.armId, d.side, avgW);
+      setDragReadout({ x: pt.x, y: pt.y, text: `${d.side === 'in' ? 'Lajur Masuk' : 'Lajur Keluar'}: ${avgW.toFixed(1)}m` });
       return;
     }
 
@@ -424,16 +443,34 @@ export const DrawCanvas: React.FC<DrawCanvasProps> = ({
       const along = wpt.x * arm.outDir.x + wpt.y * arm.outDir.y;
       const setback = Math.max(10, Math.min(30, Math.round(along - arm.setback)));
       onSlipSetbackDrag(d.armId, setback);
+      setDragReadout({ x: pt.x, y: pt.y, text: `Mundur Slip: ${setback}m` });
       return;
     }
 
-    // Hover feedback
+    // Hover feedback & dynamic cursor
+    const overGizmo =
+      gizmos.slipHandles.some((sl) => {
+        const sc = worldToScreen(vp, sl.x, sl.y);
+        return Math.hypot(pt.x - sc.x, pt.y - sc.y) <= 13;
+      }) ||
+      gizmos.widthHandles.some((w) => {
+        const sc = worldToScreen(vp, w.x, w.y);
+        return Math.hypot(pt.x - sc.x, pt.y - sc.y) <= 13;
+      }) ||
+      gizmos.angleHandles.some((h) => {
+        const sc = worldToScreen(vp, h.x, h.y);
+        return Math.hypot(pt.x - sc.x, pt.y - sc.y) <= 14;
+      });
+
     const near = findNearestArmId(wpt.x, wpt.y);
     setHoverArmId(near);
+    setHoverCursor(overGizmo ? 'grab' : near && Math.hypot(wpt.x, wpt.y) > 8 ? 'pointer' : 'default');
   };
 
   const handleMouseUp = () => {
     dragRef.current = { kind: 'none' };
+    setDragReadout(null);
+    setHoverCursor('default');
   };
 
   const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
@@ -485,8 +522,18 @@ export const DrawCanvas: React.FC<DrawCanvasProps> = ({
         onDragOver={handleDragOver}
         onDragLeave={() => setDropPreview(null)}
         onDrop={handleDrop}
-        className="block w-full h-full cursor-crosshair"
+        style={{ cursor: hoverCursor }}
+        className="block w-full h-full"
       />
+
+      {dragReadout && (
+        <div
+          style={{ left: dragReadout.x + 14, top: dragReadout.y - 26 }}
+          className="pointer-events-none absolute z-20 rounded bg-slate-900/95 px-2 py-0.5 font-mono text-[10px] font-semibold text-white shadow"
+        >
+          {dragReadout.text}
+        </div>
+      )}
 
       {/* Compact Legend Pill */}
       <div className="pointer-events-none absolute top-3 left-3 flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white/95 px-2.5 py-1.5 text-[10px] text-slate-600 shadow-sm">

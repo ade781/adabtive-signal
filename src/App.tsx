@@ -321,13 +321,14 @@ function AppContent() {
         onZoomReset={handleZoomReset}
       />
 
-      {activeView === 'draw' ? (
+      <div className={activeView === 'draw' ? 'flex-1 min-h-0 flex flex-col' : 'hidden'}>
         <DrawWorkspace
           key={drawSessionKey}
           initialTopology={drawSeedTopology}
           onSimulateTopology={handleSimulateTopology}
         />
-      ) : (
+      </div>
+      {activeView !== 'draw' && (
         <main className="flex-1 min-h-0 p-2.5 flex flex-col gap-2.5 overflow-y-auto">
           <div className="flex-1 min-h-0 flex flex-col lg:flex-row gap-2.5">
             <div className="flex-1 min-h-[340px] min-w-0">

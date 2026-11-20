@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Play,
   Undo2,
@@ -21,7 +21,10 @@ import { DrawInspector } from './DrawInspector';
 import { DrawPalette } from './DrawPalette';
 import {
   applyModuleToArm,
+  deleteSavedTopologyLocal,
   DrawModuleKind,
+  isValidTopologyPayload,
+  loadSavedTopologies,
   rebuildPhases,
   removeArmFromTopology,
   saveTopologyLocal,
@@ -47,6 +50,7 @@ export const DrawWorkspace: React.FC<DrawWorkspaceProps> = ({ initialTopology, o
   const [showStaticMap, setShowStaticMap] = useState(false);
   const [showGrid, setShowGrid] = useState(true);
   const [viewportState, setViewportState] = useState({ zoom: 1, pan: { x: 0, y: 0 } });
+  const [savedTopologies, setSavedTopologies] = useState<IntersectionTopology[]>(() => loadSavedTopologies());
   const [notice, setNotice] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -60,25 +64,43 @@ export const DrawWorkspace: React.FC<DrawWorkspaceProps> = ({ initialTopology, o
     });
   }, []);
 
-  const handleUndo = () => {
-    setHistory((h) => {
-      if (h.length === 0) return h;
-      const prev = h[h.length - 1];
-      setFuture((f) => [topology, ...f]);
-      setTopology(prev);
-      return h.slice(0, -1);
-    });
-  };
+  const recordDragSnapshot = useCallback(() => {
+    setHistory((h) => [...h.slice(-29), topology]);
+    setFuture([]);
+  }, [topology]);
 
-  const handleRedo = () => {
-    setFuture((f) => {
-      if (f.length === 0) return f;
-      const next = f[0];
-      setHistory((h) => [...h, topology]);
-      setTopology(next);
-      return f.slice(1);
-    });
-  };
+  const handleUndo = useCallback(() => {
+    if (history.length === 0) return;
+    const prev = history[history.length - 1];
+    setFuture((f) => [topology, ...f]);
+    setHistory((h) => h.slice(0, -1));
+    setTopology(prev);
+  }, [history, topology]);
+
+  const handleRedo = useCallback(() => {
+    if (future.length === 0) return;
+    const next = future[0];
+    setHistory((h) => [...h, topology]);
+    setFuture((f) => f.slice(1));
+    setTopology(next);
+  }, [future, topology]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+      if (e.key.toLowerCase() === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        handleUndo();
+      } else if (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey)) {
+        e.preventDefault();
+        handleRedo();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [handleUndo, handleRedo]);
 
   const compiled = useMemo(() => compileTopology(topology), [topology]);
   const validation = useMemo(() => validateTopology(topology), [topology]);
@@ -133,10 +155,27 @@ export const DrawWorkspace: React.FC<DrawWorkspaceProps> = ({ initialTopology, o
   }, []);
 
   const handleSaveLocal = () => {
-    saveTopologyLocal(topology);
-    setNotice('Peta tersimpan di browser (localStorage).');
+    const res = saveTopologyLocal(topology);
+    setSavedTopologies(res.items);
+    setNotice(res.ok ? 'Peta tersimpan di browser (localStorage).' : 'Gagal menyimpan: memori browser penuh.');
     window.setTimeout(() => setNotice(null), 2500);
   };
+
+  const handleLoadSavedTopology = useCallback(
+    (saved: IntersectionTopology) => {
+      const cloned = cloneTopology(saved);
+      pushTopology(cloned, true);
+      setSelectedArmId(cloned.arms[0]?.id ?? null);
+      setViewportState({ zoom: 1, pan: { x: 0, y: 0 } });
+      setNotice(`Peta tersimpan "${cloned.name}" dimuat.`);
+      window.setTimeout(() => setNotice(null), 2500);
+    },
+    [pushTopology]
+  );
+
+  const handleDeleteSavedTopology = useCallback((id: string) => {
+    setSavedTopologies(deleteSavedTopologyLocal(id));
+  }, []);
 
   const handleExportJson = () => {
     const blob = new Blob([JSON.stringify(topology, null, 2)], { type: 'application/json' });
@@ -152,14 +191,21 @@ export const DrawWorkspace: React.FC<DrawWorkspaceProps> = ({ initialTopology, o
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
+    reader.onerror = () => {
+      setNotice('Gagal membaca file JSON peta.');
+      window.setTimeout(() => setNotice(null), 3000);
+    };
     reader.onload = () => {
       try {
-        const parsed = JSON.parse(String(reader.result)) as IntersectionTopology;
-        if (parsed && Array.isArray(parsed.arms) && parsed.arms.length >= 3) {
+        const parsed = JSON.parse(String(reader.result));
+        if (isValidTopologyPayload(parsed)) {
           pushTopology(rebuildPhases(parsed), true);
           setSelectedArmId(parsed.arms[0].id);
-          setNotice(`Peta "${parsed.name}" berhasil dimuat.`);
+          setNotice(`Peta "${parsed.name || 'Custom'}" berhasil dimuat.`);
           window.setTimeout(() => setNotice(null), 2500);
+        } else {
+          setNotice('Format JSON peta tidak valid (harus memiliki 3–5 lengan lengkap).');
+          window.setTimeout(() => setNotice(null), 3000);
         }
       } catch {
         setNotice('File JSON peta tidak valid.');
@@ -313,8 +359,11 @@ export const DrawWorkspace: React.FC<DrawWorkspaceProps> = ({ initialTopology, o
           activeTopologyId={topology.id}
           selectedArmId={selectedArmId}
           armCount={topology.arms.length}
+          savedTopologies={savedTopologies}
           onApplyModule={(kind) => handleApplyModule(kind)}
           onLoadBlueprint={handleLoadBlueprint}
+          onLoadSavedTopology={handleLoadSavedTopology}
+          onDeleteSavedTopology={handleDeleteSavedTopology}
         />
 
         <div className="flex-1 min-h-[380px] min-w-0">
@@ -323,6 +372,7 @@ export const DrawWorkspace: React.FC<DrawWorkspaceProps> = ({ initialTopology, o
             compiled={compiled}
             selectedArmId={selectedArmId}
             onSelectArm={setSelectedArmId}
+            onDragStartRecord={recordDragSnapshot}
             onArmAngleDrag={handleArmAngleDrag}
             onArmWidthDrag={handleArmWidthDrag}
             onSlipSetbackDrag={handleSlipSetbackDrag}

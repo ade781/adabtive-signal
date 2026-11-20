@@ -1,6 +1,7 @@
 import React from 'react';
 import { CompiledTopology } from '../engine/topologyTypes';
 import { ArmId, SignalState, SimStats } from '../engine/types';
+import { evaluateLos } from '../utils/trafficMetrics';
 
 interface TelemetryStripProps {
   stats: SimStats;
@@ -9,14 +10,15 @@ interface TelemetryStripProps {
   compiledTopology?: CompiledTopology;
 }
 
-function getLosBadge(avgWaitTime: number): { grade: string; label: string; className: string } {
-  if (avgWaitTime <= 5) return { grade: 'A', label: 'Sangat Baik', className: 'bg-emerald-50 text-emerald-700 border-emerald-200' };
-  if (avgWaitTime <= 15) return { grade: 'B', label: 'Baik', className: 'bg-emerald-50 text-emerald-700 border-emerald-200' };
-  if (avgWaitTime <= 25) return { grade: 'C', label: 'Cukup', className: 'bg-amber-50 text-amber-700 border-amber-200' };
-  if (avgWaitTime <= 40) return { grade: 'D', label: 'Mendekati Jenuh', className: 'bg-amber-50 text-amber-700 border-amber-200' };
-  if (avgWaitTime <= 60) return { grade: 'E', label: 'Jenuh', className: 'bg-rose-50 text-rose-700 border-rose-200' };
-  return { grade: 'F', label: 'Sangat Jenuh / Macet', className: 'bg-rose-50 text-rose-700 border-rose-200' };
-}
+const LOS_BADGE_CLASS: Record<string, string> = {
+  A: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  B: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  C: 'bg-amber-50 text-amber-700 border-amber-200',
+  D: 'bg-amber-50 text-amber-700 border-amber-200',
+  E: 'bg-rose-50 text-rose-700 border-rose-200',
+  F: 'bg-rose-50 text-rose-700 border-rose-200',
+  '-': 'bg-slate-100 text-slate-500 border-slate-200',
+};
 
 const ARM_SHORT: Record<string, string> = {
   north: 'U',
@@ -46,9 +48,12 @@ function MixBar({ motor, car, heavy }: { motor: number; car: number; heavy: numb
 
 export const TelemetryStrip: React.FC<TelemetryStripProps> = ({ stats, signal, armNames, compiledTopology }) => {
   const hasExitedData = stats.totalExitedAllTime > 0;
-  const los = hasExitedData
-    ? getLosBadge(stats.avgWaitTime)
-    : { grade: '—', label: 'Menunggu data', className: 'bg-slate-100 text-slate-500 border-slate-200' };
+  const losEval = evaluateLos(stats.avgWaitTime, stats.totalExitedAllTime);
+  const los = {
+    grade: losEval.grade,
+    label: losEval.fullText,
+    className: LOS_BADGE_CLASS[losEval.grade] ?? LOS_BADGE_CLASS['-'],
+  };
 
   const phaseCount = signal.multiPhase?.phaseCount ?? 4;
   const activePhaseLabel = signal.multiPhase?.activePhaseLabel ?? ARM_FULL[signal.activeArm] ?? signal.activeArm;
