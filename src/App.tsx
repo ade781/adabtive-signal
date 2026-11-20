@@ -1,11 +1,17 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { getArmGreenDuration } from './engine/constants';
-import { DEFAULT_CONFIG, TrafficSimulation } from './engine/simulation';
-import { SimConfig, SimSnapshot } from './engine/types';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { IntersectionCanvas } from './canvas/IntersectionCanvas';
-import { TopBar } from './components/TopBar';
 import { ParameterInspector } from './components/ParameterInspector';
 import { TelemetryStrip } from './components/TelemetryStrip';
+import { TopBar } from './components/TopBar';
+import { DrawWorkspace } from './draw/DrawWorkspace';
+import { getArmGreenDuration } from './engine/constants';
+import { cloneTopology, GIWANGAN_TOPOLOGY } from './engine/samplingBlueprints';
+import { DEFAULT_CONFIG, TrafficSimulation } from './engine/simulation';
+import { simConfigToTopology } from './engine/topologyBuilder';
+import { IntersectionTopology } from './engine/topologyTypes';
+import { SimConfig, SimSnapshot } from './engine/types';
+
+export type AppView = 'simulator' | 'draw';
 
 const UI_THROTTLE_MS = 80;
 
@@ -57,6 +63,12 @@ interface ExportStatus {
 }
 
 function AppContent() {
+  const [activeView, setActiveView] = useState<AppView>('simulator');
+  const [drawSeedTopology, setDrawSeedTopology] = useState<IntersectionTopology>(() =>
+    cloneTopology(GIWANGAN_TOPOLOGY)
+  );
+  const [drawSessionKey, setDrawSessionKey] = useState(1);
+
   const [sim] = useState(() => new TrafficSimulation());
   const snapshotRef = useRef<SimSnapshot>(sim.getSnapshot());
   const [uiSnapshot, setUiSnapshot] = useState<SimSnapshot>(() => snapshotRef.current);
@@ -73,7 +85,7 @@ function AppContent() {
   const exportTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!running) {
+    if (!running || activeView !== 'simulator') {
       snapshotRef.current = sim.getSnapshot();
       setUiSnapshot(snapshotRef.current);
       setDrawTick((t) => t + 1);
@@ -106,7 +118,7 @@ function AppContent() {
 
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [running, speed, sim]);
+  }, [running, speed, sim, activeView]);
 
   const handleConfigChange = useCallback(
     (partial: Partial<SimConfig>) => {
@@ -127,6 +139,13 @@ function AppContent() {
       environmentId: undefined,
       scenarioName: undefined,
       scenarioNotes: undefined,
+      customTopology: undefined,
+      signalPhasePreset: '4-phase-split',
+      yellowBoxEnabled: false,
+      driverDiscipline: 0.72,
+      smartOvertaking: true,
+      oncomingOvertaking: true,
+      environment: { weather: 'clear', dynamicWeather: false, timeMode: 'static' },
     });
     snapshotRef.current = sim.getSnapshot();
     setUiSnapshot(snapshotRef.current);
@@ -140,6 +159,56 @@ function AppContent() {
     setUiSnapshot(snapshotRef.current);
     setDrawTick((t) => t + 1);
   }, [sim]);
+
+  const handleSimulateTopology = useCallback(
+    (topology: IntersectionTopology) => {
+      const cloned = cloneTopology(topology);
+      const dt = cloned.defaultTraffic;
+      sim.updateConfig({
+        customTopology: cloned,
+        scenarioName: cloned.name,
+        scenarioNotes: cloned.description || `Peta custom Draw (${cloned.arms.length} lengan)`,
+        environmentId: 'default',
+        signalPhasePreset: cloned.phasePreset,
+        yellowBoxEnabled: cloned.yellowBoxEnabled,
+        ...(dt
+          ? {
+              motorRate: dt.motorRate,
+              carRate: dt.carRate,
+              heavyRate: dt.heavyRate,
+              turnLeftPct: dt.turnLeftPct,
+              turnStraightPct: dt.turnStraightPct,
+              turnRightPct: dt.turnRightPct,
+              uTurnPct: dt.uTurnPct ?? 0,
+              greenDuration: dt.greenDuration,
+              yellowDuration: dt.yellowDuration,
+              allRedDuration: dt.allRedDuration,
+            }
+          : {}),
+      });
+      setDrawSeedTopology(cloned);
+      snapshotRef.current = sim.getSnapshot();
+      setUiSnapshot(snapshotRef.current);
+      setInspectorConfig(snapshotRef.current.config);
+      setDrawTick((t) => t + 1);
+      setActiveView('simulator');
+      setRunning(true);
+    },
+    [sim]
+  );
+
+  const handleOpenCurrentInDraw = useCallback(() => {
+    const topo = inspectorConfig.customTopology
+      ? cloneTopology(inspectorConfig.customTopology)
+      : simConfigToTopology(inspectorConfig);
+    setDrawSeedTopology(topo);
+    setDrawSessionKey((k) => k + 1);
+    setActiveView('draw');
+  }, [inspectorConfig]);
+
+  const handleLoadGiwanganShowcase = useCallback(() => {
+    handleSimulateTopology(GIWANGAN_TOPOLOGY);
+  }, [handleSimulateTopology]);
 
   const handleToggleRun = useCallback(() => setRunning((r) => !r), []);
   const handleToggleGrid = useCallback(() => setShowGrid((g) => !g), []);
@@ -194,6 +263,7 @@ function AppContent() {
   }, [sim, isExporting, showExportToast]);
 
   useEffect(() => {
+    if (activeView !== 'simulator') return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey) {
         return;
@@ -215,7 +285,13 @@ function AppContent() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [handleReset]);
+  }, [handleReset, activeView]);
+
+  const compiledTopology = useMemo(
+    () => sim.getCompiledTopology(),
+    // Re-read compiled topology whenever geometry-relevant inspectorConfig changes
+    [sim, inspectorConfig]
+  );
 
   const phaseDuration =
     uiSnapshot.signal.activeColor === 'green'
@@ -227,6 +303,8 @@ function AppContent() {
   return (
     <div className="min-h-screen lg:h-screen w-full flex flex-col bg-slate-50 text-slate-900 overflow-x-hidden">
       <MemoTopBar
+        activeView={activeView}
+        onViewChange={setActiveView}
         running={running}
         onToggleRun={handleToggleRun}
         onReset={handleReset}
@@ -238,6 +316,7 @@ function AppContent() {
         config={inspectorConfig}
         phaseDuration={phaseDuration}
         simTime={uiSnapshot.stats.simTime}
+        environment={uiSnapshot.stats.environment}
         zoom={zoom}
         showGrid={showGrid}
         onToggleGrid={handleToggleGrid}
@@ -246,31 +325,43 @@ function AppContent() {
         onZoomReset={handleZoomReset}
       />
 
-      <main className="flex-1 min-h-0 p-2.5 flex flex-col gap-2.5 overflow-y-auto">
-        <div className="flex-1 min-h-0 flex flex-col lg:flex-row gap-2.5">
-          <div className="flex-1 min-h-[340px] min-w-0">
-            <IntersectionCanvas
-              snapshotRef={snapshotRef}
+      {activeView === 'draw' ? (
+        <DrawWorkspace
+          key={drawSessionKey}
+          initialTopology={drawSeedTopology}
+          onSimulateTopology={handleSimulateTopology}
+        />
+      ) : (
+        <main className="flex-1 min-h-0 p-2.5 flex flex-col gap-2.5 overflow-y-auto">
+          <div className="flex-1 min-h-0 flex flex-col lg:flex-row gap-2.5">
+            <div className="flex-1 min-h-[340px] min-w-0">
+              <IntersectionCanvas
+                snapshotRef={snapshotRef}
+                config={inspectorConfig}
+                compiledTopology={compiledTopology}
+                running={running}
+                drawTick={drawTick}
+                zoom={zoom}
+                showGrid={showGrid}
+              />
+            </div>
+            <MemoParameterInspector
               config={inspectorConfig}
-              running={running}
-              drawTick={drawTick}
-              zoom={zoom}
-              showGrid={showGrid}
+              onChange={handleConfigChange}
+              onResetDefaults={handleResetDefaults}
+              onOpenInDraw={handleOpenCurrentInDraw}
+              onLoadGiwangan={handleLoadGiwanganShowcase}
             />
           </div>
-          <MemoParameterInspector
-            config={inspectorConfig}
-            onChange={handleConfigChange}
-            onResetDefaults={handleResetDefaults}
-          />
-        </div>
 
-        <MemoTelemetryStrip
-          stats={uiSnapshot.stats}
-          signal={uiSnapshot.signal}
-          armNames={inspectorConfig.armNames}
-        />
-      </main>
+          <MemoTelemetryStrip
+            stats={uiSnapshot.stats}
+            signal={uiSnapshot.signal}
+            armNames={inspectorConfig.armNames}
+            compiledTopology={compiledTopology}
+          />
+        </main>
+      )}
 
       {exportStatus && (
         <div

@@ -1,28 +1,20 @@
 import React from 'react';
+import { CompiledTopology } from '../engine/topologyTypes';
 import { ArmId, SignalState, SimStats } from '../engine/types';
 
 interface TelemetryStripProps {
   stats: SimStats;
   signal: SignalState;
   armNames?: Partial<Record<ArmId, string>>;
+  compiledTopology?: CompiledTopology;
 }
 
 function getLosBadge(avgWaitTime: number): { grade: string; label: string; className: string } {
-  if (avgWaitTime <= 5) {
-    return { grade: 'A', label: 'Sangat Baik', className: 'bg-emerald-50 text-emerald-700 border-emerald-200' };
-  }
-  if (avgWaitTime <= 15) {
-    return { grade: 'B', label: 'Baik', className: 'bg-emerald-50 text-emerald-700 border-emerald-200' };
-  }
-  if (avgWaitTime <= 25) {
-    return { grade: 'C', label: 'Cukup', className: 'bg-amber-50 text-amber-700 border-amber-200' };
-  }
-  if (avgWaitTime <= 40) {
-    return { grade: 'D', label: 'Mendekati Jenuh', className: 'bg-amber-50 text-amber-700 border-amber-200' };
-  }
-  if (avgWaitTime <= 60) {
-    return { grade: 'E', label: 'Jenuh', className: 'bg-rose-50 text-rose-700 border-rose-200' };
-  }
+  if (avgWaitTime <= 5) return { grade: 'A', label: 'Sangat Baik', className: 'bg-emerald-50 text-emerald-700 border-emerald-200' };
+  if (avgWaitTime <= 15) return { grade: 'B', label: 'Baik', className: 'bg-emerald-50 text-emerald-700 border-emerald-200' };
+  if (avgWaitTime <= 25) return { grade: 'C', label: 'Cukup', className: 'bg-amber-50 text-amber-700 border-amber-200' };
+  if (avgWaitTime <= 40) return { grade: 'D', label: 'Mendekati Jenuh', className: 'bg-amber-50 text-amber-700 border-amber-200' };
+  if (avgWaitTime <= 60) return { grade: 'E', label: 'Jenuh', className: 'bg-rose-50 text-rose-700 border-rose-200' };
   return { grade: 'F', label: 'Sangat Jenuh / Macet', className: 'bg-rose-50 text-rose-700 border-rose-200' };
 }
 
@@ -42,9 +34,7 @@ const ARM_FULL: Record<string, string> = {
 
 function MixBar({ motor, car, heavy }: { motor: number; car: number; heavy: number }) {
   const total = motor + car + heavy;
-  if (total === 0) {
-    return <div className="w-full h-1 rounded-full bg-slate-100 mt-1.5" />;
-  }
+  if (total === 0) return <div className="w-full h-1 rounded-full bg-slate-100 mt-1.5" />;
   return (
     <div className="w-full h-1 rounded-full bg-slate-100 overflow-hidden flex mt-1.5">
       <div className="bg-amber-500 h-full" style={{ width: `${(motor / total) * 100}%` }} />
@@ -54,19 +44,43 @@ function MixBar({ motor, car, heavy }: { motor: number; car: number; heavy: numb
   );
 }
 
-export const TelemetryStrip: React.FC<TelemetryStripProps> = ({ stats, signal, armNames }) => {
+export const TelemetryStrip: React.FC<TelemetryStripProps> = ({ stats, signal, armNames, compiledTopology }) => {
   const hasExitedData = stats.totalExitedAllTime > 0;
   const los = hasExitedData
     ? getLosBadge(stats.avgWaitTime)
     : { grade: '—', label: 'Menunggu data', className: 'bg-slate-100 text-slate-500 border-slate-200' };
+
+  const phaseCount = signal.multiPhase?.phaseCount ?? 4;
+  const activePhaseLabel = signal.multiPhase?.activePhaseLabel ?? ARM_FULL[signal.activeArm] ?? signal.activeArm;
+
+  const armEntries =
+    compiledTopology && compiledTopology.armOrder.length > 0
+      ? compiledTopology.armOrder.map((id, idx) => ({
+        id,
+        short: ARM_SHORT[id] ?? `L${idx + 1}`,
+        full: compiledTopology.armsById[id]?.def.label || ARM_FULL[id] || `Lengan ${idx + 1}`,
+        count: stats.queueByArmId?.[id] ?? (stats.queueByArm[id as ArmId] ?? 0),
+      }))
+      : (['north', 'east', 'south', 'west'] as const).map((arm) => ({
+        id: arm,
+        short: ARM_SHORT[arm],
+        full: armNames?.[arm]?.trim() ? `${ARM_FULL[arm]}: ${armNames[arm]}` : ARM_FULL[arm],
+        count: stats.queueByArm[arm],
+      }));
+
+  const isDynamicTime = stats.environment && stats.environment.timeMode !== 'static';
+  const displayedThroughput = isDynamicTime && stats.rollingThroughputPerHour !== undefined
+    ? stats.rollingThroughputPerHour
+    : stats.throughputPerHour;
+
   return (
     <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 shrink-0">
-      {/* Card 1: Per-Phase Exited (1x Lampu Hijau Lengan Aktif) */}
+      {/* Card 1: Per-Phase Exited */}
       <div className="bg-white border border-slate-200 rounded-lg p-2.5 flex flex-col justify-between">
         <div className="flex items-center justify-between gap-1">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 flex items-center gap-1.5 truncate">
             <img src="/assets/ui/icon-throughput.svg" alt="" className="w-3.5 h-3.5 opacity-75 shrink-0" />
-            Keluar Fase ({ARM_FULL[signal.activeArm]})
+            <span className="truncate">Fase ({activePhaseLabel})</span>
           </span>
           <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 shrink-0">
             1 FASE
@@ -90,22 +104,32 @@ export const TelemetryStrip: React.FC<TelemetryStripProps> = ({ stats, signal, a
         </div>
       </div>
 
-      {/* Card 2: Per-Cycle Exited (1 Siklus Penuh 4 Lengan) */}
+      {/* Card 2: Per-Cycle Exited + Smart AI Activity Counters */}
       <div className="bg-white border border-slate-200 rounded-lg p-2.5 flex flex-col justify-between">
         <div className="flex items-center justify-between gap-1">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 flex items-center gap-1.5 truncate">
             <img src="/assets/ui/icon-cycle.svg" alt="" className="w-3.5 h-3.5 opacity-75 shrink-0" />
-            Keluar Siklus #{signal.cycleNumber}
+            Siklus #{signal.cycleNumber}
           </span>
           <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200 shrink-0">
-            4 FASE
+            {phaseCount} FASE
           </span>
         </div>
-        <div className="mt-1 flex items-baseline gap-2">
-          <span className="text-xl font-mono tabular-nums font-bold text-slate-900">
-            {stats.currentCycleExited.total}
-          </span>
-          <span className="text-[11px] text-slate-500">total keluar</span>
+        <div className="mt-1 flex items-baseline justify-between gap-2">
+          <div className="flex items-baseline gap-1.5">
+            <span className="text-xl font-mono tabular-nums font-bold text-slate-900">
+              {stats.currentCycleExited.total}
+            </span>
+            <span className="text-[11px] text-slate-500">keluar</span>
+          </div>
+          <div className="flex items-center gap-1 text-[9px] font-mono">
+            <span className="px-1 py-0.5 rounded bg-sky-50 text-sky-700 border border-sky-200" title="Jumlah mobil menyalip / pindah lajur (MOBIL)">
+              Salip:{stats.carOvertakeCount ?? 0}
+            </span>
+            <span className="px-1 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200" title="Manuver menyalip memakan jalur lawan">
+              Lawan:{stats.oncomingOvertakeCount ?? 0}
+            </span>
+          </div>
         </div>
         <MixBar
           motor={stats.currentCycleExited.motor}
@@ -119,7 +143,7 @@ export const TelemetryStrip: React.FC<TelemetryStripProps> = ({ stats, signal, a
         </div>
       </div>
 
-      {/* Card 3: Active Queue */}
+      {/* Card 3: Active Queue (Dynamic 3-5 arms!) */}
       <div className="bg-white border border-slate-200 rounded-lg p-2.5 flex flex-col justify-between">
         <div className="flex items-center justify-between gap-1">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
@@ -160,27 +184,29 @@ export const TelemetryStrip: React.FC<TelemetryStripProps> = ({ stats, signal, a
           <div className="text-[10px] font-mono tabular-nums text-slate-500 text-right">
             <span>Wait: <strong className="text-slate-800">{stats.avgWaitTime.toFixed(1)}s</strong></span>
             <span className="mx-1 text-slate-300">|</span>
-            <span><strong className="text-slate-800">{stats.throughputPerHour}</strong>/jam</span>
+            <span title={isDynamicTime ? 'Throughput 60 detik terakhir (rolling)' : 'Proyeksi throughput kumulatif'}>
+              <strong className="text-slate-800">{displayedThroughput}</strong>/jam
+            </span>
           </div>
         </div>
-        <div className="mt-2 grid grid-cols-4 gap-1 text-[11px] font-mono tabular-nums">
-          {(['north', 'east', 'south', 'west'] as const).map((arm) => {
-            const streetName = armNames?.[arm]?.trim();
-            return (
-              <div
-                key={arm}
-                title={streetName ? `${ARM_FULL[arm]}: ${streetName}` : ARM_FULL[arm]}
-                className="px-1 py-0.5 rounded bg-slate-50 border border-slate-200 text-center"
-              >
-                <span className="text-slate-400">{ARM_SHORT[arm]}:</span>{' '}
-                <strong className="text-slate-800">{stats.queueByArm[arm]}</strong>
-              </div>
-            );
-          })}
+        <div
+          className="mt-2 grid gap-1 text-[11px] font-mono tabular-nums"
+          style={{ gridTemplateColumns: `repeat(${Math.min(5, Math.max(3, armEntries.length))}, minmax(0, 1fr))` }}
+        >
+          {armEntries.map((entry) => (
+            <div
+              key={entry.id}
+              title={entry.full}
+              className="px-1 py-0.5 rounded bg-slate-50 border border-slate-200 text-center truncate"
+            >
+              <span className="text-slate-400">{entry.short}:</span>{' '}
+              <strong className="text-slate-800">{entry.count}</strong>
+            </div>
+          ))}
         </div>
       </div>
 
-      {/* Card 4: Recent History (Per Phase & Per Cycle) */}
+      {/* Card 4: Recent History */}
       <div className="bg-white border border-slate-200 rounded-lg p-2.5 flex flex-col justify-start gap-2">
         <div className="flex items-center justify-between mb-1">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
@@ -206,12 +232,12 @@ export const TelemetryStrip: React.FC<TelemetryStripProps> = ({ stats, signal, a
             {stats.phaseHistory.slice(0, 4).map((p) => (
               <div
                 key={`p-${p.phaseIndex}`}
-                className="flex items-center justify-between text-[11px] font-mono tabular-nums text-slate-700 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded"
+                className="flex items-center justify-between text-[11px] font-mono tabular-nums text-slate-700 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded gap-2"
               >
-                <span>
-                  #{p.cycleNumber} {ARM_FULL[p.arm]} ({p.greenDuration}s)
+                <span className="truncate">
+                  #{p.cycleNumber} {p.phaseLabel || ARM_FULL[p.arm]} ({p.greenDuration}s)
                 </span>
-                <span className="font-semibold">
+                <span className="font-semibold shrink-0">
                   {p.exitedTotal}{' '}
                   <span className="text-slate-400 font-normal">
                     ({p.exitedMotor}M/{p.exitedCar}Mbl/{p.exitedHeavy}B)

@@ -1,12 +1,12 @@
 const ASSET_URLS = [
-  // Motorcycles
+
   '/assets/vehicles/moto-commuter.svg',
   '/assets/vehicles/moto-scooter.svg',
   '/assets/vehicles/moto-sport.svg',
   '/assets/vehicles/moto-delivery-box.svg',
   '/assets/vehicles/moto-cruiser.svg',
   '/assets/vehicles/moto-ev-white.svg',
-  // Cars
+
   '/assets/vehicles/car-sedan-navy.svg',
   '/assets/vehicles/car-sedan-white.svg',
   '/assets/vehicles/car-suv-slate.svg',
@@ -16,7 +16,7 @@ const ASSET_URLS = [
   '/assets/vehicles/car-pickup-slate.svg',
   '/assets/vehicles/car-ev-mint.svg',
   '/assets/vehicles/car-luxury-black.svg',
-  // Heavy
+
   '/assets/vehicles/truck-box.svg',
   '/assets/vehicles/truck-heavy.svg',
   '/assets/vehicles/bus-city.svg',

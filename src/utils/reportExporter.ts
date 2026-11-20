@@ -26,9 +26,13 @@ export function exportSimulationReportXlsx(snapshot: SimSnapshot): boolean {
   const { config, stats } = snapshot;
   const now = new Date();
   const observedAt = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-  const locationName = config.scenarioName || 'Simulasi Simpang 4 (Custom)';
-  const modeLabel = config.adaptiveSignal ? 'Adaptif (Dynamic Green + Anti-Starvation)' : 'Fixed-Time (4-Fase Statis)';
-  const notes = `${config.scenarioNotes || 'Simulasi sistem Adaptive Signal'} | Mode: ${modeLabel} | Durasi Simulasi: ${stats.simTime.toFixed(1)}s`;
+  const locationName = config.customTopology?.name || config.scenarioName || 'Simulasi Simpang 4 (Custom)';
+  const phaseModeStr = config.signalPhasePreset || '4-phase-split';
+  const weatherStr = stats.environment?.weatherLabel || 'Cerah';
+  const modeLabel = config.adaptiveSignal
+    ? `Adaptif (${phaseModeStr} + Anti-Starvation)`
+    : `Fixed-Time (${phaseModeStr})`;
+  const notes = `${config.scenarioNotes || 'Simulasi sistem Adaptive Signal'} | Mode: ${modeLabel} | Cuaca: ${weatherStr} | Disiplin: ${Math.round((config.driverDiscipline ?? 0.72) * 100)}% | Durasi: ${stats.simTime.toFixed(1)}s`;
 
   const cycleTotalBase = (['north', 'east', 'south', 'west'] as const).reduce(
     (sum, arm) => sum + getArmGreenDuration(config, arm) + config.yellowDuration + config.allRedDuration,

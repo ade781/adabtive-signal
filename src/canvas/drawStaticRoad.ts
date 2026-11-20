@@ -1,5 +1,7 @@
+import { CompiledTopology } from '../engine/topologyTypes';
 import { SimConfig } from '../engine/types';
 import { getLoadedAsset } from './assetLoader';
+import { computeViewport } from './viewport';
 
 interface CornerSpec {
   sx: -1 | 1;
@@ -109,6 +111,468 @@ function drawRotatedImage(
   ctx.restore();
 }
 
+function drawYellowBoxMarking(ctx: CanvasRenderingContext2D, halfW: number, halfH: number): void {
+  const inset = 0.6;
+  const x0 = -halfW + inset;
+  const y0 = -halfH + inset;
+  const w = Math.max(2, (halfW - inset) * 2);
+  const h = Math.max(2, (halfH - inset) * 2);
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(250, 204, 21, 0.11)';
+  ctx.fillRect(x0, y0, w, h);
+  ctx.strokeStyle = 'rgba(250, 204, 21, 0.78)';
+  ctx.lineWidth = 0.24;
+  ctx.strokeRect(x0, y0, w, h);
+
+  // Diagonal criss-cross yellow box lines
+  ctx.beginPath();
+  ctx.moveTo(x0, y0);
+  ctx.lineTo(x0 + w, y0 + h);
+  ctx.moveTo(x0 + w, y0);
+  ctx.lineTo(x0, y0 + h);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawLaneArrowLocal(ctx: CanvasRenderingContext2D, x: number, y: number, rot: number, mode: 'straight' | 'left' | 'right'): void {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(rot);
+  ctx.beginPath();
+  ctx.moveTo(0, -1.2);
+  ctx.lineTo(0.48, -0.35);
+  ctx.lineTo(0.18, -0.35);
+  ctx.lineTo(0.18, 1.1);
+  ctx.lineTo(-0.18, 1.1);
+  ctx.lineTo(-0.18, -0.35);
+  ctx.lineTo(-0.48, -0.35);
+  ctx.closePath();
+  ctx.fill();
+  if (mode !== 'straight') {
+    const s = mode === 'left' ? -1 : 1;
+    ctx.beginPath();
+    ctx.moveTo(s * 0.18, 0.2);
+    ctx.lineTo(s * 0.75, 0.2);
+    ctx.lineTo(s * 0.75, 0.48);
+    ctx.lineTo(s * 1.25, 0.05);
+    ctx.lineTo(s * 0.75, -0.38);
+    ctx.lineTo(s * 0.75, -0.1);
+    ctx.lineTo(s * 0.18, -0.1);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/**
+ * Renders any arbitrary N-arm, angled, asymmetric IntersectionTopology (with slip lanes,
+ * triangular splitter islands, physical medians, U-turn bays, RHK pockets, and Yellow Box).
+ * Shared by both Simulator view (when customTopology is active) and the Draw workspace!
+ */
+export function drawTopologyRoadWorld(
+  ctx: CanvasRenderingContext2D,
+  compiled: CompiledTopology,
+  options: {
+    showPathPreviews?: boolean;
+    selectedArmId?: string | null;
+    wetAsphalt?: boolean;
+  } = {}
+): void {
+  const asphaltMain = options.wetAsphalt ? '#282E38' : '#373D47';
+  const asphaltCenter = options.wetAsphalt ? '#222730' : '#2F353E';
+
+  // 1. Slip Lane paved channels (drawn beneath main island overlays)
+  for (const isl of compiled.islands) {
+    if (isl.slipLaneCenterPts.length < 2) continue;
+    ctx.save();
+    // Outer kanstin border
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#CFCBC2';
+    ctx.lineWidth = isl.slipLaneWidth + 1.4;
+    ctx.beginPath();
+    isl.slipLaneCenterPts.forEach((pt, idx) => {
+      if (idx === 0) ctx.moveTo(pt.x, pt.y);
+      else ctx.lineTo(pt.x, pt.y);
+    });
+    ctx.stroke();
+
+    // Asphalt channel
+    ctx.strokeStyle = asphaltMain;
+    ctx.lineWidth = isl.slipLaneWidth;
+    ctx.beginPath();
+    isl.slipLaneCenterPts.forEach((pt, idx) => {
+      if (idx === 0) ctx.moveTo(pt.x, pt.y);
+      else ctx.lineTo(pt.x, pt.y);
+    });
+    ctx.stroke();
+
+    // Subtle green LTOR slip guide dashes
+    ctx.strokeStyle = 'rgba(16, 185, 129, 0.55)';
+    ctx.lineWidth = 0.2;
+    ctx.setLineDash([1.2, 1.4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  // 2. Sidewalk apron under arms & center
+  for (const armId of compiled.armOrder) {
+    const arm = compiled.armsById[armId];
+    const inOuter = arm.halfMedian + arm.inWidth + (arm.def.curbFlareLeft ?? 0);
+    const outOuter = arm.halfMedian + arm.outWidth;
+    const totalLen = arm.setback + arm.def.length + 6;
+    const sidewalk = 2.6;
+
+    ctx.save();
+    ctx.rotate(arm.angleRad);
+    ctx.fillStyle = '#CFCBC2';
+    ctx.fillRect(0, -(outOuter + sidewalk), totalLen, outOuter + inOuter + sidewalk * 2);
+    ctx.restore();
+  }
+
+  // 3. Center junction polygon asphalt
+  if (compiled.centerPolygon.length >= 3) {
+    ctx.save();
+    ctx.fillStyle = asphaltCenter;
+    ctx.beginPath();
+    compiled.centerPolygon.forEach((pt, idx) => {
+      if (idx === 0) ctx.moveTo(pt.x, pt.y);
+      else ctx.lineTo(pt.x, pt.y);
+    });
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // 4. Arm asphalt, kanstin curbs, flared approaches, medians, lane markings, stop lines, RHK, arrows
+  for (const armId of compiled.armOrder) {
+    const arm = compiled.armsById[armId];
+    const isSelected = options.selectedArmId === armId;
+    const inOuter = arm.halfMedian + arm.inWidth;
+    const flare = arm.def.curbFlareLeft ?? 0;
+    const outOuter = arm.halfMedian + arm.outWidth;
+    const armEnd = arm.setback + arm.def.length;
+
+    ctx.save();
+    // Local arm frame: +X points OUTWARD from intersection center along outDir.
+    // +Y points along ( -outDir.y, outDir.x )? Wait: check rotation!
+    // rotate(angleRad) maps local (1,0) -> (cos a, sin a) = outDir
+    // maps local (0,1) -> (-sin a, cos a) = (inDir.y, -inDir.x) = inLeftNormal!!
+    // VERIFIED: local +Y === inLeftNormal (inbound lanes on +Y, outbound lanes on -Y!)
+    ctx.rotate(arm.angleRad);
+
+    // Main carriageway polygon (including optional curb flare near stop line on +Y inbound side)
+    ctx.fillStyle = asphaltMain;
+    ctx.beginPath();
+    ctx.moveTo(arm.setback - 0.5, -outOuter);
+    ctx.lineTo(armEnd, -outOuter);
+    ctx.lineTo(armEnd, inOuter);
+    if (flare > 0.05) {
+      const flareStart = Math.min(armEnd - 4, arm.setback + 24);
+      ctx.lineTo(flareStart, inOuter);
+      ctx.lineTo(arm.setback + 4, inOuter + flare);
+      ctx.lineTo(arm.setback - 0.5, inOuter + flare);
+    } else {
+      ctx.lineTo(arm.setback - 0.5, inOuter);
+    }
+    ctx.closePath();
+    ctx.fill();
+
+    // Selection highlight in Draw mode
+    if (isSelected) {
+      ctx.strokeStyle = '#0EA5E9';
+      ctx.lineWidth = 0.45;
+      ctx.stroke();
+    }
+
+    // Black-and-white Indonesian kanstin curbs
+    const drawCurb = () => {
+      ctx.beginPath();
+      ctx.moveTo(arm.setback, -outOuter - 0.16);
+      ctx.lineTo(armEnd, -outOuter - 0.16);
+      ctx.moveTo(armEnd, inOuter + 0.16);
+      if (flare > 0.05) {
+        const flareStart = Math.min(armEnd - 4, arm.setback + 24);
+        ctx.lineTo(flareStart, inOuter + 0.16);
+        ctx.lineTo(arm.setback + 4, inOuter + flare + 0.16);
+        ctx.lineTo(arm.setback, inOuter + flare + 0.16);
+      } else {
+        ctx.lineTo(arm.setback, inOuter + 0.16);
+      }
+      ctx.stroke();
+    };
+    ctx.lineWidth = 0.38;
+    ctx.strokeStyle = '#F8FAFC';
+    drawCurb();
+    ctx.strokeStyle = '#1E293B';
+    ctx.setLineDash([1.5, 1.5]);
+    drawCurb();
+    ctx.setLineDash([]);
+
+    // Physical center median OR dashed/double yellow centerline (dashed when no median -> signals oncoming pass allowed!)
+    const medianStart = arm.setback + 0.8;
+    const medianLen = Math.max(0, armEnd - medianStart);
+    const uTurnBay = arm.def.uTurnBay;
+    if (arm.def.medianWidth > 0.05 && medianLen > 0) {
+      const mW = Math.max(0.55, arm.def.medianWidth);
+      const drawMedianSeg = (x0: number, len: number) => {
+        if (len <= 0.8) return;
+        ctx.fillStyle = '#CBD5E1';
+        ctx.strokeStyle = '#94A3B8';
+        ctx.lineWidth = 0.12;
+        ctx.beginPath();
+        ctx.roundRect(x0, -mW / 2, len, mW, Math.min(0.45, mW / 2));
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#22C55E';
+        ctx.beginPath();
+        ctx.roundRect(x0 + 0.35, -(mW * 0.56) / 2, Math.max(0.2, len - 0.7), mW * 0.56, Math.min(0.28, mW * 0.28));
+        ctx.fill();
+
+        for (let d = x0 + 2.2; d < x0 + len - 1.5; d += 4.2) {
+          ctx.fillStyle = '#15803D';
+          ctx.beginPath();
+          ctx.arc(d, 0, Math.min(0.42, mW * 0.28), 0, Math.PI * 2);
+          ctx.fill();
+        }
+      };
+
+      if (uTurnBay?.enabled) {
+        const bayX = arm.setback + uTurnBay.distanceBeforeStop;
+        const gapHalf = 4.2;
+        drawMedianSeg(medianStart, Math.max(0, bayX - gapHalf - medianStart));
+        drawMedianSeg(bayX + gapHalf, Math.max(0, armEnd - (bayX + gapHalf)));
+        // U-turn bay subtle pavement cue
+        ctx.strokeStyle = 'rgba(251, 191, 36, 0.75)';
+        ctx.lineWidth = 0.16;
+        ctx.setLineDash([0.8, 0.7]);
+        ctx.beginPath();
+        ctx.moveTo(bayX - gapHalf, 0);
+        ctx.lineTo(bayX + gapHalf, 0);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      } else {
+        drawMedianSeg(medianStart, medianLen);
+      }
+    } else {
+      // No physical median: solid double yellow near stop line (no-pass zone 28m), dashed yellow upstream (passing zone!)
+      const noPassEnd = Math.min(armEnd, arm.setback + 28);
+      ctx.strokeStyle = '#FBBF24';
+      ctx.lineWidth = 0.2;
+      ctx.beginPath();
+      ctx.moveTo(arm.setback, -0.16);
+      ctx.lineTo(noPassEnd, -0.16);
+      ctx.moveTo(arm.setback, 0.16);
+      ctx.lineTo(noPassEnd, 0.16);
+      ctx.stroke();
+
+      if (armEnd > noPassEnd) {
+        ctx.setLineDash([2.4, 2.2]);
+        ctx.beginPath();
+        ctx.moveTo(noPassEnd, 0);
+        ctx.lineTo(armEnd, 0);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    // Dashed lane dividers for inbound (+Y) and outbound (-Y)
+    ctx.strokeStyle = 'rgba(248, 250, 252, 0.58)';
+    ctx.lineWidth = 0.16;
+    ctx.setLineDash([1.6, 1.8]);
+    ctx.beginPath();
+    let curIn = arm.halfMedian;
+    for (let l = 0; l < arm.def.inLanes - 1; l++) {
+      curIn += arm.def.inLaneWidths[l];
+      ctx.moveTo(arm.setback, curIn);
+      ctx.lineTo(armEnd, curIn);
+    }
+    let curOut = arm.halfMedian;
+    for (let l = 0; l < arm.def.outLanes - 1; l++) {
+      curOut += arm.def.outLaneWidths[l];
+      ctx.moveTo(arm.setback, -curOut);
+      ctx.lineTo(armEnd, -curOut);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Solid white Stop Line (inbound side +Y only — NO ZEBRA CROSS!)
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(arm.setback, arm.halfMedian, 0.48, arm.inWidth + flare);
+
+    // Emerald Exit Counting Line (outbound side -Y)
+    ctx.strokeStyle = 'rgba(16, 185, 129, 0.65)';
+    ctx.lineWidth = 0.24;
+    ctx.setLineDash([0.8, 0.6]);
+    ctx.beginPath();
+    ctx.moveTo(arm.setback, -arm.halfMedian);
+    ctx.lineTo(arm.setback, -outOuter);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // RHK Motor Box behind stop line
+    if (arm.def.motorBoxEnabled) {
+      const rhkDepth = 4.4;
+      const rx = arm.setback + 0.5;
+      const ry = arm.halfMedian + 0.14;
+      const rw = Math.max(0.5, arm.inWidth - 0.28);
+      ctx.fillStyle = 'rgba(220, 38, 38, 0.26)';
+      ctx.fillRect(rx, ry, rhkDepth, rw);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.82)';
+      ctx.lineWidth = 0.15;
+      ctx.strokeRect(rx, ry, rhkDepth, rw);
+
+      ctx.save();
+      ctx.translate(rx + rhkDepth / 2, ry + rw / 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.78)';
+      ctx.font = '700 1.05px "JetBrains Mono", monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('RHK', 0, 0);
+      ctx.restore();
+    }
+
+    // LHT Lane Arrows on inbound lanes
+    ctx.fillStyle = 'rgba(248, 250, 252, 0.42)';
+    for (let l = 0; l < arm.def.inLanes; l++) {
+      const yOff = arm.inLaneCenters[l];
+      const mode: 'straight' | 'left' | 'right' =
+        arm.def.inLanes === 1
+          ? 'straight'
+          : l === arm.def.inLanes - 1
+          ? 'left'
+          : l === 0
+          ? 'right'
+          : 'straight';
+      // Local inbound travel direction is -X (rot = -PI/2 maps arrow -Y to -X!)
+      drawLaneArrowLocal(ctx, arm.setback + 6.5, yOff, -Math.PI / 2, mode);
+    }
+
+    // Per-arm LTOR indicator badge on outer left side
+    if (arm.def.leftTurnOnRed || arm.def.slipLane?.enabled) {
+      const lx = arm.setback + 9.2;
+      const ly = inOuter + flare + 1.5;
+      ctx.fillStyle = 'rgba(16, 185, 129, 0.2)';
+      ctx.strokeStyle = '#10B981';
+      ctx.lineWidth = 0.14;
+      ctx.beginPath();
+      ctx.roundRect(lx - 1.3, ly - 0.9, 2.6, 1.8, 0.35);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.save();
+      ctx.translate(lx, ly);
+      ctx.rotate(-arm.angleRad);
+      ctx.fillStyle = '#047857';
+      ctx.font = '700 0.72px "JetBrains Mono", monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(arm.def.slipLane?.enabled ? 'SLIP' : 'LTOR', 0, 0);
+      ctx.restore();
+    }
+
+    ctx.restore();
+  }
+
+  // 5. Triangular Splitter Islands (Pulau Segitiga Kanalisasi, e.g. Simpang Giwangan!)
+  for (const isl of compiled.islands) {
+    if (isl.points.length < 3) continue;
+    ctx.save();
+    ctx.fillStyle = '#CBD5E1';
+    ctx.strokeStyle = '#1E293B';
+    ctx.lineWidth = 0.35;
+    ctx.beginPath();
+    isl.points.forEach((pt, idx) => {
+      if (idx === 0) ctx.moveTo(pt.x, pt.y);
+      else ctx.lineTo(pt.x, pt.y);
+    });
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Green landscaped core inside the splitter island
+    ctx.fillStyle = '#22C55E';
+    ctx.beginPath();
+    isl.points.forEach((pt, idx) => {
+      const sx = isl.centroid.x + (pt.x - isl.centroid.x) * 0.62;
+      const sy = isl.centroid.y + (pt.y - isl.centroid.y) * 0.62;
+      if (idx === 0) ctx.moveTo(sx, sy);
+      else ctx.lineTo(sx, sy);
+    });
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // 6. Yellow Box Junction marking in center if enabled
+  if (compiled.topology.yellowBoxEnabled && compiled.centerPolygon.length >= 3) {
+    const xs = compiled.centerPolygon.map((p) => p.x);
+    const ys = compiled.centerPolygon.map((p) => p.y);
+    const halfW = Math.min(12, Math.max(4, (Math.max(...xs) - Math.min(...xs)) * 0.34));
+    const halfH = Math.min(12, Math.max(4, (Math.max(...ys) - Math.min(...ys)) * 0.34));
+    drawYellowBoxMarking(ctx, halfW, halfH);
+  }
+
+  // 7. Optional Movement Spline Previews (Draw mode!)
+  if (options.showPathPreviews) {
+    ctx.save();
+    ctx.lineWidth = 0.22;
+    for (const path of Object.values(compiled.pathsByKey)) {
+      if (path.curvePoints.length < 2) continue;
+      ctx.strokeStyle = path.isSlipLane
+        ? 'rgba(16, 185, 129, 0.75)'
+        : path.isUTurn
+        ? 'rgba(245, 158, 11, 0.75)'
+        : path.movement === 'straight'
+        ? 'rgba(148, 163, 184, 0.38)'
+        : path.movement === 'right'
+        ? 'rgba(244, 63, 94, 0.35)'
+        : 'rgba(56, 189, 248, 0.38)';
+      ctx.setLineDash(path.isSlipLane ? [1.2, 0.8] : [0.9, 1.1]);
+      ctx.beginPath();
+      path.curvePoints.forEach((pt, idx) => {
+        if (idx === 0) ctx.moveTo(pt.x, pt.y);
+        else ctx.lineTo(pt.x, pt.y);
+      });
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  // 8. Street-name pills along each arm
+  ctx.save();
+  ctx.font = '600 1.6px "Inter", system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (const armId of compiled.armOrder) {
+    const arm = compiled.armsById[armId];
+    const name = arm.def.label;
+    if (!name) continue;
+    const dist = arm.setback + Math.min(arm.def.length * 0.48, 28);
+    const lx = arm.outDir.x * dist;
+    const ly = arm.outDir.y * dist;
+    const padX = 1.2;
+    const pillH = 2.7;
+    const tw = ctx.measureText(name).width + padX * 2;
+    ctx.fillStyle = options.selectedArmId === armId ? '#0F172A' : 'rgba(255, 255, 255, 0.93)';
+    ctx.strokeStyle = options.selectedArmId === armId ? '#0EA5E9' : '#CBD5E1';
+    ctx.lineWidth = 0.2;
+    ctx.beginPath();
+    ctx.roundRect(lx - tw / 2, ly - pillH / 2, tw, pillH, 0.75);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = options.selectedArmId === armId ? '#FFFFFF' : '#0F172A';
+    ctx.fillText(name, lx, ly + 0.06);
+  }
+  ctx.restore();
+}
+
 export function drawStaticRoadLayer(
   ctx: CanvasRenderingContext2D,
   width: number,
@@ -118,7 +582,10 @@ export function drawStaticRoadLayer(
   showGrid: boolean,
   halfRoad: number,
   halfBox: number,
-  config: SimConfig
+  config: SimConfig,
+  compiledTopology?: CompiledTopology,
+  panX = 0,
+  panY = 0
 ): void {
   ctx.save();
   ctx.scale(dpr, dpr);
@@ -126,10 +593,12 @@ export function drawStaticRoadLayer(
   ctx.fillStyle = '#C9D3B8';
   ctx.fillRect(0, 0, width, height);
 
-  const totalExtent = (halfBox + config.roadLength) * 2;
-  const pxPerMeter = ((Math.min(width, height) * 0.92) / Math.max(60, totalExtent)) * zoom;
-  const cx = width / 2;
-  const cy = height / 2;
+  const isCustomTopo = Boolean(config.customTopology && compiledTopology);
+  const totalExtent = isCustomTopo
+    ? compiledTopology!.maxExtentMeters * 2
+    : (halfBox + config.roadLength) * 2;
+  const vp = computeViewport(width, height, totalExtent, zoom, panX, panY);
+  const { cx, cy, pxPerMeter } = vp;
 
   if (showGrid) {
     const gridStep = 10 * pxPerMeter;
@@ -137,8 +606,16 @@ export function drawStaticRoadLayer(
       ctx.strokeStyle = 'rgba(120, 134, 107, 0.28)';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      for (let x = cx % gridStep; x < width; x += gridStep) { ctx.moveTo(x, 0); ctx.lineTo(x, height); }
-      for (let y = cy % gridStep; y < height; y += gridStep) { ctx.moveTo(0, y); ctx.lineTo(width, y); }
+      const startX = ((cx % gridStep) + gridStep) % gridStep;
+      const startY = ((cy % gridStep) + gridStep) % gridStep;
+      for (let x = startX; x < width; x += gridStep) {
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+      }
+      for (let y = startY; y < height; y += gridStep) {
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+      }
       ctx.stroke();
     }
   }
@@ -146,6 +623,17 @@ export function drawStaticRoadLayer(
   ctx.save();
   ctx.translate(cx, cy);
   ctx.scale(pxPerMeter, pxPerMeter);
+
+  const wetAsphalt = (config.environment?.weather ?? 'clear') !== 'clear';
+
+  // Custom / N-Arm / Asymmetric / Giwangan Topology Renderer
+  if (isCustomTopo && compiledTopology) {
+    // Subtle urban grass backdrop around arms
+    drawTopologyRoadWorld(ctx, compiledTopology, { wetAsphalt });
+    ctx.restore();
+    ctx.restore();
+    return;
+  }
 
   const armLen = halfBox + config.roadLength;
   const sidewalkW = 3.4;
@@ -166,11 +654,10 @@ export function drawStaticRoadLayer(
     ctx.fillStyle = '#CFCBC2';
     ctx.fillRect(swX, swY, bw + sidewalkW, bw + sidewalkW);
 
-    // Tropical grass & warm Indonesian soil plot (Tanah & Rumput)
+    // Tropical grass & warm Indonesian soil plot
     ctx.fillStyle = c.isPark ? '#7FA25E' : '#94AD74';
     ctx.fillRect(rx, ry, bw, bw);
 
-    // Martapura river/canal edge for Banjarmasin east quadrants
     const riverOffset = c.riverEdge ? Math.max(42, config.roadLength * 0.56) : bw;
     if (c.riverEdge) {
       const riverX = bx + riverOffset;
@@ -183,23 +670,11 @@ export function drawStaticRoadLayer(
       ctx.fillRect(riverX + riverW * 0.25, ry, riverW * 0.5, bw);
     }
 
-    // Warm earth/soil border strip (Tanah cokelat) along the sidewalk edge
     const soilStrip = 2.6;
     ctx.fillStyle = '#A88F6B';
-    ctx.fillRect(
-      c.sx < 0 ? bx - soilStrip : bx,
-      ry,
-      soilStrip,
-      bw
-    );
-    ctx.fillRect(
-      rx,
-      c.sy < 0 ? by - soilStrip : by,
-      c.riverEdge ? Math.min(bw, riverOffset) : bw,
-      soilStrip
-    );
+    ctx.fillRect(c.sx < 0 ? bx - soilStrip : bx, ry, soilStrip, bw);
+    ctx.fillRect(rx, c.sy < 0 ? by - soilStrip : by, c.riverEdge ? Math.min(bw, riverOffset) : bw, soilStrip);
 
-    // Paved courtyard / konblok forecourt for buildings
     const bSize = Math.min(26, Math.max(14, config.roadLength * 0.32));
     if (!c.isPark) {
       const yardPad = 2.5;
@@ -248,7 +723,6 @@ export function drawStaticRoadLayer(
       }
     }
 
-    // Landmark caption badge inside the corner plot
     if (c.label) {
       ctx.save();
       ctx.font = '600 2.05px "Plus Jakarta Sans", Inter, sans-serif';
@@ -270,7 +744,6 @@ export function drawStaticRoadLayer(
     const planterImg = getLoadedAsset('/assets/infra/city/planter-box-long.svg');
     if (planterImg) drawRotatedImage(ctx, planterImg, bx + c.sx * 1.4, by + c.sy * 20, 9, 2.4, Math.PI / 2);
 
-    // Streetlights & bus shelter along sidewalks
     const lampImg = getLoadedAsset('/assets/infra/city/streetlight-top.svg');
     if (lampImg) {
       drawRotatedImage(ctx, lampImg, bx + c.sx * -1.4, by + c.sy * 16, 2.8, 1.4, Math.PI / 2);
@@ -302,13 +775,12 @@ export function drawStaticRoadLayer(
     }
   }
 
-  // Warm charcoal asphalt & curbs
+  // Charcoal asphalt (slightly darker when wet/raining) & curbs
   const filletR = 2.2;
-  ctx.fillStyle = '#373D47';
+  ctx.fillStyle = wetAsphalt ? '#282E38' : '#373D47';
   ctx.fillRect(-halfRoad, -armLen, halfRoad * 2, armLen * 2);
   ctx.fillRect(-armLen, -halfRoad, armLen * 2, halfRoad * 2);
 
-  // Rounded corner fillets so turning heavy vehicles don't clip sharp 90-degree corners
   for (const sx of [-1, 1] as const) {
     for (const sy of [-1, 1] as const) {
       ctx.beginPath();
@@ -320,10 +792,15 @@ export function drawStaticRoadLayer(
     }
   }
 
-  ctx.fillStyle = '#2F353E';
+  ctx.fillStyle = wetAsphalt ? '#222730' : '#2F353E';
   ctx.fillRect(-halfRoad, -halfRoad, halfRoad * 2, halfRoad * 2);
 
-  // Indonesian black-and-white kanstin curbs along road edges
+  // Yellow Box Junction marking (No. 8)
+  if (config.yellowBoxEnabled) {
+    drawYellowBoxMarking(ctx, halfRoad, halfRoad);
+  }
+
+  // Indonesian black-and-white kanstin curbs
   const strokeCurbPaths = () => {
     ctx.beginPath();
     for (const sx of [-1, 1] as const) {
@@ -344,7 +821,7 @@ export function drawStaticRoadLayer(
   strokeCurbPaths();
   ctx.setLineDash([]);
 
-  // Center median: physical planted island when hasMedian is true, otherwise double yellow lines
+  // Center median: physical planted island when hasMedian is true, otherwise yellow lines (dashed upstream to show overtaking zone!)
   if (config.hasMedian) {
     const medianStart = halfBox + 0.8;
     const medianLen = Math.max(0, armLen - medianStart);
@@ -382,17 +859,37 @@ export function drawStaticRoadLayer(
       }
     }
   } else {
+    const noPassEnd = Math.min(armLen, halfBox + 28);
     ctx.strokeStyle = '#FBBF24';
     ctx.lineWidth = 0.22;
     const g = 0.18;
     ctx.beginPath();
     for (const s of [-1, 1]) {
-      ctx.moveTo(s * g, -armLen); ctx.lineTo(s * g, -halfBox);
-      ctx.moveTo(s * g, halfBox); ctx.lineTo(s * g, armLen);
-      ctx.moveTo(-armLen, s * g); ctx.lineTo(-halfBox, s * g);
-      ctx.moveTo(halfBox, s * g); ctx.lineTo(armLen, s * g);
+      ctx.moveTo(s * g, -noPassEnd);
+      ctx.lineTo(s * g, -halfBox);
+      ctx.moveTo(s * g, halfBox);
+      ctx.lineTo(s * g, noPassEnd);
+      ctx.moveTo(-noPassEnd, s * g);
+      ctx.lineTo(-halfBox, s * g);
+      ctx.moveTo(halfBox, s * g);
+      ctx.lineTo(noPassEnd, s * g);
     }
     ctx.stroke();
+
+    if (armLen > noPassEnd) {
+      ctx.setLineDash([2.4, 2.2]);
+      ctx.beginPath();
+      ctx.moveTo(0, -armLen);
+      ctx.lineTo(0, -noPassEnd);
+      ctx.moveTo(0, noPassEnd);
+      ctx.lineTo(0, armLen);
+      ctx.moveTo(-armLen, 0);
+      ctx.lineTo(-noPassEnd, 0);
+      ctx.moveTo(noPassEnd, 0);
+      ctx.lineTo(armLen, 0);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
   }
 
   // Dashed lane dividers
@@ -404,34 +901,30 @@ export function drawStaticRoadLayer(
   for (let l = 1; l < config.lanesPerDirection; l++) {
     const off = l * lw;
     for (const s of [-1, 1]) {
-      ctx.moveTo(s * off, -armLen); ctx.lineTo(s * off, -halfBox);
-      ctx.moveTo(s * off, halfBox); ctx.lineTo(s * off, armLen);
-      ctx.moveTo(-armLen, s * off); ctx.lineTo(-halfBox, s * off);
-      ctx.moveTo(halfBox, s * off); ctx.lineTo(armLen, s * off);
+      ctx.moveTo(s * off, -armLen);
+      ctx.lineTo(s * off, -halfBox);
+      ctx.moveTo(s * off, halfBox);
+      ctx.lineTo(s * off, armLen);
+      ctx.moveTo(-armLen, s * off);
+      ctx.lineTo(-halfBox, s * off);
+      ctx.moveTo(halfBox, s * off);
+      ctx.lineTo(armLen, s * off);
     }
   }
   ctx.stroke();
   ctx.setLineDash([]);
 
-  // Crosswalks & Stop Lines
-  ctx.fillStyle = 'rgba(248, 250, 252, 0.72)';
-  for (let p = -halfRoad + 0.5; p < halfRoad - 0.5; p += 1.3) {
-    ctx.fillRect(p, -halfRoad - 1.8, 0.65, 1.6);
-    ctx.fillRect(p, halfRoad + 0.2, 0.65, 1.6);
-    ctx.fillRect(-halfRoad - 1.8, p, 1.6, 0.65);
-    ctx.fillRect(halfRoad + 0.2, p, 1.6, 0.65);
-  }
-
+  // Stop Lines (Zebra crosswalks removed per user specification!)
   ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(-halfRoad, halfBox, halfRoad, 0.45);
   ctx.fillRect(0, -halfBox - 0.45, halfRoad, 0.45);
   ctx.fillRect(-halfBox - 0.45, -halfRoad, 0.45, halfRoad);
   ctx.fillRect(halfBox, 0, 0.45, halfRoad);
 
-  // Kotak Khusus Sepeda Motor / RHK (4.5m red-tinted pocket behind stop line)
+  // Kotak Khusus Sepeda Motor / RHK
   if (config.motorBoxEnabled) {
     const rhkDepth = 4.5;
-    const innerMargin = config.hasMedian ? 0.50 : 0.12;
+    const innerMargin = config.hasMedian ? 0.5 : 0.12;
     for (const rot of [0, Math.PI / 2, Math.PI, -Math.PI / 2]) {
       ctx.save();
       ctx.rotate(rot);
@@ -444,12 +937,11 @@ export function drawStaticRoadLayer(
       ctx.lineWidth = 0.16;
       ctx.strokeRect(rx, ry, rw, rhkDepth);
 
-      // Subtle motorcycle stencil + RHK label
       const cxBox = rx + rw / 2;
       const cyBox = ry + rhkDepth / 2;
       ctx.fillStyle = 'rgba(255, 255, 255, 0.72)';
-      ctx.fillRect(cxBox - 0.35, cyBox - 0.85, 0.7, 0.22); // handlebar
-      ctx.fillRect(cxBox - 0.12, cyBox - 0.85, 0.24, 1.15); // body
+      ctx.fillRect(cxBox - 0.35, cyBox - 0.85, 0.7, 0.22);
+      ctx.fillRect(cxBox - 0.12, cyBox - 0.85, 0.24, 1.15);
       ctx.font = '700 1.05px "JetBrains Mono", monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -458,7 +950,7 @@ export function drawStaticRoadLayer(
     }
   }
 
-  // Left Turn On Red (Belok Kiri Langsung / LTOR) indicator near outer left curb
+  // LTOR indicator near outer left curb
   if (config.leftTurnOnRed) {
     for (const rot of [0, Math.PI / 2, Math.PI, -Math.PI / 2]) {
       ctx.save();
@@ -474,7 +966,6 @@ export function drawStaticRoadLayer(
       ctx.fill();
       ctx.stroke();
 
-      // Curved left-turn arrow
       ctx.strokeStyle = '#059669';
       ctx.lineWidth = 0.26;
       ctx.lineCap = 'round';
@@ -505,43 +996,27 @@ export function drawStaticRoadLayer(
   ctx.lineWidth = 0.24;
   ctx.setLineDash([0.8, 0.6]);
   ctx.beginPath();
-  ctx.moveTo(-halfRoad, -halfBox); ctx.lineTo(0, -halfBox);
-  ctx.moveTo(0, halfBox); ctx.lineTo(halfRoad, halfBox);
-  ctx.moveTo(halfBox, -halfRoad); ctx.lineTo(halfBox, 0);
-  ctx.moveTo(-halfBox, 0); ctx.lineTo(-halfBox, halfRoad);
+  ctx.moveTo(-halfRoad, -halfBox);
+  ctx.lineTo(0, -halfBox);
+  ctx.moveTo(0, halfBox);
+  ctx.lineTo(halfRoad, halfBox);
+  ctx.moveTo(halfBox, -halfRoad);
+  ctx.lineTo(halfBox, 0);
+  ctx.moveTo(-halfBox, 0);
+  ctx.lineTo(-halfBox, halfRoad);
   ctx.stroke();
   ctx.setLineDash([]);
 
   // LHT Lane Arrows
   ctx.fillStyle = 'rgba(248, 250, 252, 0.38)';
-  const drawArrow = (x: number, y: number, rot: number, mode: 'straight' | 'left' | 'right') => {
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(rot);
-    ctx.beginPath();
-    ctx.moveTo(0, -1.2); ctx.lineTo(0.48, -0.35); ctx.lineTo(0.18, -0.35);
-    ctx.lineTo(0.18, 1.1); ctx.lineTo(-0.18, 1.1); ctx.lineTo(-0.18, -0.35); ctx.lineTo(-0.48, -0.35);
-    ctx.closePath();
-    ctx.fill();
-    if (mode !== 'straight') {
-      const s = mode === 'left' ? -1 : 1;
-      ctx.beginPath();
-      ctx.moveTo(s * 0.18, 0.2); ctx.lineTo(s * 0.75, 0.2); ctx.lineTo(s * 0.75, 0.48);
-      ctx.lineTo(s * 1.25, 0.05); ctx.lineTo(s * 0.75, -0.38); ctx.lineTo(s * 0.75, -0.1); ctx.lineTo(s * 0.18, -0.1);
-      ctx.closePath();
-      ctx.fill();
-    }
-    ctx.restore();
-  };
-
   const L = config.lanesPerDirection;
   for (let l = 0; l < L; l++) {
     const off = (l + 0.5) * lw;
     const mode: 'straight' | 'left' | 'right' = L === 1 ? 'straight' : l === L - 1 ? 'left' : l === 0 ? 'right' : 'straight';
-    drawArrow(-off, halfBox + 6.0, 0, mode);
-    drawArrow(off, -halfBox - 6.0, Math.PI, mode);
-    drawArrow(-halfBox - 6.0, -off, Math.PI / 2, mode);
-    drawArrow(halfBox + 6.0, off, -Math.PI / 2, mode);
+    drawLaneArrowLocal(ctx, -off, halfBox + 6.0, 0, mode);
+    drawLaneArrowLocal(ctx, off, -halfBox - 6.0, Math.PI, mode);
+    drawLaneArrowLocal(ctx, -halfBox - 6.0, -off, Math.PI / 2, mode);
+    drawLaneArrowLocal(ctx, halfBox + 6.0, off, -Math.PI / 2, mode);
   }
 
   // Street-name labels along all 4 road arms

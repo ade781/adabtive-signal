@@ -1,12 +1,15 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { getEffectiveRoadWidth } from '../engine/geometry';
-import { ArmId, SignalColor, SimConfig, SimSnapshot, Vehicle } from '../engine/types';
+import { CompiledTopology } from '../engine/topologyTypes';
+import { SignalColor, SimConfig, SimSnapshot, Vehicle } from '../engine/types';
 import { getLoadedAsset, onAssetsLoaded, preloadSimulationAssets } from './assetLoader';
 import { drawStaticRoadLayer } from './drawStaticRoad';
+import { computeViewport } from './viewport';
 
 interface IntersectionCanvasProps {
   snapshotRef: React.MutableRefObject<SimSnapshot>;
   config: SimConfig;
+  compiledTopology: CompiledTopology;
   running: boolean;
   drawTick: number;
   zoom: number;
@@ -20,9 +23,18 @@ const SIGNAL_IMG: Record<SignalColor, string> = {
   red: '/assets/infra/signal-red.svg',
 };
 
+const PHASE_PRESET_LABELS: Record<string, string> = {
+  '4-phase-split': '4-Fase',
+  '2-phase-simultaneous': '2-Fase Simultan',
+  '3-phase': '3-Fase',
+  '4-phase-protected-right': '4-Fase + Panah Kanan',
+  custom: 'Fase Custom',
+};
+
 export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = React.memo(({
   snapshotRef,
   config,
+  compiledTopology,
   running,
   drawTick,
   zoom,
@@ -88,16 +100,22 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = React.memo(
 
   const halfRoad = getEffectiveRoadWidth(config);
   const halfBox = halfRoad + 2.0;
+  const isCustomTopo = Boolean(config.customTopology);
 
-  const sigPositions = useMemo<{ arm: ArmId; x: number; y: number }[]>(
-    () => [
-      { arm: 'north', x: halfRoad + 2.7, y: -halfBox - 2.7 },
-      { arm: 'south', x: -halfRoad - 2.7, y: halfBox + 2.7 },
-      { arm: 'west', x: -halfBox - 2.7, y: -halfRoad - 2.7 },
-      { arm: 'east', x: halfBox + 2.7, y: halfRoad + 2.7 },
-    ],
-    [halfRoad, halfBox]
-  );
+  const sigPositions = useMemo<{ armId: string; x: number; y: number; outY: number }[]>(() => {
+    if (isCustomTopo) {
+      return compiledTopology.armOrder.map((armId) => {
+        const arm = compiledTopology.armsById[armId];
+        return { armId, x: arm.signalPos.x, y: arm.signalPos.y, outY: arm.outDir.y };
+      });
+    }
+    return [
+      { armId: 'north', x: halfRoad + 2.7, y: -halfBox - 2.7, outY: -1 },
+      { armId: 'south', x: -halfRoad - 2.7, y: halfBox + 2.7, outY: 1 },
+      { armId: 'west', x: -halfBox - 2.7, y: -halfRoad - 2.7, outY: -1 },
+      { armId: 'east', x: halfBox + 2.7, y: halfRoad + 2.7, outY: 1 },
+    ];
+  }, [isCustomTopo, compiledTopology, halfRoad, halfBox]);
 
   useLayoutEffect(() => {
     if (typeof document === 'undefined') return;
@@ -121,7 +139,18 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = React.memo(
     const ctx = off.getContext('2d');
     if (ctx) {
       ctx.clearRect(0, 0, pixelW, pixelH);
-      drawStaticRoadLayer(ctx, size.width, size.height, size.dpr, zoom, showGrid, halfRoad, halfBox, config);
+      drawStaticRoadLayer(
+        ctx,
+        size.width,
+        size.height,
+        size.dpr,
+        zoom,
+        showGrid,
+        halfRoad,
+        halfBox,
+        config,
+        compiledTopology
+      );
     }
     drawFrameRef.current();
   }, [
@@ -131,6 +160,7 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = React.memo(
     halfRoad,
     halfBox,
     assetVer,
+    compiledTopology,
     config.lanesPerDirection,
     config.laneWidth,
     config.roadLength,
@@ -138,12 +168,15 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = React.memo(
     config.motorBoxEnabled,
     config.hasMedian,
     config.leftTurnOnRed,
+    config.yellowBoxEnabled,
+    config.environment?.weather,
     config.environmentId,
     config.scenarioName,
     config.armNames?.north,
     config.armNames?.east,
     config.armNames?.south,
     config.armNames?.west,
+    config.customTopology,
   ]);
 
   const drawFrame = useCallback(() => {
@@ -160,27 +193,37 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = React.memo(
     }
     ctx.scale(dpr, dpr);
 
-    const totalExtent = (halfBox + config.roadLength) * 2;
-    const pxPerMeter = ((Math.min(width, height) * 0.92) / Math.max(60, totalExtent)) * zoom;
-    const cx = width / 2;
-    const cy = height / 2;
+    const totalExtent = isCustomTopo
+      ? compiledTopology.maxExtentMeters * 2
+      : (halfBox + config.roadLength) * 2;
+    const vp = computeViewport(width, height, totalExtent, zoom);
+    const { cx, cy, pxPerMeter } = vp;
+
     const { signal, vehicles, stats } = snapshotRef.current;
     const blinkOn = Math.floor(stats.simTime * 2.5) % 2 === 0;
+    const env = stats.environment;
+    const headlightsOn = (env?.ambientDarkness ?? 0) > 0.1 || (env?.rainIntensity ?? 0) > 0.5;
 
     ctx.save();
     ctx.translate(cx, cy);
     ctx.scale(pxPerMeter, pxPerMeter);
 
-    for (const v of vehicles) drawVehicle(ctx, v, blinkOn);
+    for (const v of vehicles) drawVehicle(ctx, v, blinkOn, headlightsOn);
+
+    // Draw traffic signals for all arms (including optional Protected Right-Turn arrow lamps!)
+    const armColors: Record<string, SignalColor> = signal.multiPhase?.armColors ?? signal.armLights;
+    const arrowColors: Record<string, SignalColor | undefined> = signal.multiPhase?.armRightArrowColors ?? {};
 
     for (const sp of sigPositions) {
-      const color = signal.armLights[sp.arm];
+      const color: SignalColor = armColors[sp.armId] ?? 'red';
+      const rightArrowColor = arrowColors[sp.armId];
       const img = getLoadedAsset(SIGNAL_IMG[color]);
+
       ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
       ctx.strokeStyle = '#CBD5E1';
       ctx.lineWidth = 0.22;
       ctx.beginPath();
-      ctx.roundRect(sp.x - 1.6, sp.y - 3.0, 3.2, 6.0, 0.6);
+      ctx.roundRect(sp.x - 1.6, sp.y - 3.0, rightArrowColor ? 5.2 : 3.2, 6.0, 0.6);
       ctx.fill();
       ctx.stroke();
 
@@ -196,15 +239,64 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = React.memo(
         ctx.fillStyle = SIGNAL_COLORS[color];
         ctx.fill();
       }
+
+      if (rightArrowColor) {
+        const ax = sp.x + 2.4;
+        ctx.beginPath();
+        ctx.arc(ax, sp.y, 0.95, 0, Math.PI * 2);
+        ctx.fillStyle = SIGNAL_COLORS[rightArrowColor];
+        ctx.fill();
+        ctx.fillStyle = '#FFFFFF';
+        ctx.font = '700 1.05px "Inter", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('↱', ax, sp.y + 0.05);
+      }
     }
     ctx.restore();
 
-    const activeSig = sigPositions.find((sp) => sp.arm === signal.activeArm);
-    if (activeSig) {
+    // Subtle dusk/night/storm ambient tint
+    if (env && env.ambientDarkness > 0.01) {
+      ctx.fillStyle = `rgba(15, 23, 42, ${env.ambientDarkness.toFixed(3)})`;
+      ctx.fillRect(0, 0, width, height);
+    }
+
+    // Lightweight deterministic rain streak overlay (zero allocations, 60 FPS safe)
+    if (env && env.rainIntensity > 0.05) {
+      const dropCount = Math.round(env.rainIntensity * 95);
+      ctx.save();
+      ctx.strokeStyle = `rgba(226, 232, 240, ${(0.22 + env.rainIntensity * 0.26).toFixed(2)})`;
+      ctx.lineWidth = env.rainIntensity > 0.6 ? 1.25 : 0.9;
+      ctx.beginPath();
+      const tShift = stats.simTime * (340 + env.rainIntensity * 220);
+      for (let i = 0; i < dropCount; i++) {
+        const sx = ((i * 97.3 + tShift * 0.22) % (width + 40)) - 20;
+        const sy = ((i * 53.7 + tShift) % (height + 40)) - 20;
+        const len = 8 + env.rainIntensity * 12;
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(sx - len * 0.24, sy + len);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Countdown pills on all currently-green/yellow arms (handles 2-phase simultaneous greens!)
+    const activeArmIds = sigPositions.filter((sp) => {
+      const c = armColors[sp.armId] ?? 'red';
+      const rc = arrowColors[sp.armId];
+      return c !== 'red' || (rc !== undefined && rc !== 'red');
+    });
+    const badgeTargets =
+      activeArmIds.length > 0
+        ? activeArmIds
+        : sigPositions.filter((sp) => sp.armId === signal.activeArm).slice(0, 1);
+
+    for (const activeSig of badgeTargets) {
       const sx = cx + activeSig.x * pxPerMeter;
-      const sy = activeSig.arm === 'north' || activeSig.arm === 'west'
-        ? cy + activeSig.y * pxPerMeter - Math.max(18, 4.0 * pxPerMeter)
-        : cy + activeSig.y * pxPerMeter + Math.max(16, 3.8 * pxPerMeter);
+      const sy =
+        activeSig.outY < 0
+          ? cy + activeSig.y * pxPerMeter - Math.max(18, 4.0 * pxPerMeter)
+          : cy + activeSig.y * pxPerMeter + Math.max(16, 3.8 * pxPerMeter);
       const label = `${Math.ceil(Math.max(0, signal.phaseRemaining))}s`;
       ctx.font = '700 11px "JetBrains Mono", monospace';
       const tw = ctx.measureText(label).width + 10;
@@ -234,11 +326,15 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = React.memo(
     });
     if (scaleMeters !== undefined) {
       const barPx = scaleMeters * pxPerMeter;
-      const bx = 16, by = height - 18;
+      const bx = 16;
+      const by = height - 18;
       ctx.strokeStyle = '#0F172A';
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.moveTo(bx, by - 4); ctx.lineTo(bx, by); ctx.lineTo(bx + barPx, by); ctx.lineTo(bx + barPx, by - 4);
+      ctx.moveTo(bx, by - 4);
+      ctx.lineTo(bx, by);
+      ctx.lineTo(bx + barPx, by);
+      ctx.lineTo(bx + barPx, by - 4);
       ctx.stroke();
       ctx.fillStyle = '#0F172A';
       ctx.font = '600 11px "JetBrains Mono", monospace';
@@ -247,7 +343,7 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = React.memo(
       ctx.fillText(`${scaleMeters} m · LHT (ID)`, bx, by - 7);
     }
     ctx.restore();
-  }, [size, zoom, halfBox, config.roadLength, sigPositions, snapshotRef]);
+  }, [size, zoom, halfBox, isCustomTopo, compiledTopology, config.roadLength, sigPositions, snapshotRef]);
 
   const drawFrameRef = useRef(drawFrame);
   drawFrameRef.current = drawFrame;
@@ -270,10 +366,19 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = React.memo(
     if (!running) {
       drawFrameRef.current();
     }
-  }, [running, drawTick, zoom, showGrid, size, assetVer, config, drawFrame]);
+  }, [running, drawTick, zoom, showGrid, size, assetVer, config, compiledTopology, drawFrame]);
 
+  const phaseLabel = PHASE_PRESET_LABELS[config.signalPhasePreset ?? '4-phase-split'] ?? '4-Fase';
+  const weatherMode = config.environment?.weather ?? 'clear';
   const showHudPill = Boolean(
-    config.scenarioName || config.leftTurnOnRed || config.motorBoxEnabled || config.hasMedian
+    config.scenarioName ||
+      config.customTopology ||
+      config.leftTurnOnRed ||
+      config.motorBoxEnabled ||
+      config.hasMedian ||
+      config.yellowBoxEnabled ||
+      (config.signalPhasePreset && config.signalPhasePreset !== '4-phase-split') ||
+      weatherMode !== 'clear'
   );
 
   return (
@@ -289,10 +394,15 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = React.memo(
         }
       />
       {showHudPill && (
-        <div className="pointer-events-none absolute top-3 left-3 flex flex-wrap items-center gap-1.5 rounded-lg border border-slate-200/90 bg-white/95 px-2.5 py-1.5 shadow-sm">
-          {config.scenarioName && (
-            <span className="text-[11px] font-semibold text-slate-800">{config.scenarioName}</span>
+        <div className="pointer-events-none absolute top-3 left-3 flex flex-wrap items-center gap-1.5 rounded-lg border border-slate-200/90 bg-white/95 px-2.5 py-1.5 shadow-sm max-w-[calc(100%-80px)]">
+          {(config.customTopology?.name || config.scenarioName) && (
+            <span className="text-[11px] font-semibold text-slate-800">
+              {config.customTopology?.name || config.scenarioName}
+            </span>
           )}
+          <span className="rounded bg-indigo-50 px-1.5 py-0.5 font-mono text-[10px] font-bold text-indigo-700 ring-1 ring-inset ring-indigo-600/20">
+            {phaseLabel}
+          </span>
           {config.leftTurnOnRed && (
             <span className="rounded bg-emerald-50 px-1.5 py-0.5 font-mono text-[10px] font-bold text-emerald-700 ring-1 ring-inset ring-emerald-600/20">
               LTOR
@@ -303,9 +413,19 @@ export const IntersectionCanvas: React.FC<IntersectionCanvasProps> = React.memo(
               RHK
             </span>
           )}
+          {config.yellowBoxEnabled && (
+            <span className="rounded bg-amber-50 px-1.5 py-0.5 font-mono text-[10px] font-bold text-amber-700 ring-1 ring-inset ring-amber-600/25">
+              YELLOW BOX
+            </span>
+          )}
           {config.hasMedian && (
             <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-bold text-slate-700 ring-1 ring-inset ring-slate-600/20">
               Median
+            </span>
+          )}
+          {weatherMode !== 'clear' && (
+            <span className="rounded bg-sky-50 px-1.5 py-0.5 font-mono text-[10px] font-bold text-sky-700 ring-1 ring-inset ring-sky-600/20">
+              {weatherMode === 'heavy-rain' ? 'Hujan Lebat' : 'Gerimis'}
             </span>
           )}
         </div>
@@ -340,10 +460,29 @@ function drawVectorCompassFallback(ctx: CanvasRenderingContext2D, cx: number, cy
   ctx.restore();
 }
 
-function drawVehicle(ctx: CanvasRenderingContext2D, v: Vehicle, blinkOn: boolean) {
+function drawVehicle(ctx: CanvasRenderingContext2D, v: Vehicle, blinkOn: boolean, headlightsOn: boolean) {
   ctx.save();
   ctx.translate(v.x, v.y);
   ctx.rotate(v.heading + Math.PI / 2);
+
+  // Subtle headlight cones during rain or dusk/night
+  if (headlightsOn) {
+    ctx.fillStyle = 'rgba(254, 249, 195, 0.22)';
+    ctx.beginPath();
+    ctx.moveTo(-v.width * 0.3, -v.length * 0.48);
+    ctx.lineTo(-v.width * 0.85, -v.length * 0.48 - 4.5);
+    ctx.lineTo(v.width * 0.85, -v.length * 0.48 - 4.5);
+    ctx.lineTo(v.width * 0.3, -v.length * 0.48);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Subtle visual halo when actively overtaking via oncoming lane (so users can immediately spot smart AI!)
+  if (v.overtakeState && v.overtakeState !== 'none') {
+    ctx.strokeStyle = v.overtakeState === 'abort' ? 'rgba(239, 68, 68, 0.75)' : 'rgba(14, 165, 233, 0.75)';
+    ctx.lineWidth = 0.18;
+    ctx.strokeRect(-v.width / 2 - 0.16, -v.length / 2 - 0.16, v.width + 0.32, v.length + 0.32);
+  }
 
   const img = getLoadedAsset(v.spriteKey);
   if (img) ctx.drawImage(img, -v.width / 2, -v.length / 2, v.width, v.length);
@@ -352,17 +491,19 @@ function drawVehicle(ctx: CanvasRenderingContext2D, v: Vehicle, blinkOn: boolean
     ctx.fillRect(-v.width / 2, -v.length / 2, v.width, v.length);
   }
 
-  if (v.speed < 0.8) {
+  if (v.speed < 0.8 || v.brakingHard) {
     ctx.fillStyle = 'rgba(239, 68, 68, 0.95)';
     if (v.vClass === 'motor') ctx.fillRect(-0.1, v.length * 0.4, 0.2, 0.12);
     else {
-      const bw = Math.max(0.16, v.width * 0.16), bh = Math.max(0.12, v.length * 0.04);
+      const bw = Math.max(0.16, v.width * 0.16);
+      const bh = Math.max(0.12, v.length * 0.04);
       ctx.fillRect(-v.width * 0.34, v.length * 0.42, bw, bh);
       ctx.fillRect(v.width * 0.34 - bw, v.length * 0.42, bw, bh);
     }
   }
 
-  const signalDir = v.laneChangeDir ?? (v.turn !== 'straight' && v.distanceAlongPath < v.exitLineDist ? v.turn : null);
+  const rawTurnDir = v.turn === 'uturn' ? 'right' : v.turn !== 'straight' && v.distanceAlongPath < v.exitLineDist ? v.turn : null;
+  const signalDir = v.laneChangeDir ?? rawTurnDir;
   if (blinkOn && signalDir) {
     ctx.fillStyle = '#F59E0B';
     const r = v.vClass === 'motor' ? Math.max(0.055, v.width * 0.075) : Math.min(0.13, v.width * 0.075);
