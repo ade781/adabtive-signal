@@ -163,23 +163,35 @@ export function exportSimulationReportXlsx(snapshot: SimSnapshot): boolean {
   ];
 
   // Sheet 4: 4_Evaluasi_Performa (for quick AI & user evaluation)
-  const armStats = (['north', 'east', 'south', 'west'] as const).map((arm) => {
-    const armPhases = phasesChronological.filter((p) => p.arm === arm);
-    const count = armPhases.length;
-    const avgGreen = count > 0 ? +(armPhases.reduce((s, p) => s + p.greenDuration, 0) / count).toFixed(1) : 0;
-    const avgExited = count > 0 ? +(armPhases.reduce((s, p) => s + p.exitedTotal, 0) / count).toFixed(1) : 0;
-    const avgRemQueue = count > 0 ? +(armPhases.reduce((s, p) => s + p.queueAtEnd, 0) / count).toFixed(1) : 0;
-    return {
-      arm,
-      label: ARM_LABELS[arm],
-      count,
-      configuredGreen: getArmGreenDuration(config, arm),
-      avgGreen,
-      avgExited,
-      avgRemQueue,
-      currentQueue: stats.queueByArm[arm],
-    };
-  });
+  const customArms = config.customTopology?.arms;
+  const armSummaryRows = customArms && customArms.length >= 3
+    ? customArms.map((arm) => ({
+        arm: arm.id,
+        label: arm.label,
+        count: phasesChronological.filter((p) => p.arm === arm.id || p.phaseLabel?.includes(arm.label)).length,
+        configuredGreen: arm.baseGreenDuration ?? config.greenDuration,
+        avgGreen: +(arm.baseGreenDuration ?? config.greenDuration).toFixed(1),
+        avgExited: 0,
+        avgRemQueue: 0,
+        currentQueue: stats.queueByArmId?.[arm.id] ?? 0,
+      }))
+    : (['north', 'east', 'south', 'west'] as const).map((arm) => {
+        const armPhases = phasesChronological.filter((p) => p.arm === arm);
+        const count = armPhases.length;
+        const avgGreen = count > 0 ? +(armPhases.reduce((s, p) => s + p.greenDuration, 0) / count).toFixed(1) : 0;
+        const avgExited = count > 0 ? +(armPhases.reduce((s, p) => s + p.exitedTotal, 0) / count).toFixed(1) : 0;
+        const avgRemQueue = count > 0 ? +(armPhases.reduce((s, p) => s + p.queueAtEnd, 0) / count).toFixed(1) : 0;
+        return {
+          arm,
+          label: ARM_LABELS[arm],
+          count,
+          configuredGreen: getArmGreenDuration(config, arm),
+          avgGreen,
+          avgExited,
+          avgRemQueue,
+          currentQueue: stats.queueByArm[arm],
+        };
+      });
 
   const arrivalPerHour = Math.round((config.motorRate + config.carRate + config.heavyRate) * 60);
   const capacityRatioPct =
@@ -220,8 +232,13 @@ export function exportSimulationReportXlsx(snapshot: SimSnapshot): boolean {
     ['Kendaraan Terjebak di Kotak Simpang', stats.boxStuckCount, 'kendaraan'],
     ['Total Fase Tercatat', phasesChronological.length, 'fase'],
     ['Total Siklus Selesai Tercatat', cyclesChronological.length, 'siklus'],
+    ['Rolling 60s Throughput', stats.rollingThroughputPerHour ?? stats.throughputPerHour, 'kend/jam'],
+    ['Event Salip Mobil (MOBIL)', stats.carOvertakeCount ?? 0, 'manuver'],
+    ['Event Salip Makan Jalur Lawan', stats.oncomingOvertakeCount ?? 0, 'manuver'],
+    ['Event Mengalah Potong Arah / Yield', stats.yieldConflictCount ?? 0, 'event'],
+    ['Event Tahan Yellow Box', stats.yellowBoxHoldCount ?? 0, 'event'],
     [null, null, null],
-    ['RINGKASAN PER LENGAN (UTARA / TIMUR / SELATAN / BARAT)', null, null],
+    [`RINGKASAN PER LENGAN (${armSummaryRows.length} LENGAN)`, null, null],
     [
       'Lengan',
       'Jumlah_Fase',
@@ -231,7 +248,7 @@ export function exportSimulationReportXlsx(snapshot: SimSnapshot): boolean {
       'Rata2_Antrean_Sisa',
       'Antrean_Aktif_Saat_Ini',
     ],
-    ...armStats.map((a) => [
+    ...armSummaryRows.map((a) => [
       `${a.label} (${a.arm})`,
       a.count,
       a.configuredGreen,

@@ -1,126 +1,21 @@
+import { DEFAULT_CONFIG } from './constants';
+import { GIWANGAN_TOPOLOGY } from './giwanganBlueprint';
 import { SCENARIO_PRESETS } from './presets';
 import { buildSignalPhasesForTopology, simConfigToTopology } from './topologyBuilder';
 import { ArmDef, IntersectionTopology } from './topologyTypes';
-import { DEFAULT_CONFIG } from './constants';
 import { SimConfig } from './types';
+
+export { GIWANGAN_TOPOLOGY };
 
 export interface StaticSamplingBlueprint {
   id: string;
-  category: 'sampling-5' | 'showcase' | 'template';
+  category: 'field' | 'template';
   label: string;
   city: string;
   subtitle: string;
   source?: string;
   highlights: string[];
   topology: IntersectionTopology;
-}
-
-function makeGiwanganTopology(): IntersectionTopology {
-  // Referensi nyata: Simpang Giwangan, Yogyakarta
-  // Ringroad Selatan (Timur-Barat): jalan mayor 3 lajur masuk / 3 lajur keluar ber-median lebar (2.2m) + slip lane belok kiri!
-  // Jl. Pramuka (Utara) & Jl. Imogiri Timur (Selatan): jalan minor 2 lajur masuk / 2 lajur keluar lebih sempit,
-  // dengan sudut sedikit serong realistis + pulau segitiga kanalisasi & belokan kiri yang lebih lebar di sisi utama.
-  const arms: ArmDef[] = [
-    {
-      id: 'north',
-      label: 'Jl. Pramuka (Utara)',
-      angleDeg: 266,
-      length: 110,
-      inLanes: 2,
-      outLanes: 2,
-      inLaneWidths: [3.2, 3.4],
-      outLaneWidths: [3.2, 3.2],
-      medianWidth: 0.6,
-      curbRadiusLeft: 5.5,
-      curbFlareLeft: 0.8,
-      leftTurnOnRed: true,
-      slipLane: { enabled: true, width: 3.4, islandSetback: 16, yieldControl: 'yield' },
-      motorBoxEnabled: true,
-      demandWeight: 1.0,
-      baseGreenDuration: 24,
-    },
-    {
-      id: 'east',
-      label: 'Ringroad Selatan (Timur)',
-      angleDeg: 0,
-      length: 130,
-      inLanes: 3,
-      outLanes: 3,
-      inLaneWidths: [3.5, 3.5, 3.8],
-      outLaneWidths: [3.5, 3.5, 3.6],
-      medianWidth: 2.0,
-      curbRadiusLeft: 7.0,
-      curbFlareLeft: 1.0,
-      leftTurnOnRed: true,
-      slipLane: { enabled: true, width: 3.8, islandSetback: 20, yieldControl: 'yield' },
-      uTurnBay: { enabled: true, distanceBeforeStop: 36 },
-      motorBoxEnabled: true,
-      demandWeight: 1.6,
-      baseGreenDuration: 38,
-    },
-    {
-      id: 'south',
-      label: 'Jl. Imogiri Timur (Selatan)',
-      angleDeg: 94,
-      length: 110,
-      inLanes: 2,
-      outLanes: 2,
-      inLaneWidths: [3.3, 3.5],
-      outLaneWidths: [3.1, 3.1],
-      medianWidth: 0.0, // Tanpa median fisik di Jl. Imogiri Timur -> memicu salip makan jalur lawan!
-      curbRadiusLeft: 4.2,
-      curbFlareLeft: 0.6,
-      leftTurnOnRed: true,
-      slipLane: { enabled: false, width: 3.2, islandSetback: 14, yieldControl: 'yield' },
-      motorBoxEnabled: true,
-      demandWeight: 1.15,
-      baseGreenDuration: 26,
-    },
-    {
-      id: 'west',
-      label: 'Ringroad Selatan (Barat)',
-      angleDeg: 180,
-      length: 130,
-      inLanes: 3,
-      outLanes: 2, // Bottleneck 3 masuk -> 2 keluar (khas penyempitan mulut ringroad)
-      inLaneWidths: [3.5, 3.5, 3.8],
-      outLaneWidths: [3.6, 3.6],
-      medianWidth: 2.0,
-      curbRadiusLeft: 6.5,
-      curbFlareLeft: 1.0,
-      leftTurnOnRed: true,
-      slipLane: { enabled: true, width: 3.8, islandSetback: 20, yieldControl: 'yield' },
-      uTurnBay: { enabled: true, distanceBeforeStop: 36 },
-      motorBoxEnabled: true,
-      demandWeight: 1.75,
-      baseGreenDuration: 40,
-    },
-  ];
-
-  return {
-    id: 'giwangan-yogya',
-    name: 'Simpang Giwangan, Yogyakarta',
-    city: 'Yogyakarta',
-    source: 'Referensi Geometri Ringroad Selatan – Jl. Imogiri Timur – Jl. Pramuka',
-    description: 'Simpang asimetris: Ringroad 3-lajur bermedian + pulau segitiga slip-lane belok kiri langsung + Jl. Imogiri Timur 2-lajur tanpa median',
-    staticMapImage: '/assets/maps/giwangan-yogya.webp',
-    arms,
-    phasePreset: '4-phase-protected-right',
-    phases: buildSignalPhasesForTopology(arms, '4-phase-protected-right', 3, 2, 34),
-    yellowBoxEnabled: true,
-    defaultTraffic: {
-      motorRate: 92,
-      carRate: 44,
-      heavyRate: 11,
-      turnLeftPct: 26,
-      turnStraightPct: 54,
-      turnRightPct: 20,
-      uTurnPct: 4,
-      greenDuration: 34,
-      yellowDuration: 3,
-      allRedDuration: 2,
-    },
-  };
 }
 
 function makeTJunctionTemplate(): IntersectionTopology {
@@ -137,7 +32,7 @@ function makeTJunctionTemplate(): IntersectionTopology {
       medianWidth: 1.2,
       curbRadiusLeft: 4.5,
       leftTurnOnRed: true,
-      slipLane: { enabled: true, width: 3.4, islandSetback: 16, yieldControl: 'yield' },
+      slipLane: { enabled: true, width: 3.4, islandSetback: 16, yieldControl: 'yield', separatorStyle: 'triangle-island' },
       motorBoxEnabled: true,
       demandWeight: 1.4,
       baseGreenDuration: 24,
@@ -218,7 +113,9 @@ function makeFiveWayTemplate(): IntersectionTopology {
     medianWidth: s.inLanes >= 2 ? 0.8 : 0,
     curbRadiusLeft: 4.0,
     leftTurnOnRed: true,
-    slipLane: s.slip ? { enabled: true, width: 3.3, islandSetback: 16, yieldControl: 'yield' } : undefined,
+    slipLane: s.slip
+      ? { enabled: true, width: 3.3, islandSetback: 16, yieldControl: 'yield', separatorStyle: 'triangle-island' }
+      : undefined,
     motorBoxEnabled: true,
     demandWeight: 1.0,
     baseGreenDuration: 18,
@@ -250,6 +147,10 @@ function makeFiveWayTemplate(): IntersectionTopology {
 function buildFieldSamplingBlueprints(): StaticSamplingBlueprint[] {
   const fieldPresets = SCENARIO_PRESETS.filter((p) => p.category === 'field');
   const highlightsById: Record<string, string[]> = {
+    'giwangan-yogya': [
+      'Ringroad 3-lajur bermedian × Jl. Pramuka/Imogiri 2-lajur',
+      'Sekat belok kiri kecil hanya di sisi Barat + Terminal, SPBU & Brimob',
+    ],
     'brimob-yogya': ['1 lajur/arah (3.5m) tanpa median', 'Ideal untuk uji salip makan jalur lawan', '96.1 kend/mnt · 84% motor'],
     'lamper-semarang': ['2 lajur lebar (3.8m) bermedian', 'Ideal untuk uji MOBIL overtaking & LTOR', '153.9 kend/mnt · 36% belok kiri'],
     'sulawesi-banjarmasin': ['Beban timpang ekstrem U-T vs S-B', 'Ideal untuk uji Adaptive Signal', '27.7 kend/mnt · tanpa LTOR'],
@@ -258,10 +159,22 @@ function buildFieldSamplingBlueprints(): StaticSamplingBlueprint[] {
   };
 
   return fieldPresets.map((preset) => {
+    if (preset.patch.customTopology) {
+      return {
+        id: preset.id,
+        category: 'field',
+        label: preset.label,
+        city: preset.city || 'Indonesia',
+        subtitle: preset.description,
+        source: preset.source,
+        highlights: highlightsById[preset.id] || [preset.description],
+        topology: cloneTopology(preset.patch.customTopology),
+      };
+    }
+
     const mergedCfg: SimConfig = {
       ...DEFAULT_CONFIG,
       ...preset.patch,
-      // Bondowoso Malang data asli 2-fase -> tampilkan preset fase 2-fase saat dibuka di Draw!
       signalPhasePreset: preset.id === 'bondowoso-malang' ? '2-phase-simultaneous' : '4-phase-split',
       yellowBoxEnabled: preset.id === 'laswi-bandung' || preset.id === 'lamper-semarang',
     };
@@ -271,8 +184,7 @@ function buildFieldSamplingBlueprints(): StaticSamplingBlueprint[] {
     topo.city = preset.city;
     topo.source = preset.source;
     topo.description = preset.description;
-    topo.staticMapImage = `/assets/maps/${preset.id}.webp`;
-    // Reflect physical median width in Draw blueprint when preset hasMedian=true
+    topo.staticMapImage = `/assets/maps/${preset.id}.svg`;
     if (mergedCfg.hasMedian) {
       topo.arms = topo.arms.map((a) => ({ ...a, medianWidth: 1.2 }));
     }
@@ -290,7 +202,7 @@ function buildFieldSamplingBlueprints(): StaticSamplingBlueprint[] {
 
     return {
       id: preset.id,
-      category: 'sampling-5',
+      category: 'field',
       label: preset.label,
       city: preset.city || 'Indonesia',
       subtitle: preset.description,
@@ -301,23 +213,7 @@ function buildFieldSamplingBlueprints(): StaticSamplingBlueprint[] {
   });
 }
 
-export const GIWANGAN_TOPOLOGY: IntersectionTopology = makeGiwanganTopology();
-
 export const STATIC_SAMPLING_BLUEPRINTS: StaticSamplingBlueprint[] = [
-  {
-    id: 'giwangan-yogya',
-    category: 'showcase',
-    label: 'Simpang Giwangan, Yogyakarta',
-    city: 'Yogyakarta',
-    subtitle: 'Ringroad 3-lajur bermedian × Imogiri Timur 2-lajur + 3 Pulau Slip-Lane + Bottleneck',
-    source: 'Referensi Geometri Ringroad Selatan Yogyakarta',
-    highlights: [
-      'Lebar & lajur tidak seragam (3 vs 2 lajur + bottleneck 3→2)',
-      '3 Pulau Segitiga + Jalur Belok Kiri Jalan Terus (Slip Lane)',
-      'Jl. Imogiri Timur tanpa median (bisa salip jalur lawan) + U-Turn Ringroad',
-    ],
-    topology: GIWANGAN_TOPOLOGY,
-  },
   ...buildFieldSamplingBlueprints(),
   {
     id: 'template-t-junction',

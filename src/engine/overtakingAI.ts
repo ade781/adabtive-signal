@@ -258,10 +258,10 @@ export function evaluateMobilLaneChange(
     v.targetLateralOffset = 0;
     v.laneChangeDir = bestCandLane > curLane ? 'left' : 'right';
   } else {
-    // Exit-leg overtake: shift targetLateralOffset cleanly to target outbound lane
-    // Note: on exit leg, path centerline is at destLaneIndex; shifting inward/outward adjusts lateralOffset
+    // Exit-leg overtake: shift targetLateralOffset cleanly to target outbound lane and sync destLaneIndex
     const curBaseCenter = armGeom.outLaneCenters[v.destLaneIndex ?? 0] ?? getGlobalLat(0, 0, lw);
     const targetCenter = armGeom.outLaneCenters[bestCandLane] ?? getGlobalLat(bestCandLane, 0, lw);
+    v.destLaneIndex = bestCandLane;
     v.targetLateralOffset = targetCenter - curBaseCenter;
     v.laneChangeDir = bestCandLane > curLane ? 'left' : 'right';
   }

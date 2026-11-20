@@ -50,6 +50,7 @@ const ASSET_URLS = [
   '/assets/infra/city/landmark-spbu-pertamina.svg',
   '/assets/infra/city/landmark-kampus-wilis.svg',
   '/assets/infra/city/landmark-stadion-corner.svg',
+  '/assets/infra/city/landmark-terminal-giwangan.svg',
 ];
 
 const cache = new Map<string, HTMLImageElement>();

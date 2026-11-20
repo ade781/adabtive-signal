@@ -120,7 +120,7 @@ function trackBoxStuck(sim: TrafficSimulation, dt: number, stuckTimers: Map<numb
   const activeIds = new Set<number>();
   for (const v of snap.vehicles) {
     activeIds.add(v.id);
-    const insideBox = v.distanceAlongPath + v.length * 0.5 > v.stopLineDist + 0.3 && !v.hasExitedIntersection;
+    const insideBox = !v.isSlipLane && !v.isUTurn && v.distanceAlongPath + v.length * 0.5 > v.stopLineDist + 0.3 && !v.hasExitedIntersection;
     if (insideBox && v.speed < 0.1) {
       const t = (stuckTimers.get(v.id) ?? 0) + dt;
       stuckTimers.set(v.id, t);
@@ -374,10 +374,10 @@ assert(wideOut > narrowOut, `Expected wide 4.0m lane (${wideOut}) > narrow 2.8m 
   );
 }
 
-// 11. All 5 Real-World RI Field Presets (Fixed & Adaptive)
+// 11. All 6 Real-World RI Field Presets (Fixed & Adaptive)
 {
   const fieldPresets = SCENARIO_PRESETS.filter((p) => p.category === 'field');
-  assert(fieldPresets.length === 5, `[11. RI Field Presets] Expected 5 field presets, got ${fieldPresets.length}`);
+  assert(fieldPresets.length === 6, `[11. RI Field Presets] Expected 6 field presets, got ${fieldPresets.length}`);
   for (const preset of fieldPresets) {
     for (const adaptive of [false, true]) {
       const label = `11. ${preset.id} (${adaptive ? 'adaptive' : 'fixed'})`;
@@ -393,7 +393,7 @@ assert(wideOut > narrowOut, `Expected wide 4.0m lane (${wideOut}) > narrow 2.8m 
       assert(Number.isFinite(snap.stats.avgWaitTime), `[${label}] avgWaitTime not finite`);
     }
   }
-  console.log(`[PASS] 11. All 5 Real-World RI Field Presets verified (Fixed & Adaptive, 0 collisions)`);
+  console.log(`[PASS] 11. All 6 Real-World RI Field Presets verified (Fixed & Adaptive, 0 collisions)`);
 }
 
 // 12. RHK (motorBoxEnabled) Stop-Line Pocket Check

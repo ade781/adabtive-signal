@@ -27,14 +27,22 @@ export interface EnvironmentConfig {
   timeCompression?: number;
 }
 
+export type SlipSeparatorStyle = 'triangle-island' | 'curb-divider' | 'painted-gore';
+
 export interface SlipLaneDef {
   enabled: boolean;
-  /** Width of the dedicated left-turn channel in meters (2.8 - 4.5m) */
+  /** Width of the dedicated left-turn channel in meters (2.6 - 4.5m) */
   width: number;
   /** Distance upstream of stop line where the slip lane branches out (10 - 30m) */
   islandSetback: number;
   /** Whether vehicles yield to merging traffic on destination arm */
   yieldControl: 'free' | 'yield';
+  /** Physical separator style: full triangular island, compact narrow curb divider, or painted gore */
+  separatorStyle?: SlipSeparatorStyle;
+  /** Width of the compact curb divider in meters (0.35 - 1.2m) when separatorStyle === 'curb-divider' */
+  separatorThickness?: number;
+  /** Curve bulge factor (0.5 - 1.65) controlling how wide the slip channel sweeps */
+  curveBulge?: number;
 }
 
 export interface UTurnBayDef {
@@ -171,9 +179,13 @@ export interface CompiledArmGeometry {
 export interface IslandPolygon {
   armId: string;
   destArmId: string;
+  style: SlipSeparatorStyle;
+  separatorThickness: number;
   points: Point2D[];
   centroid: Point2D;
   slipLaneCenterPts: Point2D[];
+  outerBoundaryPts: Point2D[];
+  innerEdgePts: Point2D[];
   slipLaneWidth: number;
 }
 

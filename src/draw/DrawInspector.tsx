@@ -352,44 +352,116 @@ export const DrawInspector: React.FC<DrawInspectorProps> = ({
                   />
                 </div>
                 {selectedArm.slipLane?.enabled && (
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <div className="flex justify-between text-[10px] text-emerald-800">
-                        <span>Lebar Kanal</span>
-                        <strong className="font-mono">{selectedArm.slipLane.width.toFixed(1)}m</strong>
-                      </div>
-                      <input
-                        type="range"
-                        min={2.8}
-                        max={4.5}
-                        step={0.1}
-                        value={selectedArm.slipLane.width}
-                        onChange={(e) =>
-                          onUpdateArm(selectedArm.id, {
-                            slipLane: { ...selectedArm.slipLane!, width: Number(e.target.value) },
-                          })
-                        }
-                        className="w-full h-1.5 accent-emerald-600"
-                      />
+                  <div className="space-y-2">
+                    <div className="grid grid-cols-3 gap-1">
+                      {(
+                        [
+                          { id: 'triangle-island', label: 'Pulau Segitiga' },
+                          { id: 'curb-divider', label: 'Sekat Kecil' },
+                          { id: 'painted-gore', label: 'Marka Chevron' },
+                        ] as const
+                      ).map((opt) => {
+                        const curStyle = selectedArm.slipLane?.separatorStyle ?? 'triangle-island';
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() =>
+                              onUpdateArm(selectedArm.id, {
+                                slipLane: { ...selectedArm.slipLane!, separatorStyle: opt.id },
+                              })
+                            }
+                            className={`py-1 px-1 text-[10px] font-medium rounded border transition-colors duration-100 ${
+                              curStyle === opt.id
+                                ? 'bg-emerald-700 text-white border-emerald-700'
+                                : 'bg-white text-emerald-900 border-emerald-200 hover:bg-emerald-50'
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
                     </div>
-                    <div>
-                      <div className="flex justify-between text-[10px] text-emerald-800">
-                        <span>Panjang Pulau</span>
-                        <strong className="font-mono">{selectedArm.slipLane.islandSetback}m</strong>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <div className="flex justify-between text-[10px] text-emerald-800">
+                          <span>Lebar Kanal</span>
+                          <strong className="font-mono">{selectedArm.slipLane.width.toFixed(1)}m</strong>
+                        </div>
+                        <input
+                          type="range"
+                          min={2.6}
+                          max={4.5}
+                          step={0.1}
+                          value={selectedArm.slipLane.width}
+                          onChange={(e) =>
+                            onUpdateArm(selectedArm.id, {
+                              slipLane: { ...selectedArm.slipLane!, width: Number(e.target.value) },
+                            })
+                          }
+                          className="w-full h-1.5 accent-emerald-600"
+                        />
                       </div>
-                      <input
-                        type="range"
-                        min={10}
-                        max={30}
-                        step={1}
-                        value={selectedArm.slipLane.islandSetback}
-                        onChange={(e) =>
-                          onUpdateArm(selectedArm.id, {
-                            slipLane: { ...selectedArm.slipLane!, islandSetback: Number(e.target.value) },
-                          })
-                        }
-                        className="w-full h-1.5 accent-violet-600"
-                      />
+                      <div>
+                        <div className="flex justify-between text-[10px] text-emerald-800">
+                          <span>Panjang Mundur</span>
+                          <strong className="font-mono">{selectedArm.slipLane.islandSetback}m</strong>
+                        </div>
+                        <input
+                          type="range"
+                          min={10}
+                          max={30}
+                          step={1}
+                          value={selectedArm.slipLane.islandSetback}
+                          onChange={(e) =>
+                            onUpdateArm(selectedArm.id, {
+                              slipLane: { ...selectedArm.slipLane!, islandSetback: Number(e.target.value) },
+                            })
+                          }
+                          className="w-full h-1.5 accent-violet-600"
+                        />
+                      </div>
+                      <div>
+                        <div className="flex justify-between text-[10px] text-emerald-800">
+                          <span>Lengkung Belokan</span>
+                          <strong className="font-mono">{(selectedArm.slipLane.curveBulge ?? 1.0).toFixed(2)}x</strong>
+                        </div>
+                        <input
+                          type="range"
+                          min={0.45}
+                          max={1.65}
+                          step={0.05}
+                          value={selectedArm.slipLane.curveBulge ?? 1.0}
+                          onChange={(e) =>
+                            onUpdateArm(selectedArm.id, {
+                              slipLane: { ...selectedArm.slipLane!, curveBulge: Number(e.target.value) },
+                            })
+                          }
+                          className="w-full h-1.5 accent-emerald-600"
+                        />
+                      </div>
+                      {(selectedArm.slipLane.separatorStyle ?? 'triangle-island') === 'curb-divider' && (
+                        <div>
+                          <div className="flex justify-between text-[10px] text-emerald-800">
+                            <span>Tebal Sekat</span>
+                            <strong className="font-mono">{(selectedArm.slipLane.separatorThickness ?? 0.55).toFixed(2)}m</strong>
+                          </div>
+                          <input
+                            type="range"
+                            min={0.35}
+                            max={1.2}
+                            step={0.05}
+                            value={selectedArm.slipLane.separatorThickness ?? 0.55}
+                            onChange={(e) =>
+                              onUpdateArm(selectedArm.id, {
+                                slipLane: { ...selectedArm.slipLane!, separatorThickness: Number(e.target.value) },
+                              })
+                            }
+                            className="w-full h-1.5 accent-amber-600"
+                          />
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}

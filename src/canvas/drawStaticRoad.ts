@@ -170,6 +170,115 @@ function drawLaneArrowLocal(ctx: CanvasRenderingContext2D, x: number, y: number,
  * triangular splitter islands, physical medians, U-turn bays, RHK pockets, and Yellow Box).
  * Shared by both Simulator view (when customTopology is active) and the Draw workspace!
  */
+function drawCustomTopologyEnvironment(
+  ctx: CanvasRenderingContext2D,
+  compiled: CompiledTopology
+): void {
+  const cwArms = [...compiled.armOrder]
+    .map((id) => compiled.armsById[id])
+    .sort((a, b) => a.angleRad - b.angleRad);
+  const n = cwArms.length;
+  if (n < 3) return;
+
+  // 1. Subtle sector lawns & roadside trees between adjacent arms
+  const treeAsset1 = getLoadedAsset('/assets/infra/tree-architectural-1.svg');
+  const treeAsset2 = getLoadedAsset('/assets/infra/tree-architectural-2.svg');
+  const palmAsset = getLoadedAsset('/assets/infra/city/tree-palm-top.svg');
+
+  const fallbackAssets = [
+    '/assets/infra/city/building-roof-1.svg',
+    '/assets/infra/city/building-commercial-mall.svg',
+    '/assets/infra/city/park-plaza.svg',
+    '/assets/infra/city/landmark-ruko-row.svg',
+    '/assets/infra/city/building-terrace-green.svg',
+  ];
+
+  for (let i = 0; i < n; i++) {
+    const a = cwArms[i];
+    const b = cwArms[(i + 1) % n];
+    let diff = b.angleRad - a.angleRad;
+    if (diff <= 0) diff += Math.PI * 2;
+    const midAngle = a.angleRad + diff * 0.5;
+    const ux = Math.cos(midAngle);
+    const uy = Math.sin(midAngle);
+
+    // Safe radial distance outside junction box & any slip lane
+    const maxW = Math.max(a.inWidth + a.outWidth, b.inWidth + b.outWidth);
+    const minDist = Math.max(a.setback, b.setback) + maxW + 18;
+
+    // Roadside trees along sector bisector & flanks
+    const treeOffsets = [minDist - 5, minDist + 22, minDist + 46];
+    for (let tIdx = 0; tIdx < treeOffsets.length; tIdx++) {
+      const r = treeOffsets[tIdx];
+      const tx = ux * r + (tIdx % 2 === 0 ? -uy : uy) * 6;
+      const ty = uy * r + (tIdx % 2 === 0 ? ux : -ux) * 6;
+      const tImg = tIdx === 1 ? palmAsset : tIdx % 2 === 0 ? treeAsset1 : treeAsset2;
+      if (tImg) {
+        drawRotatedImage(ctx, tImg, tx, ty, 6.2, 6.2, midAngle);
+      }
+    }
+
+    // If topology doesn't specify explicit landmarks (e.g. Draw custom maps, 3-arm, 5-arm), render clean sector buildings
+    if (!compiled.topology.landmarks || compiled.topology.landmarks.length === 0) {
+      const bx = ux * (minDist + 10);
+      const by = uy * (minDist + 10);
+      const img = getLoadedAsset(fallbackAssets[i % fallbackAssets.length]);
+      if (img) {
+        ctx.save();
+        ctx.translate(bx, by);
+        ctx.rotate(midAngle + Math.PI * 0.25);
+        ctx.fillStyle = '#D7D2C7';
+        ctx.strokeStyle = '#B8B0A0';
+        ctx.lineWidth = 0.28;
+        ctx.beginPath();
+        ctx.roundRect(-12, -9, 24, 18, 1.4);
+        ctx.fill();
+        ctx.stroke();
+        drawImageContain(ctx, img, -10.5, -7.5, 21, 15);
+        ctx.restore();
+      }
+    }
+  }
+
+  // 2. Render explicit real-world landmarks (e.g. Terminal Giwangan, SPBU, Pos Brimob, Ruko)
+  const landmarks = compiled.topology.landmarks ?? [];
+  for (const lm of landmarks) {
+    const img = getLoadedAsset(lm.assetKey);
+    ctx.save();
+    ctx.translate(lm.x, lm.y);
+    ctx.rotate(lm.rotationRad || 0);
+
+    // Paved compound apron
+    ctx.fillStyle = '#D7D2C7';
+    ctx.strokeStyle = '#94A3B8';
+    ctx.lineWidth = 0.28;
+    ctx.beginPath();
+    ctx.roundRect(-lm.width * 0.56, -lm.height * 0.58, lm.width * 1.12, lm.height * 1.16, 1.4);
+    ctx.fill();
+    ctx.stroke();
+
+    if (img) {
+      drawImageContain(ctx, img, -lm.width * 0.5, -lm.height * 0.5, lm.width, lm.height);
+    }
+
+    if (lm.label) {
+      ctx.rotate(-(lm.rotationRad || 0));
+      ctx.font = '600 1.45px "Inter", system-ui, sans-serif';
+      const tw = ctx.measureText(lm.label).width + 2.0;
+      const ly = lm.height * 0.58 + 1.9;
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.86)';
+      ctx.beginPath();
+      ctx.roundRect(-tw / 2, ly - 1.1, tw, 2.2, 0.55);
+      ctx.fill();
+      ctx.fillStyle = '#F8FAFC';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(lm.label, 0, ly + 0.05);
+    }
+    ctx.restore();
+  }
+}
+
 export function drawTopologyRoadWorld(
   ctx: CanvasRenderingContext2D,
   compiled: CompiledTopology,
@@ -182,42 +291,10 @@ export function drawTopologyRoadWorld(
   const asphaltMain = options.wetAsphalt ? '#282E38' : '#373D47';
   const asphaltCenter = options.wetAsphalt ? '#222730' : '#2F353E';
 
-  // 1. Slip Lane paved channels (drawn beneath main island overlays)
-  for (const isl of compiled.islands) {
-    if (isl.slipLaneCenterPts.length < 2) continue;
-    ctx.save();
-    // Outer kanstin border
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.strokeStyle = '#CFCBC2';
-    ctx.lineWidth = isl.slipLaneWidth + 1.4;
-    ctx.beginPath();
-    isl.slipLaneCenterPts.forEach((pt, idx) => {
-      if (idx === 0) ctx.moveTo(pt.x, pt.y);
-      else ctx.lineTo(pt.x, pt.y);
-    });
-    ctx.stroke();
+  // 0. Sector environment & real-world landmarks (Terminal Giwangan, SPBU, Brimob, Ruko, trees)
+  drawCustomTopologyEnvironment(ctx, compiled);
 
-    // Asphalt channel
-    ctx.strokeStyle = asphaltMain;
-    ctx.lineWidth = isl.slipLaneWidth;
-    ctx.beginPath();
-    isl.slipLaneCenterPts.forEach((pt, idx) => {
-      if (idx === 0) ctx.moveTo(pt.x, pt.y);
-      else ctx.lineTo(pt.x, pt.y);
-    });
-    ctx.stroke();
-
-    // Subtle green LTOR slip guide dashes
-    ctx.strokeStyle = 'rgba(16, 185, 129, 0.55)';
-    ctx.lineWidth = 0.2;
-    ctx.setLineDash([1.2, 1.4]);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.restore();
-  }
-
-  // 2. Sidewalk apron under arms & center
+  // 1. Sidewalk apron under arms & center
   for (const armId of compiled.armOrder) {
     const arm = compiled.armsById[armId];
     const inOuter = arm.halfMedian + arm.inWidth + (arm.def.curbFlareLeft ?? 0);
@@ -230,6 +307,51 @@ export function drawTopologyRoadWorld(
     ctx.fillStyle = '#CFCBC2';
     ctx.fillRect(0, -(outOuter + sidewalk), totalLen, outOuter + inOuter + sidewalk * 2);
     ctx.restore();
+  }
+
+  // 2. Slip-lane sidewalk apron + integrated asphalt channel polygon (drawn BEFORE main asphalt so it merges seamlessly!)
+  for (const isl of compiled.islands) {
+    if (isl.outerBoundaryPts.length >= 6) {
+      ctx.save();
+      ctx.fillStyle = '#CFCBC2';
+      ctx.strokeStyle = '#CFCBC2';
+      ctx.lineWidth = 4.2;
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      isl.outerBoundaryPts.forEach((pt, idx) => {
+        if (idx === 0) ctx.moveTo(pt.x, pt.y);
+        else ctx.lineTo(pt.x, pt.y);
+      });
+      ctx.closePath();
+      ctx.stroke();
+      ctx.fill();
+
+      ctx.fillStyle = asphaltMain;
+      ctx.beginPath();
+      isl.outerBoundaryPts.forEach((pt, idx) => {
+        if (idx === 0) ctx.moveTo(pt.x, pt.y);
+        else ctx.lineTo(pt.x, pt.y);
+      });
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    } else if (isl.slipLaneCenterPts.length >= 2) {
+      ctx.save();
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = '#CFCBC2';
+      ctx.lineWidth = isl.slipLaneWidth + 1.4;
+      ctx.beginPath();
+      isl.slipLaneCenterPts.forEach((pt, idx) => {
+        if (idx === 0) ctx.moveTo(pt.x, pt.y);
+        else ctx.lineTo(pt.x, pt.y);
+      });
+      ctx.stroke();
+      ctx.strokeStyle = asphaltMain;
+      ctx.lineWidth = isl.slipLaneWidth;
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   // 3. Center junction polygon asphalt
@@ -478,13 +600,92 @@ export function drawTopologyRoadWorld(
     ctx.restore();
   }
 
-  // 5. Triangular Splitter Islands (Pulau Segitiga Kanalisasi, e.g. Simpang Giwangan!)
+  // 5. Slip-Lane Channelization Separators: Full Triangular Island, Compact Curb Divider (Giwangan West!), or Painted Gore
   for (const isl of compiled.islands) {
+    if (isl.slipLaneCenterPts.length >= 2) {
+      // Subtle emerald LTOR slip guide dashes + arrow inside the slip channel
+      ctx.save();
+      ctx.strokeStyle = 'rgba(16, 185, 129, 0.55)';
+      ctx.lineWidth = 0.18;
+      ctx.setLineDash([1.1, 1.3]);
+      ctx.beginPath();
+      isl.slipLaneCenterPts.forEach((pt, idx) => {
+        if (idx === 0) ctx.moveTo(pt.x, pt.y);
+        else ctx.lineTo(pt.x, pt.y);
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Yield dashed white line at slip-lane merge exit
+      const last = isl.slipLaneCenterPts[isl.slipLaneCenterPts.length - 1];
+      const prev = isl.slipLaneCenterPts[isl.slipLaneCenterPts.length - 2];
+      const ang = Math.atan2(last.y - prev.y, last.x - prev.x);
+      ctx.translate(last.x, last.y);
+      ctx.rotate(ang);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+      ctx.lineWidth = 0.24;
+      ctx.setLineDash([0.45, 0.35]);
+      ctx.beginPath();
+      ctx.moveTo(0, -isl.slipLaneWidth * 0.44);
+      ctx.lineTo(0, isl.slipLaneWidth * 0.44);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+
+    if (isl.style === 'curb-divider' && isl.innerEdgePts.length >= 2) {
+      // Compact narrow curb divider (sekat kecil pemisah belok kiri spt Simpang Giwangan Barat)
+      ctx.save();
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = '#F8FAFC';
+      ctx.lineWidth = isl.separatorThickness;
+      ctx.beginPath();
+      isl.innerEdgePts.forEach((pt, idx) => {
+        if (idx === 0) ctx.moveTo(pt.x, pt.y);
+        else ctx.lineTo(pt.x, pt.y);
+      });
+      ctx.stroke();
+
+      // Alternating dark kanstin blocks along the compact divider
+      ctx.strokeStyle = '#1E293B';
+      ctx.setLineDash([0.9, 0.9]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Thin yellow warning edge highlight
+      ctx.strokeStyle = 'rgba(250, 204, 21, 0.72)';
+      ctx.lineWidth = 0.12;
+      ctx.stroke();
+      ctx.restore();
+      continue;
+    }
+
+    if (isl.style === 'painted-gore' && isl.points.length >= 3) {
+      // Painted chevron gore area (no physical raised island)
+      ctx.save();
+      ctx.fillStyle = 'rgba(250, 204, 21, 0.14)';
+      ctx.strokeStyle = 'rgba(248, 250, 252, 0.82)';
+      ctx.lineWidth = 0.2;
+      ctx.beginPath();
+      isl.points.forEach((pt, idx) => {
+        if (idx === 0) ctx.moveTo(pt.x, pt.y);
+        else ctx.lineTo(pt.x, pt.y);
+      });
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+      continue;
+    }
+
+    // Default: Full smooth curved triangular splitter island with kanstin & landscaped core
     if (isl.points.length < 3) continue;
     ctx.save();
+    ctx.lineJoin = 'round';
     ctx.fillStyle = '#CBD5E1';
-    ctx.strokeStyle = '#1E293B';
-    ctx.lineWidth = 0.35;
+    ctx.strokeStyle = '#F8FAFC';
+    ctx.lineWidth = 0.36;
     ctx.beginPath();
     isl.points.forEach((pt, idx) => {
       if (idx === 0) ctx.moveTo(pt.x, pt.y);
@@ -494,12 +695,17 @@ export function drawTopologyRoadWorld(
     ctx.fill();
     ctx.stroke();
 
-    // Green landscaped core inside the splitter island
+    ctx.strokeStyle = '#1E293B';
+    ctx.setLineDash([1.1, 1.1]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Green landscaped core inside the curved splitter island
     ctx.fillStyle = '#22C55E';
     ctx.beginPath();
     isl.points.forEach((pt, idx) => {
-      const sx = isl.centroid.x + (pt.x - isl.centroid.x) * 0.62;
-      const sy = isl.centroid.y + (pt.y - isl.centroid.y) * 0.62;
+      const sx = isl.centroid.x + (pt.x - isl.centroid.x) * 0.6;
+      const sy = isl.centroid.y + (pt.y - isl.centroid.y) * 0.6;
       if (idx === 0) ctx.moveTo(sx, sy);
       else ctx.lineTo(sx, sy);
     });
@@ -508,7 +714,7 @@ export function drawTopologyRoadWorld(
     ctx.restore();
   }
 
-  // 6. Yellow Box Junction marking in center if enabled
+  // 6. Yellow Box Junction marking in center if enabled (adapts to centerPolygon for angled / N-arm junctions!)
   if (compiled.topology.yellowBoxEnabled && compiled.centerPolygon.length >= 3) {
     const xs = compiled.centerPolygon.map((p) => p.x);
     const ys = compiled.centerPolygon.map((p) => p.y);

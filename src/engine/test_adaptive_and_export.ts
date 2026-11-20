@@ -208,6 +208,7 @@ function makeMockVehicle(
 {
   const validEnvIds = new Set([
     'default',
+    'giwangan-yogya',
     'brimob-yogya',
     'lamper-semarang',
     'sulawesi-banjarmasin',

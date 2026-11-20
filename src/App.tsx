@@ -206,10 +206,6 @@ function AppContent() {
     setActiveView('draw');
   }, [inspectorConfig]);
 
-  const handleLoadGiwanganShowcase = useCallback(() => {
-    handleSimulateTopology(GIWANGAN_TOPOLOGY);
-  }, [handleSimulateTopology]);
-
   const handleToggleRun = useCallback(() => setRunning((r) => !r), []);
   const handleToggleGrid = useCallback(() => setShowGrid((g) => !g), []);
   const handleZoomIn = useCallback(() => setZoom((z) => Math.min(2.2, +(z + 0.1).toFixed(1))), []);
@@ -350,7 +346,6 @@ function AppContent() {
               onChange={handleConfigChange}
               onResetDefaults={handleResetDefaults}
               onOpenInDraw={handleOpenCurrentInDraw}
-              onLoadGiwangan={handleLoadGiwanganShowcase}
             />
           </div>
 

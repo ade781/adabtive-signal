@@ -159,9 +159,3 @@ export function predictSweptCollisionTTC(
 
   return { willCollide, ttc: tStar, minDist };
 }
-
-export function blendHeadingSmooth(current: number, target: number, maxRateRadPerSec: number, dt: number): number {
-  const diff = wrapAngleRad(target - current);
-  const step = Math.max(-maxRateRadPerSec * dt, Math.min(maxRateRadPerSec * dt, diff));
-  return wrapAngleRad(current + step);
-}

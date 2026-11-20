@@ -1072,6 +1072,8 @@ export class TrafficSimulation {
       // 3. Signal control, LTOR (per-arm!), RHK pocket, Yellow Box Awareness, & Right-of-Way Priority Yielding
       let stoppingForSignal = false;
       let canLTOR = false;
+      const wasYielding = Boolean(v.isYielding);
+      const wasHoldingYB = Boolean(v.holdingYellowBox);
       v.isYielding = false;
       v.holdingYellowBox = false;
 
@@ -1115,7 +1117,7 @@ export class TrafficSimulation {
         const minBoxHoldDist = (v.speed * v.speed) / (2 * effComfortDecel * 1.4);
         const holdForOccupiedBox =
           light === 'green' &&
-          this.phaseElapsed < 12.0 &&
+          this.phaseElapsed < 14.0 &&
           distToStop < 16.0 &&
           distToStop >= minBoxHoldDist &&
           this.isBoxOccupiedByConflictingArm(v.originArm);
@@ -1123,18 +1125,17 @@ export class TrafficSimulation {
         // Yellow Box Junction Awareness (No. 8)
         const holdYellowBox =
           light === 'green' &&
-          distToStop >= Math.max(0.2, minBoxHoldDist * 0.85) &&
+          distToStop >= Math.max(0.15, minBoxHoldDist * 0.65) &&
           shouldHoldForYellowBox(v, yellowBoxEnabled, this.vehicles, this.compiledTopology);
         if (holdYellowBox) {
           v.holdingYellowBox = true;
-          if (v.speed < 0.8) this.yellowBoxHoldCount += dt > 0 ? 0 : 0; // counted cleanly on transition below
         }
 
         if (((light === 'red' && !canRunEarlyRed && !canLTOR) || stopForYellow || holdForOccupiedBox || holdYellowBox) && distToStop < nearestGap) {
           nearestGap = Math.max(0.1, distToStop);
           leadSpeed = 0;
           stoppingForSignal = true;
-          if (holdYellowBox && v.speed > 0.5) {
+          if (holdYellowBox && !wasHoldingYB) {
             this.yellowBoxHoldCount += 1;
           }
         }
@@ -1157,7 +1158,7 @@ export class TrafficSimulation {
           nearestGap = Math.max(0.1, yieldDecision.yieldGap);
           leadSpeed = 0;
           stoppingForSignal = true;
-          if (v.speed > 1.2) {
+          if (!wasYielding) {
             this.yieldConflictCount += 1;
           }
         }

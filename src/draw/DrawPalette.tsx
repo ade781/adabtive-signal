@@ -1,5 +1,5 @@
 import React from 'react';
-import { PlusCircle, CornerUpLeft, Columns, Maximize2, Bike, RotateCcw, ArrowRightLeft, MapPin, Sparkles } from 'lucide-react';
+import { PlusCircle, CornerUpLeft, Columns, Maximize2, Bike, RotateCcw, ArrowRightLeft, MapPin } from 'lucide-react';
 import { STATIC_SAMPLING_BLUEPRINTS, StaticSamplingBlueprint } from '../engine/samplingBlueprints';
 import { DrawModuleKind } from './drawStore';
 
@@ -84,8 +84,7 @@ export const DrawPalette: React.FC<DrawPaletteProps> = ({
   onApplyModule,
   onLoadBlueprint,
 }) => {
-  const showcase = STATIC_SAMPLING_BLUEPRINTS.filter((b) => b.category === 'showcase');
-  const samplings = STATIC_SAMPLING_BLUEPRINTS.filter((b) => b.category === 'sampling-5');
+  const fieldLocations = STATIC_SAMPLING_BLUEPRINTS.filter((b) => b.category === 'field');
   const templates = STATIC_SAMPLING_BLUEPRINTS.filter((b) => b.category === 'template');
 
   return (
@@ -150,48 +149,18 @@ export const DrawPalette: React.FC<DrawPaletteProps> = ({
           })}
         </div>
 
-        {/* Showcase Giwangan */}
-        <div className="pt-3 border-t border-slate-200 space-y-1.5">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold text-slate-700 flex items-center gap-1">
-              <Sparkles className="w-3 h-3 text-amber-500" />
-              Referensi Nyata (Asimetris)
-            </span>
-          </div>
-          {showcase.map((bp) => {
-            const active = activeTopologyId === bp.id;
-            return (
-              <button
-                key={bp.id}
-                type="button"
-                onClick={() => onLoadBlueprint(bp)}
-                className={`w-full p-2 rounded-md border text-left transition-colors duration-100 ${
-                  active
-                    ? 'bg-slate-900 text-white border-slate-900'
-                    : 'bg-amber-50/60 text-slate-800 border-amber-200 hover:bg-amber-50'
-                }`}
-              >
-                <div className="text-[11px] font-semibold leading-tight">{bp.label}</div>
-                <div className={`text-[10px] mt-0.5 leading-snug ${active ? 'text-slate-300' : 'text-slate-600'}`}>
-                  {bp.subtitle}
-                </div>
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Static 5 Field Sampling Blueprints (No. 5) */}
+        {/* 6 Field Sampling Blueprints (including Simpang Giwangan equally) */}
         <div className="pt-3 border-t border-slate-200 space-y-1.5">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-semibold text-slate-700 flex items-center gap-1">
               <MapPin className="w-3 h-3 text-emerald-600" />
-              5 Blueprint Sampling Statis
+              Lokasi Lapangan RI ({fieldLocations.length})
             </span>
             <span className="text-[9px] font-mono text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
               STATIC
             </span>
           </div>
-          {samplings.map((bp) => {
+          {fieldLocations.map((bp) => {
             const active = activeTopologyId === bp.id;
             return (
               <button

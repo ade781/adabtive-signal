@@ -167,9 +167,9 @@ export function findBlockingLeader(
         (v.vClass !== 'motor' || other.vClass !== 'motor');
       const tailSwingPad1 =
         other.vClass === 'heavy' &&
-        other.turn !== 'straight' &&
-        other.distanceAlongPath > other.stopLineDist - 4.0 &&
-        other.speed > 0.2
+          other.turn !== 'straight' &&
+          other.distanceAlongPath > other.stopLineDist - 4.0 &&
+          other.speed > 0.2
           ? 0.85
           : 0;
       if (
@@ -207,14 +207,14 @@ export function findBlockingLeader(
       (other.destArm === v.destArm &&
         (vInsideBox
           ? other.distanceAlongPath >= other.exitLineDist - 2.0 ||
-            other.distanceAlongPath + other.length * 0.5 > other.stopLineDist + 0.05
+          other.distanceAlongPath + other.length * 0.5 > other.stopLineDist + 0.05
           : other.distanceAlongPath >= other.stopLineDist - 2.0 || v.distanceAlongPath >= v.stopLineDist - 14.0)) ||
       (vInsideBox
         ? other.distanceAlongPath + other.length * 0.5 > other.stopLineDist + 0.3 &&
-          other.distanceAlongPath - other.length * 0.5 < other.exitLineDist
+        other.distanceAlongPath - other.length * 0.5 < other.exitLineDist
         : v.distanceAlongPath >= v.stopLineDist - 15.0 &&
-          other.distanceAlongPath >= other.stopLineDist - 0.5 &&
-          other.distanceAlongPath - other.length * 0.5 < other.exitLineDist);
+        other.distanceAlongPath >= other.stopLineDist - 0.5 &&
+        other.distanceAlongPath - other.length * 0.5 < other.exitLineDist);
 
     if (!needs2DCheck) continue;
 
@@ -295,10 +295,10 @@ export function findBlockingLeader(
       other.distanceAlongPath > v.distanceAlongPath;
     const tailSwingPad =
       other.vClass === 'heavy' &&
-      other.turn !== 'straight' &&
-      other.originArm === v.originArm &&
-      other.distanceAlongPath > other.stopLineDist - 4.0 &&
-      other.distanceAlongPath <= other.exitLineDist
+        other.turn !== 'straight' &&
+        other.originArm === v.originArm &&
+        other.distanceAlongPath > other.stopLineDist - 4.0 &&
+        other.distanceAlongPath <= other.exitLineDist
         ? 1.05
         : 0;
     const sameArmBottleneckMerge =
@@ -346,7 +346,7 @@ export function findBlockingLeader(
     if (forwardProj <= minForwardProj) continue;
 
     if (gapAlong < nearestGap) {
-      const notOverlapping = gapAlong > 0 || latProj >= myEffW * 0.5 + otherProjLat - 0.05;
+      const notOverlapping = gapAlong > -0.35 || latProj >= myEffW * 0.5 + otherProjLat - 0.1;
       if (
         (vInsideBox || v.hasExitedIntersection) &&
         notOverlapping &&
@@ -382,12 +382,12 @@ export function findBlockingLeader(
         dotCos < -0.45
           ? 0 // Opposing vehicle in our corridor: treat as zero/head-on hazard!
           : other.originArm !== v.originArm && other.destArm === v.destArm
-          ? Math.max(other.speed * 0.7, other.speed * dotCos)
-          : other.originArm !== v.originArm && other.destArm !== v.destArm && other.speed > 2.5 && gapAlong > 2.0
-          ? Math.max(other.speed * 0.45, other.speed * dotCos)
-          : other.originArm !== v.originArm || other.turn !== v.turn
-          ? Math.max(0, other.speed * dotCos)
-          : other.speed;
+            ? Math.max(other.speed * 0.7, other.speed * dotCos)
+            : other.originArm !== v.originArm && other.destArm !== v.destArm && other.speed > 2.5 && gapAlong > 2.0
+              ? Math.max(other.speed * 0.45, other.speed * dotCos)
+              : other.originArm !== v.originArm || other.turn !== v.turn
+                ? Math.max(0, other.speed * dotCos)
+                : other.speed;
       leadSpeed = crossYieldSpeed;
       blockingLeader = other;
     }
@@ -592,19 +592,4 @@ export function updateMotorcycleSeepage(
     }
     v.targetLateralOffset = bestCand - laneCenters[v.laneIndex];
   }
-}
-
-// Legacy helper kept exported in case external modules import it
-export function tryCarLaneChange(
-  _v: SimVehicle,
-  _vehicles: SimVehicle[],
-  _config: SimConfig,
-  _pathCache: PathCache,
-  _lw: number,
-  _light: SignalColor,
-  _desiredV: number,
-  _nearestGap: number,
-  _blockingLeader: SimVehicle | null
-): void {
-  // Superseded by MOBIL overtaking engine in overtakingAI.ts
 }

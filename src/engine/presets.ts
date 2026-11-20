@@ -1,3 +1,4 @@
+import { GIWANGAN_TOPOLOGY } from './giwanganBlueprint';
 import { SimConfig } from './types';
 
 export interface ScenarioPreset {
@@ -107,7 +108,50 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
     },
   },
 
-  // Real-World Field Research Presets (masak/laporan/)
+  // Real-World Field Research Presets (6 Lokasi Lapangan RI)
+  {
+    id: 'giwangan-yogya',
+    category: 'field',
+    label: 'Simpang Giwangan, Yogyakarta',
+    description: 'Asimetris 3×2 lajur · Sekat belok kiri Barat · Terminal & SPBU',
+    source: 'Referensi Geometri Nyata Ringroad Selatan Yogyakarta',
+    city: 'Yogyakarta',
+    landmarks: 'Terminal Giwangan, SPBU Pertamina Ringroad, Pos Brimob, Ruko Giwangan',
+    patch: {
+      lanesPerDirection: 3,
+      laneWidth: 3.5,
+      roadLength: 120,
+      motorRate: 92,
+      carRate: 44,
+      heavyRate: 11,
+      turnLeftPct: 26,
+      turnStraightPct: 54,
+      turnRightPct: 20,
+      uTurnPct: 4,
+      greenDuration: 34,
+      armGreenDurations: { north: 24, east: 38, south: 26, west: 40 },
+      yellowDuration: 3,
+      allRedDuration: 2,
+      armWeights: { north: 1.0, east: 1.6, south: 1.15, west: 1.75 },
+      armNames: {
+        north: 'Jl. Pramuka (Utara)',
+        east: 'Ringroad Selatan (Timur)',
+        south: 'Jl. Imogiri Timur (Selatan)',
+        west: 'Ringroad Selatan (Barat)',
+      },
+      hasMedian: true,
+      leftTurnOnRed: true,
+      motorSwarmMode: true,
+      motorBoxEnabled: true,
+      yellowBoxEnabled: true,
+      signalPhasePreset: '4-phase-protected-right',
+      customTopology: GIWANGAN_TOPOLOGY,
+      environmentId: 'giwangan-yogya',
+      scenarioName: 'Simpang Giwangan, Yogyakarta',
+      scenarioNotes:
+        'Ringroad 3-lajur bermedian × Jl. Pramuka/Imogiri Timur 2-lajur, sekat belok kiri kecil di Barat, Terminal Giwangan, SPBU & Brimob',
+    },
+  },
   {
     id: 'brimob-yogya',
     category: 'field',

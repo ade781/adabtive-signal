@@ -68,11 +68,15 @@ export function evaluatePriorityConflictYield(
     if (distToTurn > -1.5 && distToTurn < 24) {
       const nearby = spatialHash.queryRadius(v.x, v.y, Math.min(48, weather.sightDistance), queryBuf);
       const critGap = CRITICAL_GAP_BASE[v.vClass] * weather.gapAcceptanceMult * (0.9 + 0.25 * discipline.discipline);
+      const originArmGeom = topology.armsById[v.originArm];
+      const oneLaneOpp = (originArmGeom?.def.inLanes ?? 1) <= 1;
       for (const other of nearby) {
         if (other.id === v.id) continue;
         // Opposing traffic exiting along v.originArm
         if (other.destArm !== v.originArm) continue;
         if (other.distanceAlongPath < other.exitLineDist - 4) continue;
+        // Only yield to vehicles in the innermost lane (where U-turn merges) unless 1-lane road
+        if (!oneLaneOpp && other.destLaneIndex !== undefined && other.destLaneIndex > 0) continue;
         const dx = v.x - other.x;
         const dy = v.y - other.y;
         const forwardToMe = dx * Math.cos(other.heading) + dy * Math.sin(other.heading);
@@ -96,15 +100,21 @@ export function evaluatePriorityConflictYield(
     const armDef = topology.armsById[v.originArm]?.def;
     if (armDef?.slipLane?.yieldControl === 'yield') {
       const frontBumper = v.distanceAlongPath + v.length * 0.5;
-      const distToMerge = v.exitLineDist - 2.4 - frontBumper;
+      const distToMerge = v.exitLineDist - 4.5 - frontBumper;
       if (distToMerge > -0.4 && distToMerge < 22) {
         const mergePt = v.compiledPath?.sample(v.exitLineDist);
         if (mergePt) {
           const nearby = spatialHash.queryRadius(mergePt.x, mergePt.y, Math.min(42, weather.sightDistance), queryBuf);
           const critGap = CRITICAL_GAP_BASE[v.vClass] * 0.72 * weather.gapAcceptanceMult;
+          const destGeom = topology.armsById[v.destArm];
+          const destOuterLane = Math.max(0, (destGeom?.def.outLanes ?? 1) - 1);
           for (const other of nearby) {
             if (other.id === v.id || other.originArm === v.originArm) continue;
             if (other.destArm !== v.destArm) continue;
+            // Only yield to traffic in the outer destination lane where slip-lane merges
+            if (destOuterLane > 0 && other.destLaneIndex !== undefined && other.destLaneIndex < destOuterLane - 0) {
+              continue;
+            }
             // Exact world-space distance along other's heading to reach our slip-lane merge point
             const mdx = mergePt.x - other.x;
             const mdy = mergePt.y - other.y;
@@ -158,9 +168,9 @@ export function evaluatePriorityConflictYield(
     const otherConflictS = amA ? cz.sB : cz.sA;
 
     // Stage just at the box entry lip (or safely before the conflict point) so waiting right-turners
-    // NEVER park deep inside the box center and pinwheel with opposing turns or next-phase traffic!
-    if (v.distanceAlongPath > v.stopLineDist + 2.4 && boxWait > 1.2) continue;
+    // NEVER park deep inside the opposing straight corridor and deadlock with oncoming traffic!
     const stagingS = Math.min(myConflictS - 2.6, v.stopLineDist + 0.6);
+    if (v.distanceAlongPath > stagingS + 1.5) continue;
     const gapToStaging = stagingS - frontBumper;
     if (gapToStaging < -0.6 || gapToStaging > 28.0) continue; // Already past staging or too far away
 
@@ -230,20 +240,25 @@ export function shouldHoldForYellowBox(
   const destArm = topology.armsById[v.destArm];
   if (!destArm) return false;
 
-  const requiredSpace = v.length + 1.8;
-  const checkWindow = requiredSpace + 4.5;
+  const requiredSpace = v.length + 2.2;
+  const checkWindow = requiredSpace + 5.5;
   let nearestBlockedExitDist = Infinity;
 
   for (const other of vehicles) {
     if (other.id === v.id) continue;
     if (other.destArm !== v.destArm) continue;
-    // Consider vehicles on destination exit leg (or almost exiting) in the same destination lane
-    if (other.distanceAlongPath < other.exitLineDist - 3.0) continue;
-    if (other.destLaneIndex !== undefined && v.destLaneIndex !== undefined && other.destLaneIndex !== v.destLaneIndex) {
+    // Consider vehicles on destination exit leg AND slow/stopped vehicles still inside box heading to same exit
+    if (other.distanceAlongPath < other.stopLineDist + 0.5) continue;
+    if (
+      destArm.def.outLanes > 1 &&
+      other.destLaneIndex !== undefined &&
+      v.destLaneIndex !== undefined &&
+      other.destLaneIndex !== v.destLaneIndex
+    ) {
       continue;
     }
     const distPastExit = other.distanceAlongPath - other.exitLineDist - other.length * 0.5;
-    if (distPastExit <= checkWindow && other.speed < 1.35) {
+    if (distPastExit <= checkWindow && other.speed < 2.0) {
       if (distPastExit < nearestBlockedExitDist) {
         nearestBlockedExitDist = distPastExit;
       }

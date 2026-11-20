@@ -12,6 +12,7 @@ import {
   MovementPermission,
   SignalPhaseDef,
   SignalPhasePreset,
+  SlipSeparatorStyle,
   SplineSample,
 } from './topologyTypes';
 import { ArmId, Point2D, SimConfig } from './types';
@@ -823,50 +824,57 @@ export function compileTopology(topology: IntersectionTopology): CompiledTopolog
       pathLookup[originId][movement] = list;
     }
 
-    // Channelized Slip Lane + Triangular Splitter Island (e.g. Simpang Giwangan Jogja!)
+    // Channelized Slip Lane + Triangular Splitter Island / Compact Curb Divider (e.g. Simpang Giwangan West!)
     const leftDestId = origin.destByMovement.left;
     if (origin.def.slipLane?.enabled && leftDestId) {
       const dest = armsById[leftDestId];
-      const slipW = Math.max(2.8, Math.min(4.5, origin.def.slipLane.width || 3.4));
+      const slipW = Math.max(2.6, Math.min(4.5, origin.def.slipLane.width || 3.4));
       const islandSetback = Math.max(10, Math.min(30, origin.def.slipLane.islandSetback || 16));
+      const style: SlipSeparatorStyle = origin.def.slipLane.separatorStyle ?? 'triangle-island';
+      const sepThickness = Math.max(0.35, Math.min(1.2, origin.def.slipLane.separatorThickness ?? 0.55));
+      const bulge = Math.max(0.45, Math.min(1.65, origin.def.slipLane.curveBulge ?? (style === 'curb-divider' ? 0.65 : 1.0)));
+
       const leftLaneIdx = origin.def.inLanes - 1;
       const destOuterLane = dest.def.outLanes - 1;
 
-      // Branch starts at outer lane centerline at (setback + islandSetback) from center
       const originOuterLat = origin.inLaneCenters[leftLaneIdx];
       const destOuterLat = dest.outLaneCenters[destOuterLane];
       const branchDist = origin.setback + islandSetback;
-      const mergeDist = dest.setback + islandSetback * 0.9;
+      const mergeDist = dest.setback + islandSetback * 1.15;
 
-      // Slip lane swings OUTSIDE the main corner by ~slipW + 1.8m to leave space for the triangular island
+      // Lateral outward shift to make room for either a compact curb divider or a full triangular island
+      const lateralClearance = style === 'curb-divider' ? sepThickness + 0.45 : slipW * 0.42 * bulge;
+
       const p0: Point2D = {
-        x: origin.outDir.x * branchDist + origin.inLeftNormal.x * (originOuterLat + slipW * 0.35),
-        y: origin.outDir.y * branchDist + origin.inLeftNormal.y * (originOuterLat + slipW * 0.35),
+        x: origin.outDir.x * branchDist + origin.inLeftNormal.x * (originOuterLat + lateralClearance),
+        y: origin.outDir.y * branchDist + origin.inLeftNormal.y * (originOuterLat + lateralClearance),
       };
+      // Exit merges smoothly BACK into the destination arm's outer outbound lane centerline (never rides the shoulder!)
       const p3: Point2D = {
-        x: dest.outDir.x * mergeDist - dest.inLeftNormal.x * (destOuterLat + slipW * 0.35),
-        y: dest.outDir.y * mergeDist - dest.inLeftNormal.y * (destOuterLat + slipW * 0.35),
+        x: dest.outDir.x * mergeDist - dest.inLeftNormal.x * destOuterLat,
+        y: dest.outDir.y * mergeDist - dest.inLeftNormal.y * destOuterLat,
       };
       const startPt: Point2D = {
         x: p0.x - origin.inDir.x * Math.max(15, origin.def.length - islandSetback),
         y: p0.y - origin.inDir.y * Math.max(15, origin.def.length - islandSetback),
       };
 
-      // Outer arc bulge away from origin so it clears the triangular splitter island cleanly
+      // Smooth outer arc bulge controlled by curveBulge
       const cornerDirX = origin.outDir.x + dest.outDir.x;
       const cornerDirY = origin.outDir.y + dest.outDir.y;
       const cornerLen = Math.hypot(cornerDirX, cornerDirY) || 1;
       const cornerUnit = { x: cornerDirX / cornerLen, y: cornerDirY / cornerLen };
 
       const chord = Math.hypot(p3.x - p0.x, p3.y - p0.y);
-      const handle = Math.max(4.5, chord * 0.38);
+      const handle = Math.max(4.5, chord * (style === 'curb-divider' ? 0.34 : 0.4));
+      const bulgePush = (style === 'curb-divider' ? 0.35 : 0.8) * slipW * bulge;
       const p1: Point2D = {
-        x: p0.x + origin.inDir.x * handle * 0.65 + cornerUnit.x * (slipW * 0.75),
-        y: p0.y + origin.inDir.y * handle * 0.65 + cornerUnit.y * (slipW * 0.75),
+        x: p0.x + origin.inDir.x * handle * 0.68 + cornerUnit.x * bulgePush,
+        y: p0.y + origin.inDir.y * handle * 0.68 + cornerUnit.y * bulgePush,
       };
       const p2: Point2D = {
-        x: p3.x - dest.outDir.x * handle * 0.65 + cornerUnit.x * (slipW * 0.75),
-        y: p3.y - dest.outDir.y * handle * 0.65 + cornerUnit.y * (slipW * 0.75),
+        x: p3.x - dest.outDir.x * handle * 0.68 + cornerUnit.x * bulgePush,
+        y: p3.y - dest.outDir.y * handle * 0.68 + cornerUnit.y * bulgePush,
       };
 
       const key = `${originId}:${leftDestId}:${leftLaneIdx}:slip`;
@@ -892,25 +900,36 @@ export function compileTopology(topology: IntersectionTopology): CompiledTopolog
       pathsByKey[key] = slipPath;
       slipPathsByArm[originId] = slipPath;
 
-      // Triangular splitter island polygon sitting between main corner and inner edge of slip lane
+      // Compute smooth left (outer) and right (inner) edge ribbons along the slip-lane spline
+      const cPts = slipPath.curvePoints;
+      const outerEdgePts: Point2D[] = [];
+      const innerEdgePts: Point2D[] = [];
+      const halfW = slipW * 0.5;
+      for (let idx = 0; idx < cPts.length; idx++) {
+        const prev = cPts[Math.max(0, idx - 1)];
+        const next = cPts[Math.min(cPts.length - 1, idx + 1)];
+        const tx = next.x - prev.x;
+        const ty = next.y - prev.y;
+        const len = Math.hypot(tx, ty) || 1;
+        const ux = tx / len;
+        const uy = ty / len;
+        // In Canvas Y-down, (uy, -ux) is outward-left (away from intersection center), (-uy, ux) is inward-right (toward island)
+        outerEdgePts.push({ x: cPts[idx].x + uy * halfW, y: cPts[idx].y - ux * halfW });
+        innerEdgePts.push({ x: cPts[idx].x - uy * halfW, y: cPts[idx].y + ux * halfW });
+      }
+      const outerBoundaryPts: Point2D[] = [...outerEdgePts, ...innerEdgePts.slice().reverse()];
+
+      // Smooth curved splitter island polygon bounded by main corner [vOriginStop, vDestExit] and innerEdgePts
       const vOriginStop: Point2D = {
-        x: origin.outDir.x * (origin.setback + 1.2) + origin.inLeftNormal.x * (origin.halfMedian + origin.inWidth + 0.6),
-        y: origin.outDir.y * (origin.setback + 1.2) + origin.inLeftNormal.y * (origin.halfMedian + origin.inWidth + 0.6),
-      };
-      const vOriginNose: Point2D = {
-        x: origin.outDir.x * (branchDist - 2.2) + origin.inLeftNormal.x * (origin.halfMedian + origin.inWidth + 0.4),
-        y: origin.outDir.y * (branchDist - 2.2) + origin.inLeftNormal.y * (origin.halfMedian + origin.inWidth + 0.4),
-      };
-      const vDestNose: Point2D = {
-        x: dest.outDir.x * (mergeDist - 2.2) - dest.inLeftNormal.x * (dest.halfMedian + dest.outWidth + 0.4),
-        y: dest.outDir.y * (mergeDist - 2.2) - dest.inLeftNormal.y * (dest.halfMedian + dest.outWidth + 0.4),
+        x: origin.outDir.x * (origin.setback + 0.6) + origin.inLeftNormal.x * (origin.halfMedian + origin.inWidth + 0.45),
+        y: origin.outDir.y * (origin.setback + 0.6) + origin.inLeftNormal.y * (origin.halfMedian + origin.inWidth + 0.45),
       };
       const vDestExit: Point2D = {
-        x: dest.outDir.x * (dest.setback + 1.2) - dest.inLeftNormal.x * (dest.halfMedian + dest.outWidth + 0.6),
-        y: dest.outDir.y * (dest.setback + 1.2) - dest.inLeftNormal.y * (dest.halfMedian + dest.outWidth + 0.6),
+        x: dest.outDir.x * (dest.setback + 0.6) - dest.inLeftNormal.x * (dest.halfMedian + dest.outWidth + 0.45),
+        y: dest.outDir.y * (dest.setback + 0.6) - dest.inLeftNormal.y * (dest.halfMedian + dest.outWidth + 0.45),
       };
 
-      const polyPts = [vOriginNose, vOriginStop, vDestExit, vDestNose];
+      const polyPts: Point2D[] = [vOriginStop, vDestExit, ...innerEdgePts.slice().reverse()];
       const centroid: Point2D = {
         x: polyPts.reduce((s, pt) => s + pt.x, 0) / polyPts.length,
         y: polyPts.reduce((s, pt) => s + pt.y, 0) / polyPts.length,
@@ -918,9 +937,13 @@ export function compileTopology(topology: IntersectionTopology): CompiledTopolog
       islands.push({
         armId: originId,
         destArmId: leftDestId,
+        style,
+        separatorThickness: sepThickness,
         points: polyPts,
         centroid,
-        slipLaneCenterPts: slipPath.curvePoints,
+        slipLaneCenterPts: cPts,
+        outerBoundaryPts,
+        innerEdgePts,
         slipLaneWidth: slipW,
       });
     }
@@ -944,7 +967,7 @@ export function compileTopology(topology: IntersectionTopology): CompiledTopolog
         x: p0.x - origin.inDir.x * Math.max(12, origin.def.length - bayDist),
         y: p0.y - origin.inDir.y * Math.max(12, origin.def.length - bayDist),
       };
-      const uDepth = Math.max(4.5, (inOff + outOff) * 1.15);
+      const uDepth = Math.max(6.2, (inOff + outOff) * 1.25);
       const p1: Point2D = { x: p0.x + origin.inDir.x * uDepth, y: p0.y + origin.inDir.y * uDepth };
       const p2: Point2D = { x: p3.x + origin.inDir.x * uDepth, y: p3.y + origin.inDir.y * uDepth };
 

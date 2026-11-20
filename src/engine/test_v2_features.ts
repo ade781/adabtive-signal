@@ -122,17 +122,28 @@ function runScenario(label: string, config: SimConfig, durationSec: number, dt =
 }
 
 function testBlueprintsAndValidation() {
-  const fieldCount = STATIC_SAMPLING_BLUEPRINTS.filter((b) => b.category === 'sampling-5').length;
-  assert(fieldCount === 5, `Expected 5 static field sampling blueprints, got ${fieldCount}`);
+  const fieldCount = STATIC_SAMPLING_BLUEPRINTS.filter((b) => b.category === 'field').length;
+  assert(fieldCount === 6, `Expected 6 static field blueprints (including Giwangan), got ${fieldCount}`);
   assert(
     STATIC_SAMPLING_BLUEPRINTS.some((b) => b.id === 'giwangan-yogya'),
-    'Missing Giwangan Yogyakarta showcase blueprint'
+    'Missing Giwangan Yogyakarta field blueprint'
   );
 
-  // Compile Giwangan and verify islands, slip lanes, asymmetric lanes, and conflict zones
+  // Compile Giwangan and verify real-world geometry: ONLY West has compact curb-divider slip lane + 4 real-world landmarks
   const giwCompiled = compileTopology(GIWANGAN_TOPOLOGY);
   assert(giwCompiled.armOrder.length === 4, 'Giwangan should have 4 arms');
-  assert(giwCompiled.islands.length === 3, `Expected 3 channelized slip-lane islands on Giwangan, got ${giwCompiled.islands.length}`);
+  assert(
+    giwCompiled.islands.length === 1 &&
+      giwCompiled.islands[0].armId === 'west' &&
+      giwCompiled.islands[0].style === 'curb-divider',
+    `Expected 1 compact curb-divider slip lane on West only for Giwangan, got ${JSON.stringify(
+      giwCompiled.islands.map((i) => ({ arm: i.armId, style: i.style }))
+    )}`
+  );
+  assert(
+    (GIWANGAN_TOPOLOGY.landmarks?.length ?? 0) >= 4,
+    'Giwangan should include Terminal Giwangan, SPBU, Brimob, and Ruko landmarks'
+  );
   assert(giwCompiled.conflictZones.length > 0, 'Expected precomputed geometric conflict zones on Giwangan');
 
   // Draw store modular manipulation & angle validation (< 36 deg must error)

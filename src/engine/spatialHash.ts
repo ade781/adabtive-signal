@@ -11,7 +11,7 @@ export class SpatialHashGrid {
   private activeKeys: number[] = [];
   private allVehicles: readonly SimVehicle[] = [];
 
-  constructor(cellSize = 24) {
+  constructor(cellSize = 22) {
     this.invCellSize = 1 / cellSize;
   }
 
@@ -34,7 +34,7 @@ export class SpatialHashGrid {
 
   public rebuild(vehicles: readonly SimVehicle[]): void {
     this.allVehicles = vehicles;
-    if (vehicles.length <= 260) {
+    if (vehicles.length <= 28) {
       if (this.activeKeys.length > 0) this.clear();
       return;
     }
@@ -58,7 +58,7 @@ export class SpatialHashGrid {
     out.length = 0;
     const r2 = radius * radius;
     const all = this.allVehicles;
-    if (all.length <= 260) {
+    if (all.length <= 28) {
       for (let i = 0; i < all.length; i++) {
         const v = all[i];
         const dx = v.x - x;
