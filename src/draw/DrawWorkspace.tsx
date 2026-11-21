@@ -52,6 +52,7 @@ export const DrawWorkspace: React.FC<DrawWorkspaceProps> = ({ initialTopology, o
   const [viewportState, setViewportState] = useState({ zoom: 1, pan: { x: 0, y: 0 } });
   const [savedTopologies, setSavedTopologies] = useState<IntersectionTopology[]>(() => loadSavedTopologies());
   const [notice, setNotice] = useState<string | null>(null);
+  const [activeDragModule, setActiveDragModule] = useState<DrawModuleKind | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const pushTopology = useCallback((next: IntersectionTopology, recordHistory = true) => {
@@ -152,6 +153,10 @@ export const DrawWorkspace: React.FC<DrawWorkspaceProps> = ({ initialTopology, o
         slipLane: { ...target.slipLane, islandSetback: newSetback },
       });
     });
+  }, []);
+
+  const handleCurbFlareDrag = useCallback((armId: string, newFlare: number) => {
+    setTopology((prev) => updateArmInTopology(prev, armId, { curbFlareLeft: newFlare }));
   }, []);
 
   const handleSaveLocal = () => {
@@ -361,6 +366,7 @@ export const DrawWorkspace: React.FC<DrawWorkspaceProps> = ({ initialTopology, o
           armCount={topology.arms.length}
           savedTopologies={savedTopologies}
           onApplyModule={(kind) => handleApplyModule(kind)}
+          onDragModuleChange={setActiveDragModule}
           onLoadBlueprint={handleLoadBlueprint}
           onLoadSavedTopology={handleLoadSavedTopology}
           onDeleteSavedTopology={handleDeleteSavedTopology}
@@ -376,7 +382,12 @@ export const DrawWorkspace: React.FC<DrawWorkspaceProps> = ({ initialTopology, o
             onArmAngleDrag={handleArmAngleDrag}
             onArmWidthDrag={handleArmWidthDrag}
             onSlipSetbackDrag={handleSlipSetbackDrag}
-            onDropModule={(armId, kind, angle) => handleApplyModule(kind, armId, angle)}
+            onCurbFlareDrag={handleCurbFlareDrag}
+            activeDragModule={activeDragModule}
+            onDropModule={(armId, kind, angle) => {
+              setActiveDragModule(null);
+              handleApplyModule(kind, armId, angle);
+            }}
             showSplines={showSplines}
             showConflicts={showConflicts}
             showStaticMap={showStaticMap}

@@ -136,14 +136,36 @@ export function evaluatePriorityConflictYield(
     return none;
   }
 
-  // 3. Permissive turn (e.g. Right turn during 2-phase simultaneous green) yielding to higher-priority straight flow!
+  const frontBumper = v.distanceAlongPath + v.length * 0.5;
+  // 3. Cooperative Courtesy Yield: if a conflicting cross-arm vehicle is trapped in the box (>= 2.2s),
+  // hold approaching vehicles behind the stop line briefly so the box can clear (only if comfortably before stop line).
+  const distToStopLine = v.stopLineDist - frontBumper;
+  if (distToStopLine > 1.5 && distToStopLine < 12.0 && !v.isSlipLane && !v.isUTurn) {
+    const nearbyBox = spatialHash.queryRadius(v.x, v.y, 26, queryBuf);
+    for (const other of nearbyBox) {
+      if (other.id === v.id || other.originArm === v.originArm) continue;
+      if (
+        !other.hasExitedIntersection &&
+        other.distanceAlongPath + other.length * 0.5 > other.stopLineDist + 0.5 &&
+        (other.boxWaitTime ?? 0) >= 2.2
+      ) {
+        return {
+          shouldYield: true,
+          yieldGap: Math.max(0.15, distToStopLine),
+          speedCap: 4.5,
+          reason: 'yellow-box',
+        };
+      }
+    }
+  }
+
+  // 4. Permissive turn (e.g. Right turn during 2-phase simultaneous green) yielding to higher-priority straight flow!
   if (signalState !== 'permissive-green') return none;
   if (v.turn !== 'right' && v.turn !== 'uturn') return none;
 
   const zones = topology.conflictsByPathKey[pathKey];
   if (!zones || zones.length === 0) return none;
 
-  const frontBumper = v.distanceAlongPath + v.length * 0.5;
   // Deadlock breaker: if vehicle has been waiting inside the box > 3.2s and opposing vehicle is also stopped, release
   const boxWait = v.boxWaitTime ?? 0;
 

@@ -26,6 +26,7 @@ export interface SimVehicle extends Vehicle {
   laneChangeCooldown?: number;
   overtakeTargetId?: number;
   overtakeTimer?: number;
+  stuckTimer?: number;
 }
 
 export function getGlobalLat(laneIndex: number, lateralOffset: number, lw: number, laneCenters?: readonly number[]): number {
@@ -346,14 +347,15 @@ export function findBlockingLeader(
     if (forwardProj <= minForwardProj) continue;
 
     if (gapAlong < nearestGap) {
-      const notOverlapping = gapAlong > -0.35 || latProj >= myEffW * 0.5 + otherProjLat - 0.1;
+      const boxWait = v.boxWaitTime ?? 0;
+      const notOverlapping = gapAlong > -0.35 || latProj >= myEffW * 0.5 + otherProjLat - 0.12;
       if (
         (vInsideBox || v.hasExitedIntersection) &&
         notOverlapping &&
         other.originArm !== v.originArm &&
         v.speed < 0.8 &&
-        other.speed < 0.4 &&
-        ((v.boxWaitTime ?? 0) >= 0.9 || (other.boxWaitTime ?? 0) >= 0.9)
+        other.speed < (boxWait >= 1.8 ? 0.85 : 0.4) &&
+        (boxWait >= 0.9 || (other.boxWaitTime ?? 0) >= 0.9)
       ) {
         // Non-slip main traffic has priority over slip-lane mergers that haven't merged past their yield line yet
         if (!v.isSlipLane && other.isSlipLane && other.distanceAlongPath + other.length * 0.5 < other.exitLineDist - 0.3) {
@@ -361,7 +363,7 @@ export function findBlockingLeader(
         }
         const vRem = v.exitLineDist - v.distanceAlongPath;
         const oRem = other.exitLineDist - other.distanceAlongPath;
-        if (vRem < oRem - 0.5 || (Math.abs(vRem - oRem) <= 0.5 && v.id < other.id)) {
+        if (vRem < oRem - 0.5 || (Math.abs(vRem - oRem) <= 0.5 && v.id < other.id) || (boxWait >= 3.0 && vRem < oRem + 0.5)) {
           continue;
         }
       }

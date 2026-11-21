@@ -14,6 +14,8 @@ interface DrawCanvasProps {
   onArmAngleDrag: (armId: string, newAngleDeg: number) => void;
   onArmWidthDrag: (armId: string, side: 'in' | 'out', newAvgLaneWidth: number) => void;
   onSlipSetbackDrag: (armId: string, newSetback: number) => void;
+  onCurbFlareDrag?: (armId: string, newFlare: number) => void;
+  activeDragModule?: DrawModuleKind | null;
   onDropModule: (armId: string, moduleKind: DrawModuleKind, dropAngleDeg?: number) => void;
   showSplines: boolean;
   showConflicts: boolean;
@@ -29,7 +31,8 @@ type DragState =
   | { kind: 'pan'; startX: number; startY: number; origPanX: number; origPanY: number }
   | { kind: 'angle'; armId: string }
   | { kind: 'width'; armId: string; side: 'in' | 'out' }
-  | { kind: 'slip'; armId: string };
+  | { kind: 'slip'; armId: string }
+  | { kind: 'flare'; armId: string };
 
 export const DrawCanvas: React.FC<DrawCanvasProps> = ({
   topology,
@@ -40,6 +43,8 @@ export const DrawCanvas: React.FC<DrawCanvasProps> = ({
   onArmAngleDrag,
   onArmWidthDrag,
   onSlipSetbackDrag,
+  onCurbFlareDrag,
+  activeDragModule,
   onDropModule,
   showSplines,
   showConflicts,
@@ -107,6 +112,7 @@ export const DrawCanvas: React.FC<DrawCanvasProps> = ({
     const angleHandles: { armId: string; x: number; y: number }[] = [];
     const widthHandles: { armId: string; side: 'in' | 'out'; x: number; y: number }[] = [];
     const slipHandles: { armId: string; x: number; y: number }[] = [];
+    const flareHandles: { armId: string; x: number; y: number }[] = [];
 
     for (const armId of compiled.armOrder) {
       const arm = compiled.armsById[armId];
@@ -143,10 +149,20 @@ export const DrawCanvas: React.FC<DrawCanvasProps> = ({
             y: arm.outDir.y * slipDist + arm.inLeftNormal.y * slipOff,
           });
         }
+
+        if (onCurbFlareDrag) {
+          const flareDist = arm.setback + 2.5;
+          const flareOff = arm.halfMedian + arm.inWidth + (arm.def.curbFlareLeft ?? 0);
+          flareHandles.push({
+            armId,
+            x: arm.outDir.x * flareDist + arm.inLeftNormal.x * flareOff,
+            y: arm.outDir.y * flareDist + arm.inLeftNormal.y * flareOff,
+          });
+        }
       }
     }
-    return { angleHandles, widthHandles, slipHandles };
-  }, [compiled, selectedArmId]);
+    return { angleHandles, widthHandles, slipHandles, flareHandles };
+  }, [compiled, selectedArmId, onCurbFlareDrag]);
 
   const findNearestArmId = useCallback(
     (wx: number, wy: number): string | null => {
@@ -316,6 +332,47 @@ export const DrawCanvas: React.FC<DrawCanvasProps> = ({
       ctx.stroke();
     }
 
+    for (const fl of gizmos.flareHandles) {
+      const sc = worldToScreen(vp, fl.x, fl.y);
+      ctx.beginPath();
+      ctx.moveTo(sc.x, sc.y - 7);
+      ctx.lineTo(sc.x + 7, sc.y);
+      ctx.lineTo(sc.x, sc.y + 7);
+      ctx.lineTo(sc.x - 7, sc.y);
+      ctx.closePath();
+      ctx.fillStyle = '#EC4899';
+      ctx.fill();
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 1.8;
+      ctx.stroke();
+    }
+
+    if (dropPreview) {
+      const sc = worldToScreen(vp, dropPreview.worldPt.x, dropPreview.worldPt.y);
+      const labelMap: Record<DrawModuleKind, string> = {
+        'slip-lane': '+ Pulau & Slip Lane',
+        'add-arm': '+ Tambah Lengan Baru',
+        median: 'Toggle Median Fisik',
+        flare: 'Pelebaran Belokan',
+        bottleneck: 'Asimetri / Bottleneck',
+        uturn: 'Bukaan U-Turn',
+        rhk: 'Kotak Motor (RHK)',
+      };
+      const txt = labelMap[dropPreview.moduleKind] ?? dropPreview.moduleKind;
+      ctx.font = '600 11px Inter, system-ui, sans-serif';
+      const tw = ctx.measureText(txt).width + 16;
+      const bx = Math.min(size.width - tw - 8, Math.max(8, sc.x - tw * 0.5));
+      const by = Math.max(8, sc.y - 34);
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+      ctx.beginPath();
+      ctx.roundRect(bx, by, tw, 22, 5);
+      ctx.fill();
+      ctx.fillStyle = '#FFFFFF';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(txt, bx + tw * 0.5, by + 11);
+    }
+
     // Scale bar bottom-left
     const scaleMeters = [10, 5, 20, 50].find((m) => {
       const px = m * vp.pxPerMeter;
@@ -359,6 +416,16 @@ export const DrawCanvas: React.FC<DrawCanvasProps> = ({
     }
 
     // Check gizmo hit-test (screen pixel radius 13px)
+    for (const fl of gizmos.flareHandles) {
+      const sc = worldToScreen(vp, fl.x, fl.y);
+      if (Math.hypot(pt.x - sc.x, pt.y - sc.y) <= 13) {
+        onDragStartRecord?.();
+        dragRef.current = { kind: 'flare', armId: fl.armId };
+        setHoverCursor('grabbing');
+        return;
+      }
+    }
+
     for (const sl of gizmos.slipHandles) {
       const sc = worldToScreen(vp, sl.x, sl.y);
       if (Math.hypot(pt.x - sc.x, pt.y - sc.y) <= 13) {
@@ -437,6 +504,16 @@ export const DrawCanvas: React.FC<DrawCanvasProps> = ({
       return;
     }
 
+    if (d.kind === 'flare') {
+      const arm = compiled.armsById[d.armId];
+      if (!arm || !onCurbFlareDrag) return;
+      const lat = wpt.x * arm.inLeftNormal.x + wpt.y * arm.inLeftNormal.y;
+      const flare = Math.max(0, Math.min(3.5, +(lat - arm.halfMedian - arm.inWidth).toFixed(1)));
+      onCurbFlareDrag(d.armId, flare);
+      setDragReadout({ x: pt.x, y: pt.y, text: `Pelebaran Belokan: +${flare.toFixed(1)}m` });
+      return;
+    }
+
     if (d.kind === 'slip') {
       const arm = compiled.armsById[d.armId];
       if (!arm) return;
@@ -449,6 +526,10 @@ export const DrawCanvas: React.FC<DrawCanvasProps> = ({
 
     // Hover feedback & dynamic cursor
     const overGizmo =
+      gizmos.flareHandles.some((fl) => {
+        const sc = worldToScreen(vp, fl.x, fl.y);
+        return Math.hypot(pt.x - sc.x, pt.y - sc.y) <= 13;
+      }) ||
       gizmos.slipHandles.some((sl) => {
         const sc = worldToScreen(vp, sl.x, sl.y);
         return Math.hypot(pt.x - sc.x, pt.y - sc.y) <= 13;
@@ -486,7 +567,7 @@ export const DrawCanvas: React.FC<DrawCanvasProps> = ({
   const handleDragOver = (e: React.DragEvent<HTMLCanvasElement>) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
-    const moduleKind = (e.dataTransfer.getData('application/x-draw-module') || 'slip-lane') as DrawModuleKind;
+    const moduleKind = (activeDragModule || e.dataTransfer.getData('application/x-draw-module') || 'slip-lane') as DrawModuleKind;
     const pt = getLocalScreenPt(e);
     const wpt = screenToWorld(vp, pt.x, pt.y);
     const armId = findNearestArmId(wpt.x, wpt.y) ?? compiled.armOrder[0] ?? '';

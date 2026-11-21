@@ -282,6 +282,38 @@ export const DrawInspector: React.FC<DrawInspectorProps> = ({
 
               {/* Per-Lane Widths (Asymmetric individual lane widths for BOTH inbound and outbound!) */}
               <div className="space-y-2">
+                <div className="flex items-center justify-between gap-1">
+                  <span className="text-[10px] font-semibold text-slate-600">Variasi Lebar per Lajur</span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onUpdateArm(selectedArm.id, {
+                          inLaneWidths: selectedArm.inLaneWidths.map(() => 3.5),
+                          outLaneWidths: selectedArm.outLaneWidths.map(() => 3.5),
+                        })
+                      }
+                      className="px-1.5 py-0.5 text-[9px] font-medium rounded border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition-colors duration-100"
+                    >
+                      Seragam 3.5m
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onUpdateArm(selectedArm.id, {
+                          inLaneWidths: selectedArm.inLaneWidths.map((_, i) => +(i === selectedArm.inLaneWidths.length - 1 ? 4.1 : 3.1).toFixed(1)),
+                          outLaneWidths: selectedArm.outLaneWidths.map((_, i) => +(i === 0 ? 3.2 : 3.7).toFixed(1)),
+                          curbFlareLeft: 2.2,
+                          curbRadiusLeft: 7.5,
+                        })
+                      }
+                      className="px-1.5 py-0.5 text-[9px] font-medium rounded border border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100 transition-colors duration-100"
+                      title="Buat sisi belok kiri lebih lebar (ala simpang nyata)"
+                    >
+                      Asimetris Realistis
+                    </button>
+                  </div>
+                </div>
                 <div className="space-y-1">
                   <span className="text-[10px] font-semibold text-emerald-700 block">
                     Lebar Lajur Masuk (m)

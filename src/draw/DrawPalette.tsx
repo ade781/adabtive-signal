@@ -10,6 +10,7 @@ interface DrawPaletteProps {
   armCount: number;
   savedTopologies?: IntersectionTopology[];
   onApplyModule: (kind: DrawModuleKind) => void;
+  onDragModuleChange?: (kind: DrawModuleKind | null) => void;
   onLoadBlueprint: (bp: StaticSamplingBlueprint) => void;
   onLoadSavedTopology?: (topo: IntersectionTopology) => void;
   onDeleteSavedTopology?: (id: string) => void;
@@ -87,6 +88,7 @@ export const DrawPalette: React.FC<DrawPaletteProps> = ({
   armCount,
   savedTopologies = [],
   onApplyModule,
+  onDragModuleChange,
   onLoadBlueprint,
   onLoadSavedTopology,
   onDeleteSavedTopology,
@@ -118,7 +120,9 @@ export const DrawPalette: React.FC<DrawPaletteProps> = ({
                 onDragStart={(e) => {
                   e.dataTransfer.setData('application/x-draw-module', mod.kind);
                   e.dataTransfer.effectAllowed = 'copy';
+                  onDragModuleChange?.(mod.kind);
                 }}
+                onDragEnd={() => onDragModuleChange?.(null)}
                 onClick={() => !disabled && onApplyModule(mod.kind)}
                 role="button"
                 tabIndex={disabled ? -1 : 0}

@@ -100,9 +100,16 @@ export function evaluateMobilLaneChange(
     distToStop <= 68.0 &&
     v.speed > 0.4;
 
-  if (!blockedBySlow && !wantQueueBalance) return false;
-  // Cars need enough rolling speed to actually complete a lateral lane change without freezing straddled on the divider
-  if (v.speed < (v.vClass === 'motor' ? 0.8 : 1.8)) return false;
+  // Trigger 3 (Tier 2a Stuck Recovery): Stopped behind a stalled/stopped blocker mid-road
+  const isMidRoadStuck =
+    (v.stuckTimer ?? 0) >= 1.5 &&
+    blockingLeader !== null &&
+    blockingLeader.speed < 0.6 &&
+    (!isOnApproach || distToStop > 18.0);
+
+  if (!blockedBySlow && !wantQueueBalance && !isMidRoadStuck) return false;
+  // Cars normally need rolling speed, unless recovering from a mid-road stopped blocker
+  if (!isMidRoadStuck && v.speed < (v.vClass === 'motor' ? 0.8 : 1.8)) return false;
 
   const politeness = getPoliteness(v, discipline);
   const bSafe = (v.profile === 'aggressive' ? 4.4 : 3.5) * weather.comfortDecelMult;
@@ -387,14 +394,13 @@ export function updateOncomingOvertakeFSM(
     // Oncoming-lane overtaking occurs on 1-lane undivided roads (cars & motors), or 2-lane undivided for cars when blocked
     if (armGeom.def.inLanes > 2) return result;
     if (armGeom.def.inLanes >= 2 && v.vClass === 'motor') return result;
-    if (armGeom.def.length < 55) return result; // Need enough straight stretch to pass and return safely
+    if (armGeom.def.length < 45) return result; // Need enough straight stretch to pass and return safely
     if (!isOnApproach && !isOnExit) return result;
     const distToStop = v.stopLineDist - v.distanceAlongPath;
-    if (isOnApproach && distToStop < 48.0) return result;
     // On approach legs, ONLY pull into the oncoming lane when our signal is GREEN with ample time left (>= 7.5s)
     // so the vehicle finishes passing & merges back cleanly BEFORE the light turns yellow/red!
     if (isOnApproach && (light !== 'green' || phaseRemaining < 7.5)) return result;
-    if (isOnExit && (v.distanceAlongPath < v.exitLineDist + 14.0 || v.totalPathLength - v.distanceAlongPath < 30.0)) return result;
+    if (isOnExit && (v.distanceAlongPath < v.exitLineDist + 14.0 || v.totalPathLength - v.distanceAlongPath < 28.0)) return result;
     if (isOnApproach && v.laneIndex !== 0) return result; // Must be in innermost lane next to centerline
     if (isOnApproach && v.turn === 'left') return result; // Don't cross right into oncoming if turning left soon
     if ((v.overtakeTimer ?? 0) > 0) return result;
@@ -403,8 +409,13 @@ export function updateOncomingOvertakeFSM(
     if (blockingLeader.originArm !== v.originArm && isOnApproach) return result;
     if (nearestGap > 18.0 || nearestGap < 1.0) return result;
 
-    // Only overtake when leader is moving slowly (not a stationary red-light queue)
-    if (isOnApproach && blockingLeader.speed < 1.2) return result;
+    // Tier 2b: Allow bypassing a stationary mid-road blocker once stuckTimer >= 1.8s
+    const isMidRoadStaticBypass =
+      blockingLeader.speed < 1.2 &&
+      (v.stuckTimer ?? 0) >= 1.8 &&
+      (isOnExit || (isOnApproach && distToStop > 32.0 && light === 'green'));
+    if (isOnApproach && !isMidRoadStaticBypass && distToStop < 48.0) return result;
+    if (isOnApproach && blockingLeader.speed < 1.2 && !isMidRoadStaticBypass) return result;
     const speedDeficit = desiredV - blockingLeader.speed;
     const baseDeficit = v.profile === 'aggressive' ? 1.8 : v.profile === 'normal' ? 2.5 : 3.6;
     const minDeficit = baseDeficit / Math.max(0.7, discipline.overtakeBoldness);

@@ -844,6 +844,7 @@ export class TrafficSimulation {
         reactionTimer: 0,
         prevAccel: 0,
         boxWaitTime: 0,
+        stuckTimer: 0,
         willRunRed: this.rng() < Math.min(0.95, baseRunRedProb * discipline.redLightRunMult),
         yellowCommitted: false,
         respectsYellowBox,
@@ -1367,6 +1368,25 @@ export class TrafficSimulation {
         }
       }
 
+      // Tier 3b In-Box Cooperative Creep: prevent permanent 0 m/s freeze inside the intersection box
+      // Only creep when physically clear (physicalGap > 0.15) and blocked by a cross-arm vehicle
+      if (
+        vInsideBox &&
+        (v.boxWaitTime ?? 0) >= 3.2 &&
+        nextSpeed < 0.6 &&
+        physicalGap > 0.15 &&
+        (!blockingLeader || blockingLeader.originArm !== v.originArm)
+      ) {
+        nextSpeed = 1.05;
+      }
+
+      // Track mid-road stuck timer (outside signal/yield/yellow-box holds)
+      if (v.speed < 0.5 && !stoppingForSignal && !v.isYielding && !v.holdingYellowBox && !vInsideBox) {
+        v.stuckTimer = (v.stuckTimer ?? 0) + dt;
+      } else if (v.speed >= 1.2 || stoppingForSignal || v.isYielding || v.holdingYellowBox) {
+        v.stuckTimer = 0;
+      }
+
       decisions.push({
         v,
         nextSpeed,
@@ -1376,11 +1396,12 @@ export class TrafficSimulation {
         physicalGap,
         physicalLeadSpeed,
         hasBlockingLeader,
+        sameArmBlocked: blockingLeader?.originArm === v.originArm,
       });
     }
 
     const toRemove = new Set<number>();
-    for (const { v, nextSpeed, nextLat, nextLatVel, nextSteerAngle, physicalGap, physicalLeadSpeed, hasBlockingLeader } of decisions) {
+    for (const { v, nextSpeed, nextLat, nextLatVel, nextSteerAngle, physicalGap, physicalLeadSpeed, hasBlockingLeader, sameArmBlocked } of decisions) {
       v.speed = nextSpeed;
       v.lateralOffset = nextLat;
       v.lateralVelocity = nextLatVel;
@@ -1388,8 +1409,14 @@ export class TrafficSimulation {
 
       const minBuffer = 0.05;
       const rawAdvance = v.speed * dt;
+      const inBoxCreepOverride =
+        v.distanceAlongPath + v.length * 0.5 > v.stopLineDist + 0.05 &&
+        !v.hasExitedIntersection &&
+        (v.boxWaitTime ?? 0) >= 3.5 &&
+        physicalGap > 0.15 &&
+        !sameArmBlocked;
       const maxAdvance =
-        hasBlockingLeader && Number.isFinite(physicalGap)
+        hasBlockingLeader && Number.isFinite(physicalGap) && !inBoxCreepOverride
           ? Math.max(0, physicalGap + Math.max(0, physicalLeadSpeed) * dt - minBuffer)
           : rawAdvance;
       v.distanceAlongPath += Math.min(rawAdvance, maxAdvance);
