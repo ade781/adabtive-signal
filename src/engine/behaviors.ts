@@ -183,9 +183,10 @@ export function findBlockingLeader(
           other.distanceAlongPath <= other.exitLineDist
           ? 0.85
           : other.turn !== 'straight' &&
-            other.distanceAlongPath > other.stopLineDist - 4.0 &&
-            other.distanceAlongPath <= other.exitLineDist
-            ? 0.22
+            Math.abs(other.lateralOffset) > 0.9 &&
+            other.distanceAlongPath > other.stopLineDist - 2.0 &&
+            other.distanceAlongPath <= other.stopLineDist + 6.0
+            ? 0.16
             : 0;
       if (
         latSep >= minLatNeed + tailSwingPad1 &&
@@ -275,9 +276,11 @@ export function findBlockingLeader(
     const latProj = Math.abs(-dx * sinH + dy * cosH);
 
     // Main-road traffic has strict right-of-way over a slip-lane vehicle whose front bumper is still behind its merge yield line
+    // (only skip once the slip vehicle is well inside its separated channel past stopLineDist + 8m)
     if (
       !v.isSlipLane &&
       other.isSlipLane &&
+      other.distanceAlongPath > other.stopLineDist + 8.0 &&
       other.distanceAlongPath + other.length * 0.5 < other.exitLineDist - 0.8 &&
       (other.isYielding || other.speed < 0.8) &&
       latProj > (myEffW + otherEffW) * 0.5 + 0.15
@@ -318,10 +321,11 @@ export function findBlockingLeader(
         other.distanceAlongPath <= other.exitLineDist
         ? 1.05
         : other.turn !== 'straight' &&
+          Math.abs(other.lateralOffset) > 0.9 &&
           other.originArm === v.originArm &&
           other.distanceAlongPath > other.stopLineDist - 2.0 &&
           other.distanceAlongPath <= other.stopLineDist + 6.0
-          ? 0.22
+          ? 0.16
           : 0;
     const sameArmBottleneckMerge =
       other.originArm === v.originArm &&
@@ -458,6 +462,7 @@ export function updateMotorcycleSeepage(
     frustration * (1 - 0.72 * discVal)
   );
   const allowCenterCross =
+    config.motorSwarmMode &&
     !armHasMedian &&
     (weather?.allowOncomingOvertake ?? true) &&
     config.oncomingOvertaking !== false &&
@@ -505,9 +510,26 @@ export function updateMotorcycleSeepage(
     }
   }
 
-  // Force immediate tuck-back into own lane if near/beyond centerline while oncoming traffic (especially heavy!) approaches or nearing stop line
-  const reqClearDist = oncomingIsHeavy ? 48.0 : 32.0;
-  if (myGlobalLat < halfMedian + 0.42 && (nearestOncomingDist < reqClearDist || nearestOncomingTTC < 3.1 || v.distanceAlongPath >= v.stopLineDist - 20.0)) {
+  // Force immediate tuck-back into own lane if near/beyond centerline while oncoming traffic approaches, nearing stop line, or solid red queue ahead
+  const reqClearDist = oncomingIsHeavy ? 48.0 : 34.0;
+  const hasPackedQueueAhead =
+    v.distanceAlongPath >= v.stopLineDist - 36.0 &&
+    vehicles.some(
+      (o) =>
+        o.id !== v.id &&
+        o.originArm === v.originArm &&
+        o.distanceAlongPath > v.distanceAlongPath &&
+        o.distanceAlongPath >= v.stopLineDist - 20.0 &&
+        o.distanceAlongPath < v.stopLineDist &&
+        o.speed < 0.6
+    );
+  if (
+    myGlobalLat < halfMedian + 0.42 &&
+    (nearestOncomingDist < reqClearDist ||
+      nearestOncomingTTC < 3.2 ||
+      v.distanceAlongPath >= v.stopLineDist - 22.0 ||
+      hasPackedQueueAhead)
+  ) {
     const safeInnerTarget = Math.max(halfMedian + 0.46, laneCenters[v.laneIndex] ?? halfMedian + armLw * 0.5);
     v.targetLateralOffset = safeInnerTarget - (laneCenters[v.laneIndex] ?? 0);
     return;
@@ -599,6 +621,7 @@ export function updateMotorcycleSeepage(
     ? Math.min(0.45, Math.max(0.18, maxCrossByWidth) * (0.7 + 0.35 * markingPropensity))
     : 0;
   const canUseShoulder =
+    config.motorSwarmMode &&
     v.distanceAlongPath > 5.0 &&
     v.distanceAlongPath < v.stopLineDist - 8.5 &&
     seepageScale >= 0.55 &&

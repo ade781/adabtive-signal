@@ -88,11 +88,11 @@ function normalizeConfig(raw: SimConfig): SimConfig {
   const allRedDuration = Math.max(0, Number.isFinite(raw.allRedDuration) ? raw.allRedDuration : DEFAULT_CONFIG.allRedDuration);
   const armGreenDurations: Record<ArmId, number> | undefined = raw.armGreenDurations
     ? {
-        north: Math.max(3, Math.min(180, Number.isFinite(raw.armGreenDurations.north) ? raw.armGreenDurations.north : greenDuration)),
-        east: Math.max(3, Math.min(180, Number.isFinite(raw.armGreenDurations.east) ? raw.armGreenDurations.east : greenDuration)),
-        south: Math.max(3, Math.min(180, Number.isFinite(raw.armGreenDurations.south) ? raw.armGreenDurations.south : greenDuration)),
-        west: Math.max(3, Math.min(180, Number.isFinite(raw.armGreenDurations.west) ? raw.armGreenDurations.west : greenDuration)),
-      }
+      north: Math.max(3, Math.min(180, Number.isFinite(raw.armGreenDurations.north) ? raw.armGreenDurations.north : greenDuration)),
+      east: Math.max(3, Math.min(180, Number.isFinite(raw.armGreenDurations.east) ? raw.armGreenDurations.east : greenDuration)),
+      south: Math.max(3, Math.min(180, Number.isFinite(raw.armGreenDurations.south) ? raw.armGreenDurations.south : greenDuration)),
+      west: Math.max(3, Math.min(180, Number.isFinite(raw.armGreenDurations.west) ? raw.armGreenDurations.west : greenDuration)),
+    }
     : undefined;
   const rawWeights = raw.armWeights ?? DEFAULT_CONFIG.armWeights!;
   const armWeights: Record<ArmId, number> = {
@@ -825,8 +825,8 @@ export class TrafficSimulation {
         vClass === 'motor'
           ? profile === 'aggressive' ? 0.85 : profile === 'normal' ? 0.5 : 0.15
           : vClass === 'car'
-          ? profile === 'aggressive' ? 0.65 : profile === 'normal' ? 0.25 : 0.05
-          : profile === 'aggressive' ? 0.2 : profile === 'normal' ? 0.05 : 0;
+            ? profile === 'aggressive' ? 0.65 : profile === 'normal' ? 0.25 : 0.05
+            : profile === 'aggressive' ? 0.2 : profile === 'normal' ? 0.05 : 0;
 
       const respectsYellowBox = this.rng() < discipline.yellowBoxCompliance;
       const stopCreepMeters =
@@ -1058,8 +1058,8 @@ export class TrafficSimulation {
         movSig === 'protected-green' || movSig === 'permissive-green' || movSig === 'slip-yield'
           ? 'green'
           : movSig === 'yellow'
-          ? 'yellow'
-          : 'red';
+            ? 'yellow'
+            : 'red';
       if (light === 'green') v.yellowCommitted = false;
 
       // 1. Base Desired Speed scaled by driver profile, lane width, & empirical weather reduction
@@ -1282,18 +1282,18 @@ export class TrafficSimulation {
         }
       }
 
-      // Hold/slow vehicle near stop line if still crossing centerline so it merges back into own lane before entering box
+      // Hold/slow vehicle near stop line ONLY if genuinely across the centerline into oncoming lane so it merges back before box
       const curGlobalLat = getGlobalLat(v.laneIndex, v.lateralOffset, lw, armGeom?.inLaneCenters);
-      const stillAcrossCenter = curGlobalLat < (armGeom?.halfMedian ?? 0) + 0.22;
+      const stillAcrossCenter = curGlobalLat < (armGeom?.halfMedian ?? 0) - 0.05;
       if (
         !v.isSlipLane &&
         !v.isUTurn &&
         stillAcrossCenter &&
         v.distanceAlongPath < v.stopLineDist &&
-        v.distanceAlongPath >= v.stopLineDist - 14.0
+        v.distanceAlongPath >= v.stopLineDist - 12.0
       ) {
-        desiredV = Math.min(desiredV, 3.5);
-        if (v.distanceAlongPath >= v.stopLineDist - 5.0 && (!v.overtakeState || v.overtakeState === 'none')) {
+        desiredV = Math.min(desiredV, 4.2);
+        if (v.distanceAlongPath >= v.stopLineDist - 4.0 && (!v.overtakeState || v.overtakeState === 'none')) {
           const stopHoldGap = Math.max(0.1, v.stopLineDist - frontBumper - 0.5);
           if (stopHoldGap < nearestGap) {
             nearestGap = stopHoldGap;
@@ -1332,10 +1332,11 @@ export class TrafficSimulation {
           if (other.id === v.id) continue;
           if (other.originArm === v.originArm && v.distanceAlongPath < v.stopLineDist - 0.5 && other.distanceAlongPath < other.stopLineDist - 0.5) {
             const speedBuf = other.distanceAlongPath > v.distanceAlongPath ? Math.max(0, v.speed - other.speed) * 0.6 : 0;
-            if (Math.abs(other.distanceAlongPath - v.distanceAlongPath) < (v.length + other.length) * 0.5 + 2.2 + speedBuf) {
+            const returningAcrossCenter =
+              curG < (armGeom?.halfMedian ?? 0) + 0.25 && stepSigned > 0;
+            const longBuf = returningAcrossCenter ? 0.45 : 2.2;
+            if (Math.abs(other.distanceAlongPath - v.distanceAlongPath) < (v.length + other.length) * 0.5 + longBuf + speedBuf) {
               const otherG = getGlobalLat(other.laneIndex, other.lateralOffset + other.lateralVelocity * dt, lw, laneCenters);
-              const returningAcrossCenter =
-                curG < (armGeom?.halfMedian ?? 0) + 0.25 && stepSigned > 0;
               const swingPad = returningAcrossCenter ? 0.04 : v.vClass === 'motor' ? 0.18 : 0.42;
               const tightParallelMotorPivot =
                 v.vClass === 'motor' &&
@@ -1369,7 +1370,12 @@ export class TrafficSimulation {
               // In LHT sampleWithLateralOffset, +lateralOffset shifts along left normal (+sinH, -cosH)
               const curOtherLat = dx * sinH - dy * cosH;
               const candOtherLat = curOtherLat - stepSigned;
-              const minClear = (myEffW + effClearanceWidth(other)) * 0.5 + 0.22 + (dotHeading < -0.45 ? 0.25 : 0);
+              const otherHalfLat =
+                other.isSlipLane || v.isSlipLane
+                  ? Math.abs(-cosO * sinH + sinO * cosH) * (other.length * 0.5) +
+                  Math.abs(sinO * sinH + cosO * cosH) * (effClearanceWidth(other) * 0.5)
+                  : effClearanceWidth(other) * 0.5;
+              const minClear = myEffW * 0.5 + otherHalfLat + 0.22 + (dotHeading < -0.45 ? 0.25 : 0);
               if (Math.abs(candOtherLat) < minClear && Math.abs(candOtherLat) < Math.abs(curOtherLat)) {
                 blocked = true;
                 break;
