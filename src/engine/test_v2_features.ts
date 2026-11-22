@@ -424,6 +424,79 @@ function testTimeOfDayAndWeatherPhysics() {
   );
 }
 
+function testIndonesianMarkingCrossAndReverseRecovery() {
+  const baseCfg: SimConfig = {
+    ...DEFAULT_CONFIG,
+    lanesPerDirection: 1,
+    laneWidth: 3.5,
+    roadWidthPerDirection: 3.5,
+    roadLength: 105,
+    motorRate: 48,
+    carRate: 28,
+    heavyRate: 10,
+    greenDuration: 20,
+    yellowDuration: 2,
+    allRedDuration: 0,
+    hasMedian: false,
+    smartOvertaking: true,
+    oncomingOvertaking: true,
+  };
+
+  const lowDiscRes = runScenario('Indonesian Marking Cross (Low Discipline)', { ...baseCfg, driverDiscipline: 0.35 }, 140);
+  const highDiscRes = runScenario('Strict Marking Compliance (High Discipline)', { ...baseCfg, driverDiscipline: 0.96 }, 140);
+
+  const lowCross = lowDiscRes.snap.stats.markingCrossCount ?? 0;
+  const highCross = highDiscRes.snap.stats.markingCrossCount ?? 0;
+  assert(lowCross > 0, `Expected Indonesian low-discipline marking crosses (>0), got ${lowCross}`);
+  assert(
+    lowCross > highCross,
+    `Expected low-discipline marking crosses (${lowCross}) > strict high-discipline (${highCross})`
+  );
+
+  // Heavy 2-phase simultaneous congestion with low discipline -> exercises reverse deadlock recovery & 2D predictive avoidance
+  const jamSim = new TrafficSimulation({
+    ...DEFAULT_CONFIG,
+    lanesPerDirection: 1,
+    laneWidth: 3.2,
+    roadWidthPerDirection: 3.2,
+    roadLength: 90,
+    motorRate: 56,
+    carRate: 38,
+    heavyRate: 8,
+    greenDuration: 22,
+    yellowDuration: 2,
+    allRedDuration: 0,
+    signalPhasePreset: '2-phase-simultaneous',
+    yellowBoxEnabled: false,
+    driverDiscipline: 0.25,
+    hasMedian: false,
+    oncomingOvertaking: true,
+  });
+
+  let sawReversingVehicle = false;
+  const jamStuck = new Map<number, number>();
+  for (let s = 0; s < 3200; s++) {
+    jamSim.step(0.05);
+    const snap = jamSim.getSnapshot();
+    if (snap.vehicles.some((v) => v.isReversing)) {
+      sawReversingVehicle = true;
+    }
+    if (s % 4 === 0) {
+      checkV2Integrity(jamSim, 'Reverse Recovery & Predictive 2D Jam', jamStuck, 0.2);
+    }
+  }
+  const jamSnap = jamSim.getSnapshot();
+  assert(
+    (jamSnap.stats.reverseRecoveryCount ?? 0) > 0 && sawReversingVehicle,
+    `Expected reverse recovery maneuver under dense 2-phase congestion, got count=${jamSnap.stats.reverseRecoveryCount}, saw=${sawReversingVehicle}`
+  );
+  assert(jamSnap.stats.totalExitedAllTime >= 40, `Expected steady recovery throughput, got ${jamSnap.stats.totalExitedAllTime}`);
+
+  console.log(
+    `[PASS] Test 8: Indonesian Marking Crossing & Reverse Recovery (lowCross=${lowCross} > highCross=${highCross}, revRecoveries=${jamSnap.stats.reverseRecoveryCount}, exited=${jamSnap.stats.totalExitedAllTime}, 0 collisions)`
+  );
+}
+
 testBlueprintsAndValidation();
 testAsymmetricAndNArmTopologies();
 testTwoPhasePriorityYielding();
@@ -431,5 +504,6 @@ testMobilActiveOvertaking();
 testOncomingLaneOvertaking();
 testYellowBoxAndDiscipline();
 testTimeOfDayAndWeatherPhysics();
+testIndonesianMarkingCrossAndReverseRecovery();
 
 console.log('\nALL V2 FEATURE TESTS PASSED SUCCESSFULLY!');

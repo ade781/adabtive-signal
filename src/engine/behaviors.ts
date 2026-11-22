@@ -1,3 +1,4 @@
+import { DisciplineParams } from './conflictResolver';
 import { DriverProfile, QUEUE_SPEED_THRESHOLD } from './constants';
 import { WeatherPhysicsProfile } from './environmentDynamics';
 import { PathCache } from './geometry';
@@ -27,6 +28,11 @@ export interface SimVehicle extends Vehicle {
   overtakeTargetId?: number;
   overtakeTimer?: number;
   stuckTimer?: number;
+  reverseTimer?: number;
+  reverseCooldown?: number;
+  reverseSteerDir?: number;
+  frustration?: number;
+  markedCrossCounted?: boolean;
 }
 
 export function getGlobalLat(laneIndex: number, lateralOffset: number, lw: number, laneCenters?: readonly number[]): number {
@@ -110,6 +116,7 @@ export function findBlockingLeader(
 
   const vInsideBox = v.distanceAlongPath + v.length * 0.5 > v.stopLineDist + 0.05 && !v.hasExitedIntersection;
   const vInOncomingPass = Boolean(v.overtakeState && v.overtakeState !== 'none');
+  const vCrossingMarking = Boolean(v.crossingMarking) || myGlobalLat < (originArmGeom?.halfMedian ?? 0) + 0.25;
 
   // Use spatial hash for O(k) nearby scan when available; fallback to full vehicles scan
   const candidates: readonly SimVehicle[] =
@@ -123,13 +130,16 @@ export function findBlockingLeader(
     const pad = v.vClass === 'motor' || other.vClass === 'motor' ? 0.06 : 0.3;
     const minLatNeed = (myEffW + otherEffW) * 0.5 + pad;
     const otherInOncoming = Boolean(other.overtakeState && other.overtakeState !== 'none');
+    const otherCrossingMarking = Boolean(other.crossingMarking);
 
-    // Fast 1D approach-lane check (same originArm, both upstream of stopLine, neither crossing centerline)
+    // Fast 1D approach-lane check (same originArm, both upstream of stopLine, neither crossing markings/centerline)
     if (
       !v.isSlipLane &&
       !other.isSlipLane &&
       !vInOncomingPass &&
       !otherInOncoming &&
+      !vCrossingMarking &&
+      !otherCrossingMarking &&
       v.distanceAlongPath < v.stopLineDist - 2.0 &&
       other.originArm === v.originArm &&
       other.distanceAlongPath < other.stopLineDist - 0.5
@@ -169,10 +179,14 @@ export function findBlockingLeader(
       const tailSwingPad1 =
         other.vClass === 'heavy' &&
           other.turn !== 'straight' &&
-          other.distanceAlongPath > other.stopLineDist - 4.0 &&
-          other.speed > 0.2
+          other.distanceAlongPath > other.stopLineDist - 6.0 &&
+          other.distanceAlongPath <= other.exitLineDist
           ? 0.85
-          : 0;
+          : other.turn !== 'straight' &&
+            other.distanceAlongPath > other.stopLineDist - 4.0 &&
+            other.distanceAlongPath <= other.exitLineDist
+            ? 0.22
+            : 0;
       if (
         latSep >= minLatNeed + tailSwingPad1 &&
         ((!crossingTurnInLane && !sameTurnTightCurve) ||
@@ -200,6 +214,8 @@ export function findBlockingLeader(
     const needs2DCheck =
       vInOncomingPass ||
       otherInOncoming ||
+      vCrossingMarking ||
+      otherCrossingMarking ||
       v.isSlipLane ||
       other.isSlipLane ||
       v.isUTurn ||
@@ -301,7 +317,12 @@ export function findBlockingLeader(
         other.distanceAlongPath > other.stopLineDist - 4.0 &&
         other.distanceAlongPath <= other.exitLineDist
         ? 1.05
-        : 0;
+        : other.turn !== 'straight' &&
+          other.originArm === v.originArm &&
+          other.distanceAlongPath > other.stopLineDist - 2.0 &&
+          other.distanceAlongPath <= other.stopLineDist + 6.0
+          ? 0.22
+          : 0;
     const sameArmBottleneckMerge =
       other.originArm === v.originArm &&
       other.destArm === v.destArm &&
@@ -310,10 +331,14 @@ export function findBlockingLeader(
       other.destLaneIndex === v.destLaneIndex &&
       v.distanceAlongPath > v.stopLineDist - 6.0 &&
       !v.hasExitedIntersection;
+    const slipSplitPad =
+      other.originArm === v.originArm && Boolean(other.isSlipLane) !== Boolean(v.isSlipLane) && other.distanceAlongPath > other.stopLineDist - 4.0
+        ? 0.35
+        : 0;
     const mergePad =
       (other.originArm !== v.originArm && other.destArm === v.destArm) || sameArmBottleneckMerge
         ? Math.max(pad, sameArmBottleneckMerge ? 0.95 : 0.45)
-        : pad;
+        : Math.max(pad, slipSplitPad);
 
     // Predictive swept collision check strictly for MOVING cross-traffic inside/entering the intersection box
     let sweptConflict = false;
@@ -408,8 +433,11 @@ export function updateMotorcycleSeepage(
   desiredV: number,
   nearestGap: number,
   blockingLeader: SimVehicle | null,
-  weather?: WeatherPhysicsProfile
+  weather?: WeatherPhysicsProfile,
+  hasPhysicalMedian = false,
+  discipline?: DisciplineParams
 ): void {
+  if (v.isReversing) return;
   if (v.overtakeState && v.overtakeState !== 'none') return;
   if (v.isSlipLane || v.isUTurn) return;
 
@@ -422,12 +450,78 @@ export function updateMotorcycleSeepage(
   const armInWidth = armGeom.inWidth;
   const armLw = armGeom.def.inLaneWidths[v.laneIndex] ?? lw;
   const seepageScale = weather?.seepageScale ?? 1.0;
+  const armHasMedian = hasPhysicalMedian || armGeom.def.medianWidth > 0.05;
+  const frustration = v.frustration ?? 0;
+  const discVal = discipline?.discipline ?? 0.72;
+  const markingPropensity = Math.max(
+    discipline?.markingCrossPropensity ?? 0.25,
+    frustration * (1 - 0.72 * discVal)
+  );
+  const allowCenterCross =
+    !armHasMedian &&
+    (weather?.allowOncomingOvertake ?? true) &&
+    config.oncomingOvertaking !== false &&
+    markingPropensity >= 0.22 &&
+    v.distanceAlongPath > 6.5 &&
+    v.distanceAlongPath < v.stopLineDist - 22.0 &&
+    v.turn !== 'left' &&
+    (v.laneIndex === 0 || v.turn === 'straight');
 
   const myEffW = effClearanceWidth(v);
   const myGlobalLat = getGlobalLat(v.laneIndex, v.lateralOffset, armLw, laneCenters);
 
-  // Re-center turning motorcycles smoothly just before stop line
-  if (v.turn !== 'straight' && v.distanceAlongPath >= v.stopLineDist - 5.0 && v.distanceAlongPath <= v.stopLineDist) {
+  // If already past stop line while still laterally out of lane near centerline, steer back toward lane center
+  if (v.distanceAlongPath >= v.stopLineDist && myGlobalLat < halfMedian + 0.44) {
+    v.targetLateralOffset = Math.max(0, halfMedian + 0.44 - (laneCenters[v.laneIndex] ?? halfMedian + armLw * 0.5));
+    return;
+  }
+
+  // Measure nearest oncoming vehicle approaching on our physical corridor (including traffic entering/in box heading to v.originArm)
+  let nearestOncomingDist = Infinity;
+  let nearestOncomingTTC = Infinity;
+  let oncomingIsHeavy = false;
+  if (!armHasMedian && v.distanceAlongPath < v.stopLineDist - 4.0) {
+    const cosH = Math.cos(v.heading);
+    const sinH = Math.sin(v.heading);
+    for (const other of vehicles) {
+      if (other.id === v.id) continue;
+      if (other.originArm === v.originArm) continue;
+      const headingIntoMyArm = other.destArm === v.originArm && other.distanceAlongPath > other.stopLineDist - 18.0;
+      const dot = cosH * Math.cos(other.heading) + sinH * Math.sin(other.heading);
+      if (dot > -0.45 && !headingIntoMyArm) continue;
+      const dx = other.x - v.x;
+      const dy = other.y - v.y;
+      const fwd = dx * cosH + dy * sinH;
+      if (fwd < -v.length * 0.5 || fwd > 64.0) continue;
+      const lat = Math.abs(-dx * sinH + dy * cosH);
+      if (lat > armInWidth + armGeom.outWidth + (headingIntoMyArm ? 6.0 : 1.2)) continue;
+      const gap = Math.max(0.1, fwd - (v.length + other.length) * 0.5);
+      const closing = Math.max(4.5, v.speed + Math.max(other.speed, 6.0));
+      if (gap < nearestOncomingDist) {
+        nearestOncomingDist = gap;
+        nearestOncomingTTC = gap / closing;
+        oncomingIsHeavy = other.vClass === 'heavy';
+      }
+    }
+  }
+
+  // Force immediate tuck-back into own lane if near/beyond centerline while oncoming traffic (especially heavy!) approaches or nearing stop line
+  const reqClearDist = oncomingIsHeavy ? 48.0 : 32.0;
+  if (myGlobalLat < halfMedian + 0.42 && (nearestOncomingDist < reqClearDist || nearestOncomingTTC < 3.1 || v.distanceAlongPath >= v.stopLineDist - 20.0)) {
+    const safeInnerTarget = Math.max(halfMedian + 0.46, laneCenters[v.laneIndex] ?? halfMedian + armLw * 0.5);
+    v.targetLateralOffset = safeInnerTarget - (laneCenters[v.laneIndex] ?? 0);
+    return;
+  }
+
+  // Tuck back from outer shoulder (bahu jalan) before intersection curb fillet
+  if (myGlobalLat > halfMedian + armInWidth - 0.35 && v.distanceAlongPath >= v.stopLineDist - 8.0) {
+    const safeOuterTarget = Math.min(halfMedian + armInWidth - 0.44, laneCenters[v.laneIndex] ?? halfMedian + armInWidth - armLw * 0.5);
+    v.targetLateralOffset = safeOuterTarget - (laneCenters[v.laneIndex] ?? 0);
+    return;
+  }
+
+  // Re-center turning motorcycles smoothly before stop line so they don't clip cornering trucks
+  if (v.turn !== 'straight' && v.distanceAlongPath >= v.stopLineDist - 9.0 && v.distanceAlongPath <= v.stopLineDist) {
     const centerLat = getGlobalLat(v.laneIndex, 0, armLw, laneCenters);
     const bandMin = Math.min(myGlobalLat, centerLat);
     const bandMax = Math.max(myGlobalLat, centerLat);
@@ -451,13 +545,14 @@ export function updateMotorcycleSeepage(
       }
     }
     v.targetLateralOffset = 0;
+    v.crossingMarking = false;
     return;
   }
 
   // Heavy rain suppresses tight motorcycle weaving
   const maxTriggerGap = 24.0 * seepageScale;
   if (
-    seepageScale < 0.45 && v.speed > 3.5 ||
+    (seepageScale < 0.45 && v.speed > 3.5) ||
     !blockingLeader ||
     nearestGap >= maxTriggerGap ||
     (v.distanceAlongPath >= v.stopLineDist - 20.0 && v.laneIndex === blockingLeader.laneIndex && v.turn !== blockingLeader.turn) ||
@@ -475,8 +570,50 @@ export function updateMotorcycleSeepage(
   const maxLane = v.turn === 'straight' ? Math.min(inLanes - 1, v.laneIndex + 1) : v.laneIndex;
   const minLaneEdge = halfMedian + armGeom.def.inLaneWidths.slice(0, minLane).reduce((s, w) => s + w, 0);
   const maxLaneEdge = halfMedian + armGeom.def.inLaneWidths.slice(0, maxLane + 1).reduce((s, w) => s + w, 0);
-  const minBound = Math.max(halfMedian + 0.42, minLaneEdge + 0.42);
-  const maxBound = Math.min(halfMedian + Math.max(roadW, armInWidth) - 0.42, maxLaneEdge - 0.42);
+
+  // Ensure there is actually space inside our own lane ahead before stopLineDist - 12m so we never trap ourselves across centerline
+  let hasReturnSpaceBeforeStop = true;
+  if (allowCenterCross) {
+    const queueAheadNearStop = vehicles.some(
+      (o) =>
+        o.id !== v.id &&
+        o.originArm === v.originArm &&
+        o.distanceAlongPath > v.distanceAlongPath &&
+        o.distanceAlongPath >= v.stopLineDist - 18.0 &&
+        o.distanceAlongPath < v.stopLineDist &&
+        o.speed < 1.2
+    );
+    if (queueAheadNearStop && v.distanceAlongPath >= v.stopLineDist - 36.0) {
+      hasReturnSpaceBeforeStop = false;
+    }
+  }
+
+  const canCrossCenterHere =
+    allowCenterCross &&
+    hasReturnSpaceBeforeStop &&
+    !oncomingIsHeavy &&
+    nearestOncomingDist > 40.0 &&
+    nearestOncomingTTC > 3.5;
+  const maxCrossByWidth = armInWidth < 3.1 ? 0.22 : Math.min(0.42, (armGeom.def.outLaneWidths[0] ?? armLw) * 0.14);
+  const centerCrossDepth = canCrossCenterHere
+    ? Math.min(0.45, Math.max(0.18, maxCrossByWidth) * (0.7 + 0.35 * markingPropensity))
+    : 0;
+  const canUseShoulder =
+    v.distanceAlongPath > 5.0 &&
+    v.distanceAlongPath < v.stopLineDist - 8.5 &&
+    seepageScale >= 0.55 &&
+    markingPropensity >= 0.18 &&
+    (v.turn === 'straight' || v.turn === 'left') &&
+    maxLane === inLanes - 1;
+  const shoulderExtra = canUseShoulder ? Math.min(0.6, markingPropensity * 0.58) : 0;
+
+  const rightTurnEdgePad = v.turn === 'right' && v.distanceAlongPath >= v.stopLineDist - 14.0 && minLane === 0 ? 0.72 : 0.42;
+  const minBound = canCrossCenterHere && minLane === 0
+    ? halfMedian - centerCrossDepth
+    : Math.max(halfMedian + rightTurnEdgePad, minLaneEdge + 0.42);
+  const maxBound = canUseShoulder
+    ? halfMedian + Math.max(roadW, armInWidth) + shoulderExtra - 0.38
+    : Math.min(halfMedian + Math.max(roadW, armInWidth) - 0.42, maxLaneEdge - 0.42);
   const leadEffW = effClearanceWidth(blockingLeader);
   const leadGlobalLat = getGlobalLat(blockingLeader.laneIndex, blockingLeader.lateralOffset, armLw, laneCenters);
 
@@ -486,6 +623,9 @@ export function updateMotorcycleSeepage(
     raw.push(leadGlobalLat + (myEffW + leadEffW) * 0.5 + 0.12 + weatherPadExtra, maxBound);
   } else if (v.turn === 'right') {
     raw.push(leadGlobalLat - (myEffW + leadEffW) * 0.5 - 0.12 - weatherPadExtra, minBound);
+    if (canCrossCenterHere) {
+      raw.push(halfMedian - 0.25, halfMedian - Math.min(0.75, centerCrossDepth));
+    }
   } else {
     let divider = halfMedian;
     for (let l = 0; l < inLanes - 1; l++) {
@@ -498,6 +638,12 @@ export function updateMotorcycleSeepage(
       maxBound,
       minBound
     );
+    if (canCrossCenterHere && minLane === 0) {
+      raw.push(halfMedian - 0.15, halfMedian - Math.min(0.65, centerCrossDepth * 0.7), halfMedian - centerCrossDepth);
+    }
+    if (canUseShoulder) {
+      raw.push(halfMedian + armInWidth + shoulderExtra * 0.55);
+    }
     if (config.motorSwarmMode && seepageScale >= 0.6) {
       for (let c = halfMedian + 0.42; c <= halfMedian + armInWidth - 0.42 + 1e-6; c += 0.85) {
         raw.push(c);
@@ -515,10 +661,31 @@ export function updateMotorcycleSeepage(
     const bandMax = Math.max(myGlobalLat, cand);
     let forwardClear = v.stopLineDist - v.distanceAlongPath;
     for (const other of vehicles) {
-      if (other.id === v.id || other.originArm !== v.originArm) continue;
+      if (other.id === v.id) continue;
+      // Also protect against oncoming vehicles exiting along v.originArm when considering centerline-crossing offsets
+      if (other.originArm !== v.originArm) {
+        if (cand < halfMedian + 0.3 && other.destArm === v.originArm && other.distanceAlongPath >= other.exitLineDist - 4.0) {
+          const otherOutCenter = armGeom.outLaneCenters[other.destLaneIndex ?? 0] ?? (armGeom.def.outLaneWidths[0] ?? armLw) * 0.5;
+          const otherWorldSideLat = -(halfMedian + otherOutCenter + other.lateralOffset);
+          const padOpp = (myEffW + effClearanceWidth(other)) * 0.5 + 0.35;
+          if (Math.abs(cand - otherWorldSideLat) < padOpp) {
+            const distOpp = Math.hypot(other.x - v.x, other.y - v.y);
+            if (distOpp < 28.0) {
+              clear = false;
+              break;
+            }
+          }
+        }
+        continue;
+      }
+
       const otherLat = getGlobalLat(other.laneIndex, other.lateralOffset, armLw, laneCenters);
       const otherTargetLat = getGlobalLat(other.laneIndex, other.targetLateralOffset, armLw, laneCenters);
-      const pad = (myEffW + effClearanceWidth(other)) * 0.5 + 0.12 + weatherPadExtra;
+      const heavyTailPad =
+        other.vClass === 'heavy' && other.turn !== 'straight' && other.distanceAlongPath > other.stopLineDist - 12.0
+          ? 0.75
+          : 0;
+      const pad = (myEffW + effClearanceWidth(other)) * 0.5 + 0.12 + weatherPadExtra + heavyTailPad;
       const halfSumLen = (v.length + other.length) * 0.5;
       const longDiff = other.distanceAlongPath - v.distanceAlongPath;
 
@@ -557,14 +724,18 @@ export function updateMotorcycleSeepage(
 
   if (bestCand !== null && bestForwardDist > nearestGap + 1.5) {
     if (v.turn === 'straight' && inLanes >= 2) {
-      // Find which lane owns bestCand
+      // Find which lane owns bestCand (clamp centerline crosses to lane 0, shoulder to outer lane)
       let targetLane = v.laneIndex;
-      let cursor = halfMedian;
-      for (let l = 0; l < inLanes; l++) {
-        cursor += armGeom.def.inLaneWidths[l];
-        if (bestCand <= cursor || l === inLanes - 1) {
-          targetLane = l;
-          break;
+      if (bestCand < halfMedian) {
+        targetLane = 0;
+      } else {
+        let cursor = halfMedian;
+        for (let l = 0; l < inLanes; l++) {
+          cursor += armGeom.def.inLaneWidths[l];
+          if (bestCand <= cursor || l === inLanes - 1) {
+            targetLane = l;
+            break;
+          }
         }
       }
       if (targetLane !== v.laneIndex) {
@@ -593,5 +764,6 @@ export function updateMotorcycleSeepage(
       }
     }
     v.targetLateralOffset = bestCand - laneCenters[v.laneIndex];
+    v.crossingMarking = bestCand < halfMedian + 0.18 || bestCand > halfMedian + armInWidth - 0.18;
   }
 }

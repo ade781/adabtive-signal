@@ -481,11 +481,22 @@ function drawVehicle(ctx: CanvasRenderingContext2D, v: Vehicle, blinkOn: boolean
     ctx.fill();
   }
 
-  // Subtle visual halo when actively overtaking via oncoming lane (so users can immediately spot smart AI!)
-  if (v.overtakeState && v.overtakeState !== 'none') {
+  // Subtle visual halo when actively overtaking via oncoming lane, crossing markings, or reversing
+  if (v.isReversing) {
+    ctx.strokeStyle = 'rgba(249, 115, 22, 0.85)';
+    ctx.lineWidth = 0.2;
+    ctx.strokeRect(-v.width / 2 - 0.16, -v.length / 2 - 0.16, v.width + 0.32, v.length + 0.32);
+  } else if (v.overtakeState && v.overtakeState !== 'none') {
     ctx.strokeStyle = v.overtakeState === 'abort' ? 'rgba(239, 68, 68, 0.75)' : 'rgba(14, 165, 233, 0.75)';
     ctx.lineWidth = 0.18;
     ctx.strokeRect(-v.width / 2 - 0.16, -v.length / 2 - 0.16, v.width + 0.32, v.length + 0.32);
+  } else if (v.crossingMarking) {
+    ctx.save();
+    ctx.setLineDash([0.35, 0.25]);
+    ctx.strokeStyle = 'rgba(245, 158, 11, 0.75)';
+    ctx.lineWidth = 0.15;
+    ctx.strokeRect(-v.width / 2 - 0.14, -v.length / 2 - 0.14, v.width + 0.28, v.length + 0.28);
+    ctx.restore();
   }
 
   const img = getLoadedAsset(v.spriteKey);
@@ -495,7 +506,17 @@ function drawVehicle(ctx: CanvasRenderingContext2D, v: Vehicle, blinkOn: boolean
     ctx.fillRect(-v.width / 2, -v.length / 2, v.width, v.length);
   }
 
-  if (v.speed < 0.8 || v.brakingHard) {
+  if (v.isReversing) {
+    // Bright white reverse lights at rear
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.98)';
+    if (v.vClass === 'motor') ctx.fillRect(-0.09, v.length * 0.4, 0.18, 0.13);
+    else {
+      const rw = Math.max(0.16, v.width * 0.16);
+      const rh = Math.max(0.12, v.length * 0.045);
+      ctx.fillRect(-v.width * 0.3, v.length * 0.42, rw, rh);
+      ctx.fillRect(v.width * 0.3 - rw, v.length * 0.42, rw, rh);
+    }
+  } else if (v.speed < 0.8 || v.brakingHard) {
     ctx.fillStyle = 'rgba(239, 68, 68, 0.95)';
     if (v.vClass === 'motor') ctx.fillRect(-0.1, v.length * 0.4, 0.2, 0.12);
     else {

@@ -261,9 +261,9 @@ export function sampleWithLateralOffset(
   const base = path.sample(dist);
   let steerYaw = 0;
   if (Math.abs(lateralVel) > 0.02 && speed > 0) {
-    const speedScale = Math.min(1, speed / 0.4);
+    const speedScale = Math.min(1, speed / 1.5);
     steerYaw =
-      Math.max(-0.38, Math.min(0.38, Math.atan2(-lateralVel, Math.max(1.2, speed)))) *
+      Math.max(-0.32, Math.min(0.32, Math.atan2(-lateralVel, Math.max(2.2, speed)))) *
       speedScale;
   }
   const heading = wrapAngle(base.heading + steerYaw);

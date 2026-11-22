@@ -15,6 +15,7 @@ import {
 import {
   computeDisciplineParams,
   evaluatePriorityConflictYield,
+  negotiateDeadlockPriority,
   shouldHoldForYellowBox,
 } from './conflictResolver';
 import {
@@ -35,7 +36,11 @@ import {
   updateOncomingOvertakeFSM,
 } from './overtakingAI';
 import { SpatialHashGrid } from './spatialHash';
-import { computeCurvatureTargetSpeed, computePurePursuitLateralStep } from './steeringAI';
+import {
+  computeCurvatureTargetSpeed,
+  computePurePursuitLateralStep,
+  evaluatePredictiveConflict2D,
+} from './steeringAI';
 import { compileTopology, simConfigToTopology } from './topologyBuilder';
 import {
   CompiledMovementPath,
@@ -189,6 +194,8 @@ export class TrafficSimulation {
   private oncomingOvertakeCount = 0;
   private yieldConflictCount = 0;
   private yellowBoxHoldCount = 0;
+  private reverseRecoveryCount = 0;
+  private markingCrossCount = 0;
   private envState: EnvironmentState = evaluateEnvironment(0, DEFAULT_ENVIRONMENT);
 
   constructor(initialConfig?: Partial<SimConfig>) {
@@ -254,6 +261,8 @@ export class TrafficSimulation {
     this.oncomingOvertakeCount = 0;
     this.yieldConflictCount = 0;
     this.yellowBoxHoldCount = 0;
+    this.reverseRecoveryCount = 0;
+    this.markingCrossCount = 0;
     this.envState = evaluateEnvironment(0, this.config.environment);
     this.spatialHash.clear();
   }
@@ -845,6 +854,12 @@ export class TrafficSimulation {
         prevAccel: 0,
         boxWaitTime: 0,
         stuckTimer: 0,
+        reverseTimer: 0,
+        reverseCooldown: 0,
+        frustration: 0,
+        isReversing: false,
+        crossingMarking: false,
+        markedCrossCounted: false,
         willRunRed: this.rng() < Math.min(0.95, baseRunRedProb * discipline.redLightRunMult),
         yellowCommitted: false,
         respectsYellowBox,
@@ -1018,12 +1033,18 @@ export class TrafficSimulation {
       physicalGap: number;
       physicalLeadSpeed: number;
       hasBlockingLeader: boolean;
+      sameArmBlocked: boolean;
+      nearestRearGap: number;
+      nextCrossingMarking: boolean;
     }[] = [];
 
     for (const v of this.vehicles) {
       if (v.reactionTimer > 0) v.reactionTimer = Math.max(0, v.reactionTimer - dt);
       if (v.laneChangeCooldown && v.laneChangeCooldown > 0) {
         v.laneChangeCooldown = Math.max(0, v.laneChangeCooldown - dt);
+      }
+      if (v.reverseCooldown && v.reverseCooldown > 0) {
+        v.reverseCooldown = Math.max(0, v.reverseCooldown - dt);
       }
 
       const armGeom = this.compiledTopology.armsById[v.originArm];
@@ -1166,7 +1187,22 @@ export class TrafficSimulation {
         }
       }
 
-      // 5. Defensive yielding when facing an oncoming overtaker (GTA-style smart reaction)
+      // 5. Defensive yielding, predictive 2D collision avoidance & box-clearing urgency
+      const vBoxCheck = v.distanceAlongPath + v.length * 0.5 > v.stopLineDist + 0.05 && !v.hasExitedIntersection;
+      if (vBoxCheck && (light === 'yellow' || light === 'red') && !v.isYielding) {
+        desiredV *= 1.24;
+      }
+
+      if (!v.isReversing) {
+        const nearby2D = this.spatialHash.queryRadius(v.x, v.y, Math.min(24, weather.sightDistance), this.queryBufB);
+        const pred2D = evaluatePredictiveConflict2D(v, nearby2D, weather);
+        if (pred2D.brakeGap < nearestGap) {
+          nearestGap = Math.max(0.15, pred2D.brakeGap);
+          leadSpeed = Math.min(leadSpeed, pred2D.speedCap);
+          desiredV = Math.min(desiredV, pred2D.speedCap);
+        }
+      }
+
       if (anyActiveOncomingOvertaker) {
         const defensive = evaluateDefensiveYieldForOncomingOvertaker(v, this.spatialHash, this.queryBufB);
         if (Number.isFinite(defensive.speedCap)) {
@@ -1183,6 +1219,7 @@ export class TrafficSimulation {
         desiredV = Math.min(desiredV, 4.8 * weather.speedMult.motor);
       }
 
+      const hasPhysicalMedian = this.config.hasMedian || (armGeom?.def.medianWidth ?? 0) > 0.05;
       if (v.vClass === 'motor') {
         updateMotorcycleSeepage(
           v,
@@ -1194,7 +1231,9 @@ export class TrafficSimulation {
           desiredV,
           nearestGap,
           blockingLeader,
-          weather
+          weather,
+          hasPhysicalMedian,
+          discipline
         );
       }
 
@@ -1218,7 +1257,6 @@ export class TrafficSimulation {
       }
 
       if (!didMobilChange && this.config.oncomingOvertaking !== false) {
-        const hasPhysicalMedian = this.config.hasMedian || (armGeom?.def.medianWidth ?? 0) > 0.05;
         const oncomingRes = updateOncomingOvertakeFSM(
           v,
           this.vehicles,
@@ -1241,6 +1279,26 @@ export class TrafficSimulation {
         desiredV *= oncomingRes.speedBoost;
         if (oncomingRes.forceYieldToOncoming) {
           desiredV = Math.min(desiredV, 4.0);
+        }
+      }
+
+      // Hold/slow vehicle near stop line if still crossing centerline so it merges back into own lane before entering box
+      const curGlobalLat = getGlobalLat(v.laneIndex, v.lateralOffset, lw, armGeom?.inLaneCenters);
+      const stillAcrossCenter = curGlobalLat < (armGeom?.halfMedian ?? 0) + 0.22;
+      if (
+        !v.isSlipLane &&
+        !v.isUTurn &&
+        stillAcrossCenter &&
+        v.distanceAlongPath < v.stopLineDist &&
+        v.distanceAlongPath >= v.stopLineDist - 14.0
+      ) {
+        desiredV = Math.min(desiredV, 3.5);
+        if (v.distanceAlongPath >= v.stopLineDist - 5.0 && (!v.overtakeState || v.overtakeState === 'none')) {
+          const stopHoldGap = Math.max(0.1, v.stopLineDist - frontBumper - 0.5);
+          if (stopHoldGap < nearestGap) {
+            nearestGap = stopHoldGap;
+            leadSpeed = 0;
+          }
         }
       }
 
@@ -1276,8 +1334,22 @@ export class TrafficSimulation {
             const speedBuf = other.distanceAlongPath > v.distanceAlongPath ? Math.max(0, v.speed - other.speed) * 0.6 : 0;
             if (Math.abs(other.distanceAlongPath - v.distanceAlongPath) < (v.length + other.length) * 0.5 + 2.2 + speedBuf) {
               const otherG = getGlobalLat(other.laneIndex, other.lateralOffset + other.lateralVelocity * dt, lw, laneCenters);
-              const swingPad = v.vClass === 'motor' ? 0.18 : 0.42;
-              if (Math.abs(candG - otherG) < (myEffW + effClearanceWidth(other)) * 0.5 + swingPad && Math.abs(candG - otherG) < Math.abs(curG - otherG)) {
+              const returningAcrossCenter =
+                curG < (armGeom?.halfMedian ?? 0) + 0.25 && stepSigned > 0;
+              const swingPad = returningAcrossCenter ? 0.04 : v.vClass === 'motor' ? 0.18 : 0.42;
+              const tightParallelMotorPivot =
+                v.vClass === 'motor' &&
+                v.speed < 2.2 &&
+                !returningAcrossCenter &&
+                (!v.overtakeState || v.overtakeState === 'none') &&
+                !v.crossingMarking &&
+                Math.abs(other.distanceAlongPath - v.distanceAlongPath) < (v.length + other.length) * 0.5 + 0.35 &&
+                Math.abs(curG - otherG) < (myEffW + effClearanceWidth(other)) * 0.5 + 0.24;
+              if (
+                tightParallelMotorPivot ||
+                (Math.abs(candG - otherG) < (myEffW + effClearanceWidth(other)) * 0.5 + swingPad &&
+                  Math.abs(candG - otherG) < Math.abs(curG - otherG))
+              ) {
                 blocked = true;
                 break;
               }
@@ -1287,16 +1359,17 @@ export class TrafficSimulation {
             const cosO = Math.cos(other.heading);
             const sinO = Math.sin(other.heading);
             const dotHeading = cosH * cosO + sinH * sinO;
-            if (dotHeading < 0.35) continue; // Only lateral side-swipe guard for same-direction / merging streams
+            if (dotHeading < 0.35 && !(dotHeading < -0.45 && stepSigned < 0)) continue;
             const dx = other.x - v.x;
             const dy = other.y - v.y;
             const fwd = dx * cosH + dy * sinH;
             const speedBuf = fwd > 0 ? Math.max(0, v.speed - other.speed) * 0.55 : 0;
-            if (Math.abs(fwd) < (v.length + other.length) * 0.5 + 1.8 + speedBuf) {
+            const oppExtra = dotHeading < -0.45 ? 1.4 : 0;
+            if (Math.abs(fwd) < (v.length + other.length) * 0.5 + 1.8 + speedBuf + oppExtra) {
               // In LHT sampleWithLateralOffset, +lateralOffset shifts along left normal (+sinH, -cosH)
               const curOtherLat = dx * sinH - dy * cosH;
               const candOtherLat = curOtherLat - stepSigned;
-              const minClear = (myEffW + effClearanceWidth(other)) * 0.5 + 0.22;
+              const minClear = (myEffW + effClearanceWidth(other)) * 0.5 + 0.22 + (dotHeading < -0.45 ? 0.25 : 0);
               if (Math.abs(candOtherLat) < minClear && Math.abs(candOtherLat) < Math.abs(curOtherLat)) {
                 blocked = true;
                 break;
@@ -1314,9 +1387,113 @@ export class TrafficSimulation {
         }
       }
 
-      // 8. Smooth Urban IDM with Consistent Weather Friction (mu) & Jerk Limiting
+      // 8. Reverse Gear Clearance Scan, Anti-Stuck Reverse Trigger & Smooth Urban IDM
+      let nearestRearGap = Infinity;
+      const checkReverseCandidate =
+        Boolean(v.isReversing) ||
+        (((v.boxWaitTime ?? 0) >= 2.0 || (v.stuckTimer ?? 0) >= 2.0 || v.overtakeState === 'abort' || v.overtakeState === 'merge_back') &&
+          (v.reverseCooldown ?? 0) <= 0 &&
+          v.distanceAlongPath > 3.2);
+
+      if (checkReverseCandidate) {
+        const myEffW = effClearanceWidth(v);
+        const cosH = Math.cos(v.heading);
+        const sinH = Math.sin(v.heading);
+        const nearbyRear = this.spatialHash.queryRadius(v.x, v.y, 14, this.queryBufB);
+        for (let i = 0; i < nearbyRear.length; i++) {
+          const other = nearbyRear[i];
+          if (other.id === v.id) continue;
+          const dx = other.x - v.x;
+          const dy = other.y - v.y;
+          const fwd = dx * cosH + dy * sinH;
+          if (fwd >= -0.05) continue; // Only check behind us
+          const lat = Math.abs(-dx * sinH + dy * cosH);
+          const cosO = Math.cos(other.heading);
+          const sinO = Math.sin(other.heading);
+          const otherEffW = effClearanceWidth(other);
+          const otherProjLen = Math.abs(cosO * cosH + sinO * sinH) * (other.length * 0.5) + Math.abs(-sinO * cosH + cosO * sinH) * (otherEffW * 0.5);
+          const otherProjLat = Math.abs(-cosO * sinH + sinO * cosH) * (other.length * 0.5) + Math.abs(sinO * sinH + cosO * cosH) * (otherEffW * 0.5);
+          if (lat < myEffW * 0.5 + otherProjLat + 0.35) {
+            const rearGap = -fwd - (v.length * 0.5 + otherProjLen);
+            if (rearGap < nearestRearGap) {
+              nearestRearGap = rearGap;
+            }
+          }
+        }
+      }
+
+      const isQueuedBehindRed =
+        v.distanceAlongPath < v.stopLineDist &&
+        light === 'red' &&
+        blockingLeader !== null &&
+        blockingLeader.originArm === v.originArm &&
+        (!blockingLeader.overtakeState || blockingLeader.overtakeState === 'none') &&
+        !blockingLeader.crossingMarking;
+
+      if (!v.isReversing && checkReverseCandidate) {
+        const minRearSpace = v.vClass === 'motor' ? 1.45 : 2.5;
+        const trappedOncomingAbort =
+          ((v.overtakeState === 'abort' || v.overtakeState === 'merge_back' || Boolean(v.crossingMarking)) &&
+            v.lateralOffset < -0.5 &&
+            (v.speed < 0.75 || physicalGap < 1.3) &&
+            blockingLeader !== null &&
+            blockingLeader.destArm === v.originArm);
+        const deadlockedInBoxOrHeadOn =
+          ((v.boxWaitTime ?? 0) >= 2.1 || (v.stuckTimer ?? 0) >= 2.1) &&
+          physicalGap < 0.85 &&
+          blockingLeader !== null &&
+          !blockingLeader.isReversing &&
+          (blockingLeader.originArm !== v.originArm ||
+            Boolean(blockingLeader.overtakeState && blockingLeader.overtakeState !== 'none')) &&
+          negotiateDeadlockPriority(v, blockingLeader) === 'yield';
+        const generalFreezeRecovery =
+          (v.stuckTimer ?? 0) >= 3.2 &&
+          !stoppingForSignal &&
+          !isQueuedBehindRed &&
+          !v.isYielding &&
+          !v.holdingYellowBox &&
+          physicalGap < 0.55 &&
+          blockingLeader !== null &&
+          !blockingLeader.isReversing;
+
+        if ((trappedOncomingAbort || deadlockedInBoxOrHeadOn || generalFreezeRecovery) && nearestRearGap >= minRearSpace) {
+          v.isReversing = true;
+          v.reverseTimer = trappedOncomingAbort ? 1.5 : 1.15;
+          v.prevAccel = 0;
+          this.reverseRecoveryCount += 1;
+          if (!v.overtakeState || v.overtakeState === 'none') {
+            // Subtle evasive steering offset while backing out so next forward attempt avoids the same pin
+            const dirNudge = v.turn === 'right' ? -0.32 : 0.32;
+            const maxLaneDrift = Math.max(0.25, lw * 0.32);
+            v.targetLateralOffset = Math.max(-maxLaneDrift, Math.min(maxLaneDrift, v.lateralOffset + dirNudge));
+          }
+        }
+      }
+
       let nextSpeed = v.speed;
-      if (v.reactionTimer > 0 && light === 'green' && v.speed < 0.05) {
+      if (v.isReversing) {
+        v.reverseTimer = (v.reverseTimer ?? 0) - dt;
+        const clearedForward =
+          (!v.overtakeState || v.overtakeState === 'none') &&
+          physicalGap > 2.6 &&
+          (v.reverseTimer ?? 0) < 0.65;
+        if ((v.reverseTimer ?? 0) <= 0 || v.distanceAlongPath <= 1.2 || nearestRearGap <= 0.45 || clearedForward) {
+          v.isReversing = false;
+          v.reverseTimer = 0;
+          v.reverseCooldown = 2.6;
+          nextSpeed = 0;
+          v.prevAccel = 0;
+          v.brakingHard = false;
+          v.stuckTimer = 0;
+          v.boxWaitTime = 0;
+        } else {
+          const maxRev = (v.vClass === 'motor' ? 1.45 : v.vClass === 'car' ? 1.85 : 1.3) * weather.speedMult[v.vClass];
+          const safeRev = Number.isFinite(nearestRearGap) ? Math.max(0.35, (nearestRearGap - 0.35) * 1.8) : maxRev;
+          nextSpeed = Math.min(maxRev, safeRev);
+          v.prevAccel = 0;
+          v.brakingHard = false;
+        }
+      } else if (v.reactionTimer > 0 && light === 'green' && v.speed < 0.05) {
         nextSpeed = 0;
         v.prevAccel = 0;
         v.brakingHard = false;
@@ -1371,6 +1548,7 @@ export class TrafficSimulation {
       // Tier 3b In-Box Cooperative Creep: prevent permanent 0 m/s freeze inside the intersection box
       // Only creep when physically clear (physicalGap > 0.15) and blocked by a cross-arm vehicle
       if (
+        !v.isReversing &&
         vInsideBox &&
         (v.boxWaitTime ?? 0) >= 3.2 &&
         nextSpeed < 0.6 &&
@@ -1380,11 +1558,33 @@ export class TrafficSimulation {
         nextSpeed = 1.05;
       }
 
-      // Track mid-road stuck timer (outside signal/yield/yellow-box holds)
-      if (v.speed < 0.5 && !stoppingForSignal && !v.isYielding && !v.holdingYellowBox && !vInsideBox) {
+      // Dynamic driver frustration escalation & mid-road stuck tracking
+      if (!v.isReversing && v.speed < 0.9 && !vInsideBox) {
+        const rate = stoppingForSignal || v.isYielding || v.holdingYellowBox ? 0.035 : 0.14;
+        v.frustration = Math.min(1, (v.frustration ?? 0) + dt * rate);
+      } else if (v.speed >= 3.0) {
+        v.frustration = Math.max(0, (v.frustration ?? 0) - dt * 0.18);
+      }
+
+      if (!v.isReversing && v.speed < 0.5 && !stoppingForSignal && !isQueuedBehindRed && !v.isYielding && !v.holdingYellowBox && !vInsideBox) {
         v.stuckTimer = (v.stuckTimer ?? 0) + dt;
-      } else if (v.speed >= 1.2 || stoppingForSignal || v.isYielding || v.holdingYellowBox) {
+      } else if (v.speed >= 1.2 || stoppingForSignal || isQueuedBehindRed || v.isYielding || v.holdingYellowBox || v.isReversing) {
         v.stuckTimer = 0;
+      }
+
+      // Track whether vehicle is currently crossing centerline/shoulder road markings
+      const nextGlobalLat = getGlobalLat(v.laneIndex, nextLat, lw, armGeom?.inLaneCenters);
+      const inOncomingPass = Boolean(v.overtakeState && v.overtakeState !== 'none');
+      const isCrossCenterAnywhere = armGeom ? nextGlobalLat < armGeom.halfMedian + 0.16 : nextGlobalLat < 0.16;
+      const isOnShoulderApproach =
+        v.distanceAlongPath < v.stopLineDist - 1.5 &&
+        (armGeom ? nextGlobalLat > armGeom.halfMedian + armGeom.inWidth - 0.16 : false);
+      const nextCrossingMarking = inOncomingPass || isCrossCenterAnywhere || isOnShoulderApproach;
+      if (nextCrossingMarking && !v.markedCrossCounted) {
+        this.markingCrossCount += 1;
+        v.markedCrossCounted = true;
+      } else if (!nextCrossingMarking) {
+        v.markedCrossCounted = false;
       }
 
       decisions.push({
@@ -1397,35 +1597,59 @@ export class TrafficSimulation {
         physicalLeadSpeed,
         hasBlockingLeader,
         sameArmBlocked: blockingLeader?.originArm === v.originArm,
+        nearestRearGap,
+        nextCrossingMarking,
       });
     }
 
     const toRemove = new Set<number>();
-    for (const { v, nextSpeed, nextLat, nextLatVel, nextSteerAngle, physicalGap, physicalLeadSpeed, hasBlockingLeader, sameArmBlocked } of decisions) {
+    for (const {
+      v,
+      nextSpeed,
+      nextLat,
+      nextLatVel,
+      nextSteerAngle,
+      physicalGap,
+      physicalLeadSpeed,
+      hasBlockingLeader,
+      sameArmBlocked,
+      nearestRearGap,
+      nextCrossingMarking,
+    } of decisions) {
       v.speed = nextSpeed;
       v.lateralOffset = nextLat;
       v.lateralVelocity = nextLatVel;
       v.steerAngle = nextSteerAngle;
+      v.crossingMarking = nextCrossingMarking;
 
       const minBuffer = 0.05;
-      const rawAdvance = v.speed * dt;
-      const inBoxCreepOverride =
-        v.distanceAlongPath + v.length * 0.5 > v.stopLineDist + 0.05 &&
-        !v.hasExitedIntersection &&
-        (v.boxWaitTime ?? 0) >= 3.5 &&
-        physicalGap > 0.15 &&
-        !sameArmBlocked;
-      const maxAdvance =
-        hasBlockingLeader && Number.isFinite(physicalGap) && !inBoxCreepOverride
-          ? Math.max(0, physicalGap + Math.max(0, physicalLeadSpeed) * dt - minBuffer)
-          : rawAdvance;
-      v.distanceAlongPath += Math.min(rawAdvance, maxAdvance);
+      if (v.isReversing) {
+        const rawBack = Math.min(
+          v.speed * dt,
+          Number.isFinite(nearestRearGap) ? Math.max(0, nearestRearGap - 0.25) : v.speed * dt,
+          Math.max(0, v.distanceAlongPath - 0.5)
+        );
+        v.distanceAlongPath -= rawBack;
+      } else {
+        const rawAdvance = v.speed * dt;
+        const inBoxCreepOverride =
+          v.distanceAlongPath + v.length * 0.5 > v.stopLineDist + 0.05 &&
+          !v.hasExitedIntersection &&
+          (v.boxWaitTime ?? 0) >= 3.5 &&
+          physicalGap > 0.15 &&
+          !sameArmBlocked;
+        const maxAdvance =
+          hasBlockingLeader && Number.isFinite(physicalGap) && !inBoxCreepOverride
+            ? Math.max(0, physicalGap + Math.max(0, physicalLeadSpeed) * dt - minBuffer)
+            : rawAdvance;
+        v.distanceAlongPath += Math.min(rawAdvance, maxAdvance);
+      }
 
       if (v.speed < QUEUE_SPEED_THRESHOLD && v.distanceAlongPath < v.stopLineDist) v.waitingTime += dt;
       if (v.distanceAlongPath + v.length * 0.5 > v.stopLineDist + 0.05 && !v.hasExitedIntersection) {
-        if (v.speed < 0.5) {
+        if (!v.isReversing && v.speed < 0.5) {
           v.boxWaitTime = (v.boxWaitTime ?? 0) + dt;
-        } else if (v.speed >= 1.5) {
+        } else if (v.speed >= 1.5 || v.isReversing) {
           v.boxWaitTime = 0;
         }
       } else {
@@ -1448,7 +1672,13 @@ export class TrafficSimulation {
       if (v.distanceAlongPath >= v.totalPathLength) {
         toRemove.add(v.id);
       } else {
-        const pt = sampleWithLateralOffset(v.path, v.distanceAlongPath, v.lateralOffset, v.lateralVelocity, v.speed);
+        const pt = sampleWithLateralOffset(
+          v.path,
+          v.distanceAlongPath,
+          v.lateralOffset,
+          v.isReversing ? -v.lateralVelocity : v.lateralVelocity,
+          v.speed
+        );
         v.x = pt.x;
         v.y = pt.y;
         v.heading = pt.heading;
@@ -1562,6 +1792,12 @@ export class TrafficSimulation {
           laneChangeCooldown: _lcc,
           overtakeTargetId: _oti,
           overtakeTimer: _ot,
+          stuckTimer: _st,
+          reverseTimer: _rtm,
+          reverseCooldown: _rcd,
+          reverseSteerDir: _rsd,
+          frustration: _fr,
+          markedCrossCounted: _mcc,
           ...rest
         }) => rest
       ),
@@ -1583,6 +1819,8 @@ export class TrafficSimulation {
         oncomingOvertakeCount: this.oncomingOvertakeCount,
         yieldConflictCount: this.yieldConflictCount,
         yellowBoxHoldCount: this.yellowBoxHoldCount,
+        reverseRecoveryCount: this.reverseRecoveryCount,
+        markingCrossCount: this.markingCrossCount,
         environment: {
           timeMode: this.envState.timeMode,
           clockHour: this.envState.clockHour,

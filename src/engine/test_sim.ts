@@ -440,7 +440,7 @@ assert(wideOut > narrowOut, `Expected wide 4.0m lane (${wideOut}) > narrow 2.8m 
   const run2 = simA.getSnapshot();
   assert(
     run1.stats.totalExitedAllTime === run2.stats.totalExitedAllTime &&
-      run1.vehicles.length === run2.vehicles.length,
+    run1.vehicles.length === run2.vehicles.length,
     `[13a. Reset Determinism] Mismatch: run1=${run1.stats.totalExitedAllTime}/${run1.vehicles.length} vs run2=${run2.stats.totalExitedAllTime}/${run2.vehicles.length}`
   );
 

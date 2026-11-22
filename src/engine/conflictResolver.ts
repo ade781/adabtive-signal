@@ -10,6 +10,7 @@ export interface DisciplineParams {
   stopLineCreepMeters: number;
   redLightRunMult: number;
   overtakeBoldness: number;
+  markingCrossPropensity: number; // 0 (obeys solid lines) .. 1 (Indonesian-style marking crossing)
 }
 
 export function computeDisciplineParams(rawDiscipline?: number): DisciplineParams {
@@ -22,7 +23,36 @@ export function computeDisciplineParams(rawDiscipline?: number): DisciplineParam
     stopLineCreepMeters: d < 0.65 ? 0.7 + (0.65 - d) * 2.4 : 0,
     redLightRunMult: 1.55 - 1.25 * d,
     overtakeBoldness: 1.32 - 0.52 * d,
+    markingCrossPropensity: d < 0.85 ? Math.min(1, (0.85 - d) * 1.35 + 0.12) : 0,
   };
+}
+
+/**
+ * Deterministic priority negotiation when two vehicles deadlock face-to-face or inside the box.
+ * Returns 'yield' if `self` should back off / yield space to `blocker`, or 'proceed' if `self` holds priority.
+ */
+export function negotiateDeadlockPriority(self: SimVehicle, blocker: SimVehicle): 'yield' | 'proceed' {
+  const selfInOncoming = Boolean(self.overtakeState && self.overtakeState !== 'none') || Boolean(self.crossingMarking);
+  const blockerInOncoming = Boolean(blocker.overtakeState && blocker.overtakeState !== 'none') || Boolean(blocker.crossingMarking);
+  // Offender crossing centerline always yields to lawful traffic in its own lane
+  if (selfInOncoming && !blockerInOncoming) return 'yield';
+  if (!selfInOncoming && blockerInOncoming) return 'proceed';
+
+  // Smaller/nimbler vehicles yield to heavier vehicles (motor yields to car/heavy, car yields to heavy)
+  const classRank: Record<SimVehicle['vClass'], number> = { motor: 1, car: 2, heavy: 3 };
+  if (classRank[self.vClass] !== classRank[blocker.vClass]) {
+    return classRank[self.vClass] < classRank[blocker.vClass] ? 'yield' : 'proceed';
+  }
+
+  // Vehicle further from clearing the intersection yields to the one closer to exiting
+  const selfRem = self.exitLineDist - self.distanceAlongPath;
+  const blockerRem = blocker.exitLineDist - blocker.distanceAlongPath;
+  if (Math.abs(selfRem - blockerRem) > 0.8) {
+    return selfRem > blockerRem ? 'yield' : 'proceed';
+  }
+
+  // Deterministic tiebreaker so both never pick the same action simultaneously
+  return self.id > blocker.id ? 'yield' : 'proceed';
 }
 
 export interface ConflictYieldDecision {

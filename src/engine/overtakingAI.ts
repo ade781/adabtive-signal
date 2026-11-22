@@ -90,7 +90,7 @@ export function evaluateMobilLaneChange(
   const blockedBySlow =
     blockingLeader !== null &&
     nearestGap < 28.0 &&
-    blockingLeader.speed < desiredV - 1.15;
+    blockingLeader.speed < desiredV - 0.85;
 
   // Trigger 2: Proactive queue balancing when approaching red/slow queue (distToStop in [12m, 68m])
   const wantQueueBalance =
@@ -113,7 +113,7 @@ export function evaluateMobilLaneChange(
 
   const politeness = getPoliteness(v, discipline);
   const bSafe = (v.profile === 'aggressive' ? 4.4 : 3.5) * weather.comfortDecelMult;
-  const accelThreshold = (v.vClass === 'motor' ? 0.16 : 0.22) * (1.25 - 0.35 * discipline.overtakeBoldness);
+  const accelThreshold = (v.vClass === 'motor' ? 0.14 : 0.16) * (1.25 - 0.35 * discipline.overtakeBoldness);
 
   const curLeadSpeed = blockingLeader ? blockingLeader.speed : desiredV;
   const aCur = idmAccel(v, desiredV, nearestGap, curLeadSpeed, weather);
@@ -162,9 +162,9 @@ export function evaluateMobilLaneChange(
       const movingLeft = candCenter > curCenter;
       const inSweepCorridor = movingLeft
         ? (otherLat > curCenter + 0.15 && otherLat < candCenter + minLatClear) ||
-          (otherTargetLat > curCenter + 0.15 && otherTargetLat < candCenter + minLatClear)
+        (otherTargetLat > curCenter + 0.15 && otherTargetLat < candCenter + minLatClear)
         : (otherLat < curCenter - 0.15 && otherLat > candCenter - minLatClear) ||
-          (otherTargetLat < curCenter - 0.15 && otherTargetLat > candCenter - minLatClear);
+        (otherTargetLat < curCenter - 0.15 && otherTargetLat > candCenter - minLatClear);
 
       if (!inTargetLane && !inSweepCorridor) {
         continue;
@@ -397,24 +397,24 @@ export function updateOncomingOvertakeFSM(
     if (armGeom.def.length < 45) return result; // Need enough straight stretch to pass and return safely
     if (!isOnApproach && !isOnExit) return result;
     const distToStop = v.stopLineDist - v.distanceAlongPath;
-    // On approach legs, ONLY pull into the oncoming lane when our signal is GREEN with ample time left (>= 7.5s)
+    if (isOnApproach && distToStop < 38.0) return result;
+    // On approach legs, ONLY pull into the oncoming lane when our signal is GREEN with ample time left (>= 6.5s)
     // so the vehicle finishes passing & merges back cleanly BEFORE the light turns yellow/red!
-    if (isOnApproach && (light !== 'green' || phaseRemaining < 7.5)) return result;
-    if (isOnExit && (v.distanceAlongPath < v.exitLineDist + 14.0 || v.totalPathLength - v.distanceAlongPath < 28.0)) return result;
+    if (isOnApproach && (light !== 'green' || phaseRemaining < 6.5)) return result;
+    if (isOnExit && (v.distanceAlongPath < v.exitLineDist + 14.0 || v.totalPathLength - v.distanceAlongPath < 26.0)) return result;
     if (isOnApproach && v.laneIndex !== 0) return result; // Must be in innermost lane next to centerline
     if (isOnApproach && v.turn === 'left') return result; // Don't cross right into oncoming if turning left soon
     if ((v.overtakeTimer ?? 0) > 0) return result;
 
     if (!blockingLeader) return result;
     if (blockingLeader.originArm !== v.originArm && isOnApproach) return result;
-    if (nearestGap > 18.0 || nearestGap < 1.0) return result;
+    if (nearestGap > 18.0 || nearestGap < 0.8) return result;
 
     // Tier 2b: Allow bypassing a stationary mid-road blocker once stuckTimer >= 1.8s
     const isMidRoadStaticBypass =
       blockingLeader.speed < 1.2 &&
       (v.stuckTimer ?? 0) >= 1.8 &&
       (isOnExit || (isOnApproach && distToStop > 32.0 && light === 'green'));
-    if (isOnApproach && !isMidRoadStaticBypass && distToStop < 48.0) return result;
     if (isOnApproach && blockingLeader.speed < 1.2 && !isMidRoadStaticBypass) return result;
     const speedDeficit = desiredV - blockingLeader.speed;
     const baseDeficit = v.profile === 'aggressive' ? 1.8 : v.profile === 'normal' ? 2.5 : 3.6;

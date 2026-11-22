@@ -100,6 +100,8 @@ export interface Vehicle {
   isYielding?: boolean;
   holdingYellowBox?: boolean;
   brakingHard?: boolean;
+  isReversing?: boolean;
+  crossingMarking?: boolean;
 }
 
 export interface PhaseRecord {
@@ -170,6 +172,8 @@ export interface SimStats {
   oncomingOvertakeCount?: number;
   yieldConflictCount?: number;
   yellowBoxHoldCount?: number;
+  reverseRecoveryCount?: number;
+  markingCrossCount?: number;
   environment?: EnvironmentTelemetry;
   phaseHistory: PhaseRecord[];   // newest first
   cycleHistory: CycleRecord[];   // newest first

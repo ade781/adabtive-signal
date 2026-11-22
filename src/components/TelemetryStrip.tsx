@@ -127,13 +127,18 @@ export const TelemetryStrip: React.FC<TelemetryStripProps> = ({ stats, signal, a
             </span>
             <span className="text-[11px] text-slate-500">keluar</span>
           </div>
-          <div className="flex items-center gap-1 text-[9px] font-mono">
+          <div className="flex flex-wrap items-center justify-end gap-1 text-[9px] font-mono">
             <span className="px-1 py-0.5 rounded bg-sky-50 text-sky-700 border border-sky-200" title="Jumlah mobil menyalip / pindah lajur (MOBIL)">
               Salip:{stats.carOvertakeCount ?? 0}
             </span>
-            <span className="px-1 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200" title="Manuver menyalip memakan jalur lawan">
-              Lawan:{stats.oncomingOvertakeCount ?? 0}
+            <span className="px-1 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200" title="Manuver melewati marka tengah / bahu jalan">
+              Marka:{stats.markingCrossCount ?? 0}
             </span>
+            {(stats.reverseRecoveryCount ?? 0) > 0 && (
+              <span className="px-1 py-0.5 rounded bg-orange-50 text-orange-800 border border-orange-200" title="Manuver mundur pemecah kebuntuan">
+                Mundur:{stats.reverseRecoveryCount}
+              </span>
+            )}
           </div>
         </div>
         <MixBar

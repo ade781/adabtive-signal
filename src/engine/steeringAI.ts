@@ -64,14 +64,18 @@ export function computePurePursuitLateralStep(
   weather: WeatherPhysicsProfile
 ): { nextLatVel: number; stepLat: number; steerAngle: number } {
   const latDiff = v.targetLateralOffset - v.lateralOffset;
-  const returningFromOncoming = v.overtakeState === 'merge_back' || v.overtakeState === 'abort';
-  if (Math.abs(latDiff) <= 0.008 || (!returningFromOncoming && v.speed <= 0.25)) {
+  const returningFromOncoming =
+    v.overtakeState === 'merge_back' ||
+    v.overtakeState === 'abort' ||
+    ((Boolean(v.crossingMarking) || v.lateralOffset < -0.75) &&
+      Math.abs(v.targetLateralOffset) < Math.abs(v.lateralOffset) - 0.05);
+  if (Math.abs(latDiff) <= 0.008 || (!returningFromOncoming && !v.isReversing && v.speed <= 0.25)) {
     const damped = v.lateralVelocity * Math.max(0, 1 - 12 * dt);
     return { nextLatVel: Math.abs(damped) < 0.01 ? 0 : damped, stepLat: 0, steerAngle: 0 };
   }
 
-  // If forced to slow/stop while returning from the oncoming lane, still allow low-speed evasive slide back home
-  const effSpeed = returningFromOncoming ? Math.max(v.speed, 2.2) : v.speed;
+  // If forced to slow/stop while returning from the oncoming lane / crossing marking / reversing, allow low-speed evasive slide
+  const effSpeed = returningFromOncoming || v.isReversing ? Math.max(v.speed, 2.4) : v.speed;
   const wheelbase = WHEELBASE_BY_CLASS[v.vClass];
   // Dynamic lookahead scales with speed (Pure Pursuit law: Ld = k * v + L_base)
   const lookahead = Math.max(
@@ -157,4 +161,79 @@ export function predictSweptCollisionTTC(
   const willCollide = minDist < safeR && forwardAtT > 0.2 && forwardAtT < a.length * 0.5 + b.length * 0.5 + 3.0 && tStar > 0.04;
 
   return { willCollide, ttc: tStar, minDist };
+}
+
+/**
+ * Proactive 2D predictive collision scan for intersection box crossings, merges, and lane sweeps.
+ * Uses predictSweptCollisionTTC against nearby moving vehicles so vehicles decelerate smoothly
+ * before diagonal/lateral conflicts become physical bumper deadlocks.
+ */
+export function evaluatePredictiveConflict2D(
+  v: SimVehicle,
+  nearby: readonly SimVehicle[],
+  weather: WeatherPhysicsProfile
+): { brakeGap: number; speedCap: number } {
+  let brakeGap = Infinity;
+  let speedCap = Infinity;
+  if (v.speed < 1.1 || v.isReversing) return { brakeGap, speedCap };
+
+  const vNearOrInBox = v.distanceAlongPath > v.stopLineDist - 7.0 && !v.hasExitedIntersection;
+  const vManeuvering =
+    Boolean(v.laneChangeDir) ||
+    Boolean(v.overtakeState && v.overtakeState !== 'none') ||
+    Boolean(v.crossingMarking);
+
+  if (!vNearOrInBox && !vManeuvering) return { brakeGap, speedCap };
+
+  const cosV = Math.cos(v.heading);
+  const sinV = Math.sin(v.heading);
+  const horizon = Math.min(1.35, 0.75 + v.speed * 0.04) * weather.reactionMult;
+
+  for (let i = 0; i < nearby.length; i++) {
+    const other = nearby[i];
+    if (other.id === v.id || other.speed < 0.7 || other.isReversing) continue;
+
+    // Skip vehicles safely parallel in same-arm lanes unless one is changing lanes or crossing markings
+    const sameArm = other.originArm === v.originArm;
+    const otherManeuvering =
+      Boolean(other.laneChangeDir) ||
+      Boolean(other.overtakeState && other.overtakeState !== 'none') ||
+      Boolean(other.crossingMarking);
+    if (sameArm && !vManeuvering && !otherManeuvering && v.turn === other.turn) continue;
+
+    // Avoid cross-arm false triggers for vehicles still comfortably behind their red stop line
+    if (!sameArm && other.distanceAlongPath + other.length * 0.5 < other.stopLineDist - 1.5 && !other.isSlipLane) {
+      continue;
+    }
+
+    const dx = other.x - v.x;
+    const dy = other.y - v.y;
+    const fwd = dx * cosV + dy * sinV;
+    if (fwd < -0.5 || fwd > 18.0) continue;
+
+    const dot = cosV * Math.cos(other.heading) + sinV * Math.sin(other.heading);
+    // For non-merging, non-maneuvering opposite streams, oncoming FSM/defensive yield already handles it
+    if (dot < -0.55 && !vManeuvering && !otherManeuvering) continue;
+
+    const pred = predictSweptCollisionTTC(v, other, horizon);
+    if (!pred.willCollide || pred.ttc > 1.1) continue;
+
+    // Priority tiebreak: straight > right/left, non-maneuvering > maneuvering, closer to exit > farther
+    const vPriorityBoost = (v.turn === 'straight' ? 2 : 0) + (vManeuvering ? -1 : 1);
+    const oPriorityBoost = (other.turn === 'straight' ? 2 : 0) + (otherManeuvering ? -1 : 1);
+    if (vPriorityBoost > oPriorityBoost && other.speed < v.speed * 1.1) continue;
+    if (vPriorityBoost === oPriorityBoost) {
+      const vRem = v.exitLineDist - v.distanceAlongPath;
+      const oRem = other.exitLineDist - other.distanceAlongPath;
+      if (vRem < oRem - 1.0) continue;
+    }
+
+    const estGap = Math.max(0.3, fwd - (v.length + other.length) * 0.5 - 0.35);
+    if (estGap < brakeGap) {
+      brakeGap = estGap;
+      speedCap = Math.min(speedCap, Math.max(1.8, pred.ttc * 4.5));
+    }
+  }
+
+  return { brakeGap, speedCap };
 }
