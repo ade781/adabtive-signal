@@ -22,12 +22,16 @@ import { cloneTopology } from '../engine/samplingBlueprints';
 import { SignalPhasePreset, TimeOfDayMode, WeatherCondition } from '../engine/topologyTypes';
 import { ArchetypeStat, ArmId, DriverArchetype, DriverProfileMix, SimConfig } from '../engine/types';
 
+export type InspectorTabId = 'geometry' | 'traffic' | 'signal' | 'environment';
+
 interface ParameterInspectorProps {
   config: SimConfig;
   onChange: (partial: Partial<SimConfig>) => void;
   onResetDefaults: () => void;
   onOpenInDraw?: () => void;
   driverStats?: Record<DriverArchetype, ArchetypeStat>;
+  variant?: 'sidebar' | 'settings';
+  forcedTab?: InspectorTabId;
 }
 
 const ARCHETYPE_BAR_STYLE: Record<
@@ -53,7 +57,7 @@ function isSameDriverMix(a: DriverProfileMix, b: DriverProfileMix): boolean {
   );
 }
 
-type TabId = 'geometry' | 'traffic' | 'signal' | 'environment';
+type TabId = InspectorTabId;
 
 const DEFAULT_ARM_WEIGHTS: Record<ArmId, number> = {
   north: 1,
@@ -144,8 +148,12 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
   onResetDefaults,
   onOpenInDraw,
   driverStats,
+  variant = 'sidebar',
+  forcedTab,
 }) => {
-  const [activeTab, setActiveTab] = useState<TabId>('geometry');
+  const [internalTab, setInternalTab] = useState<TabId>('geometry');
+  const activeTab = forcedTab ?? internalTab;
+  const setActiveTab = setInternalTab;
   const tabsId = useId();
   const tabPanelRef = useRef<HTMLDivElement | null>(null);
   const tabRefs = useRef<Record<TabId, HTMLButtonElement | null>>({
@@ -351,54 +359,66 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
     onChange({ driverProfileMix: nextMix });
   };
 
+  const isSettingsMode = variant === 'settings';
+
   return (
-    <aside className="w-full lg:w-[355px] lg:min-h-0 bg-white border border-slate-200 rounded-lg flex flex-col shrink-0 overflow-hidden">
+    <aside
+      className={
+        isSettingsMode
+          ? 'w-full bg-white border border-slate-200 rounded-lg flex flex-col overflow-hidden'
+          : 'w-full lg:w-[355px] lg:min-h-0 bg-white border border-slate-200 rounded-lg flex flex-col shrink-0 overflow-hidden'
+      }
+    >
       {/* Header */}
-      <div className="px-4 py-2.5 border-b border-slate-200 flex items-center justify-between">
-        <span className="text-xs font-semibold uppercase tracking-wider text-slate-700">
-          Parameter Simulasi
-        </span>
-        <button
-          type="button"
-          onClick={onResetDefaults}
-          className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-2 py-0.5 rounded bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200 transition-colors duration-100"
-          title="Kembalikan parameter ke nilai awal"
-        >
-          <RotateCcw className="w-2.5 h-2.5" />
-          Default
-        </button>
-      </div>
+      {!isSettingsMode && (
+        <div className="px-4 py-2.5 border-b border-slate-200 flex items-center justify-between">
+          <span className="text-xs font-semibold uppercase tracking-wider text-slate-700">
+            Parameter Simulasi
+          </span>
+          <button
+            type="button"
+            onClick={onResetDefaults}
+            className="inline-flex items-center gap-1 text-[10px] font-mono font-medium px-2 py-0.5 rounded bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200 transition-colors duration-100"
+            title="Kembalikan parameter ke nilai awal"
+          >
+            <RotateCcw className="w-2.5 h-2.5" />
+            Default
+          </button>
+        </div>
+      )}
 
       {/* 4 Tabs */}
-      <div role="tablist" aria-label="Kategori Parameter" className="grid grid-cols-4 border-b border-slate-200 bg-slate-50">
-        {TABS.map((tab, idx) => {
-          const Icon = tab.icon;
-          const selected = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              ref={(el) => {
-                tabRefs.current[tab.id] = el;
-              }}
-              id={`${tabsId}-tab-${tab.id}`}
-              type="button"
-              role="tab"
-              aria-selected={selected}
-              aria-controls={`${tabsId}-panel-${tab.id}`}
-              tabIndex={selected ? 0 : -1}
-              onClick={() => setActiveTab(tab.id)}
-              onKeyDown={(e) => handleTabKeyDown(e, idx)}
-              className={`py-2 px-1 text-[11px] font-medium flex flex-col items-center justify-center gap-0.5 border-b-2 transition-colors duration-100 ${selected
-                  ? 'border-slate-900 text-slate-900 bg-white'
-                  : 'border-transparent text-slate-500 hover:text-slate-800'
-                }`}
-            >
-              <Icon className="w-3.5 h-3.5" />
-              <span>{tab.label}</span>
-            </button>
-          );
-        })}
-      </div>
+      {!forcedTab && (
+        <div role="tablist" aria-label="Kategori Parameter" className="grid grid-cols-4 border-b border-slate-200 bg-slate-50">
+          {TABS.map((tab, idx) => {
+            const Icon = tab.icon;
+            const selected = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                ref={(el) => {
+                  tabRefs.current[tab.id] = el;
+                }}
+                id={`${tabsId}-tab-${tab.id}`}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                aria-controls={`${tabsId}-panel-${tab.id}`}
+                tabIndex={selected ? 0 : -1}
+                onClick={() => setActiveTab(tab.id)}
+                onKeyDown={(e) => handleTabKeyDown(e, idx)}
+                className={`py-2 px-1 text-[11px] font-medium flex flex-col items-center justify-center gap-0.5 border-b-2 transition-colors duration-100 ${selected
+                    ? 'border-slate-900 text-slate-900 bg-white'
+                    : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+              >
+                <Icon className="w-3.5 h-3.5" />
+                <span>{tab.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* Tab Body */}
       <div
@@ -406,7 +426,7 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
         id={`${tabsId}-panel-${activeTab}`}
         role="tabpanel"
         aria-labelledby={`${tabsId}-tab-${activeTab}`}
-        className="p-3.5 space-y-4 overflow-y-auto flex-1"
+        className={isSettingsMode ? 'p-5 space-y-4' : 'p-3.5 space-y-4 overflow-y-auto flex-1'}
       >
         {activeTab === 'geometry' && (
           <>

@@ -1,8 +1,6 @@
-import React, { useState } from 'react';
-import { ChevronDown, ChevronUp, X } from 'lucide-react';
-import { ARCHETYPE_ORDER, ARCHETYPE_TRAITS } from '../engine/driverIntelligence';
+import React from 'react';
 import { CompiledTopology } from '../engine/topologyTypes';
-import { ArmId, DriverArchetype, SignalState, SimStats } from '../engine/types';
+import { ArmId, SignalState, SimStats } from '../engine/types';
 import { evaluateLos } from '../utils/trafficMetrics';
 
 interface TelemetryStripProps {
@@ -10,57 +8,7 @@ interface TelemetryStripProps {
   signal: SignalState;
   armNames?: Partial<Record<ArmId, string>>;
   compiledTopology?: CompiledTopology;
-  focusedArchetype?: DriverArchetype | null;
-  onSelectArchetype?: (arch: DriverArchetype | null) => void;
 }
-
-const ARCHETYPE_CHIP_STYLES: Record<
-  DriverArchetype,
-  { idle: string; active: string; dot: string; activeBadge: string; activeBadgeSelected: string }
-> = {
-  defensive: {
-    idle: 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100',
-    active: 'bg-emerald-700 text-white border-emerald-800 shadow-sm',
-    dot: 'bg-emerald-500',
-    activeBadge: 'bg-white text-emerald-800 border-emerald-200',
-    activeBadgeSelected: 'bg-emerald-800 text-emerald-50 border-emerald-600',
-  },
-  commuter: {
-    idle: 'bg-sky-50 text-sky-800 border-sky-200 hover:bg-sky-100',
-    active: 'bg-sky-700 text-white border-sky-800 shadow-sm',
-    dot: 'bg-sky-500',
-    activeBadge: 'bg-white text-sky-800 border-sky-200',
-    activeBadgeSelected: 'bg-sky-800 text-sky-50 border-sky-600',
-  },
-  hurried: {
-    idle: 'bg-rose-50 text-rose-800 border-rose-200 hover:bg-rose-100',
-    active: 'bg-rose-700 text-white border-rose-800 shadow-sm',
-    dot: 'bg-rose-500',
-    activeBadge: 'bg-white text-rose-800 border-rose-200',
-    activeBadgeSelected: 'bg-rose-800 text-rose-50 border-rose-600',
-  },
-  courier: {
-    idle: 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100',
-    active: 'bg-amber-600 text-white border-amber-700 shadow-sm',
-    dot: 'bg-amber-500',
-    activeBadge: 'bg-white text-amber-800 border-amber-200',
-    activeBadgeSelected: 'bg-amber-700 text-amber-50 border-amber-500',
-  },
-  transit: {
-    idle: 'bg-indigo-50 text-indigo-800 border-indigo-200 hover:bg-indigo-100',
-    active: 'bg-indigo-700 text-white border-indigo-800 shadow-sm',
-    dot: 'bg-indigo-500',
-    activeBadge: 'bg-white text-indigo-800 border-indigo-200',
-    activeBadgeSelected: 'bg-indigo-800 text-indigo-50 border-indigo-600',
-  },
-  logistics: {
-    idle: 'bg-slate-100 text-slate-800 border-slate-300 hover:bg-slate-200',
-    active: 'bg-slate-800 text-white border-slate-900 shadow-sm',
-    dot: 'bg-slate-500',
-    activeBadge: 'bg-white text-slate-700 border-slate-300',
-    activeBadgeSelected: 'bg-slate-900 text-slate-100 border-slate-700',
-  },
-};
 
 const LOS_BADGE_CLASS: Record<string, string> = {
   A: 'bg-emerald-50 text-emerald-700 border-emerald-200',
@@ -103,10 +51,7 @@ export const TelemetryStrip: React.FC<TelemetryStripProps> = ({
   signal,
   armNames,
   compiledTopology,
-  focusedArchetype = null,
-  onSelectArchetype,
 }) => {
-  const [showDetailTable, setShowDetailTable] = useState(false);
   const hasExitedData = stats.totalExitedAllTime > 0;
   const losEval = evaluateLos(stats.avgWaitTime, stats.totalExitedAllTime);
   const los = {
@@ -345,168 +290,6 @@ export const TelemetryStrip: React.FC<TelemetryStripProps> = ({
           )}
         </div>
       </section>
-      {stats.driverStats && (
-        <div className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 flex flex-col gap-2 text-[10px] font-mono tabular-nums">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap items-center gap-1.5 min-w-0">
-              <span className="font-sans text-[10px] font-semibold uppercase tracking-wider text-slate-500 shrink-0">
-                Profil Pengendara
-              </span>
-              {focusedArchetype && onSelectArchetype && (
-                <button
-                  type="button"
-                  onClick={() => onSelectArchetype(null)}
-                  className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200 hover:bg-slate-200 font-sans text-[10px] font-medium transition-colors duration-100"
-                  title="Hapus filter sorotan tipe pengendara"
-                >
-                  <X className="w-2.5 h-2.5" />
-                  Reset
-                </button>
-              )}
-              <div
-                role="group"
-                aria-label="Filter sorotan tipe pengendara"
-                className="flex flex-wrap items-center gap-1.5"
-              >
-                {ARCHETYPE_ORDER.map((arch) => {
-                  const st = stats.driverStats?.[arch];
-                  if (!st) return null;
-                  const meta = ARCHETYPE_TRAITS[arch];
-                  const style = ARCHETYPE_CHIP_STYLES[arch];
-                  const isFocused = focusedArchetype === arch;
-                  const isDimmed = focusedArchetype !== null && !isFocused;
-                  return (
-                    <button
-                      key={arch}
-                      type="button"
-                      aria-pressed={isFocused}
-                      onClick={() => onSelectArchetype?.(isFocused ? null : arch)}
-                      title={`${meta.label}: ${st.activeCount} aktif · ${st.exited} keluar · tunggu ${st.avgWait.toFixed(1)}s · salip ${st.overtakes} · marka ${st.markingCrosses} (Klik untuk sorot di peta)`}
-                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border transition-colors duration-100 ${
-                        isFocused ? style.active : style.idle
-                      } ${isDimmed ? 'opacity-50 hover:opacity-100' : ''}`}
-                    >
-                      <span
-                        className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                          isFocused ? 'bg-white' : style.dot
-                        }`}
-                      />
-                      <strong>{meta.shortBadge}</strong>
-                      <span
-                        className={`px-1 py-px rounded border text-[9px] leading-none ${
-                          isFocused ? style.activeBadgeSelected : style.activeBadge
-                        }`}
-                      >
-                        {st.activeCount} aktif
-                      </span>
-                      <span>{st.exited}</span>
-                      <span className="opacity-80">({st.avgWait.toFixed(1)}s)</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <button
-              type="button"
-              aria-expanded={showDetailTable}
-              onClick={() => setShowDetailTable((v) => !v)}
-              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border font-sans text-[10px] font-medium shrink-0 transition-colors duration-100 ${
-                showDetailTable
-                  ? 'bg-slate-900 text-white border-slate-900'
-                  : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-              }`}
-            >
-              <span>Detail 6 Tipe</span>
-              {showDetailTable ? (
-                <ChevronUp className="w-3 h-3" />
-              ) : (
-                <ChevronDown className="w-3 h-3" />
-              )}
-            </button>
-          </div>
-
-          {showDetailTable && (
-            <div className="border-t border-slate-200 pt-2 overflow-x-auto">
-              <table className="w-full text-left border-collapse text-[10px] font-mono tabular-nums">
-                <thead>
-                  <tr className="border-b border-slate-200 text-slate-500 font-sans text-[9px] uppercase tracking-wider">
-                    <th className="py-1 pr-2 font-semibold">Arketipe</th>
-                    <th className="py-1 px-1.5 text-right font-semibold">Aktif</th>
-                    <th className="py-1 px-1.5 text-right font-semibold">Keluar</th>
-                    <th className="py-1 px-1.5 text-right font-semibold">Tunggu</th>
-                    <th className="py-1 px-1.5 text-right font-semibold">Kecepatan</th>
-                    <th className="py-1 px-1.5 text-right font-semibold">Salip</th>
-                    <th className="py-1 px-1.5 text-right font-semibold">Marka</th>
-                    <th className="py-1 px-1.5 text-right font-semibold">Rem Keras</th>
-                    <th className="py-1 px-1.5 text-right font-semibold">Yield / H-Shake</th>
-                    <th className="py-1 pl-1.5 text-right font-semibold">Frustrasi</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {ARCHETYPE_ORDER.map((arch) => {
-                    const st = stats.driverStats?.[arch];
-                    if (!st) return null;
-                    const meta = ARCHETYPE_TRAITS[arch];
-                    const style = ARCHETYPE_CHIP_STYLES[arch];
-                    const isFocused = focusedArchetype === arch;
-                    const avgKmh = ((st.avgSpeed ?? 0) * 3.6).toFixed(0);
-                    const frustPct = Math.round((st.avgFrustration ?? 0) * 100);
-                    return (
-                      <tr
-                        key={arch}
-                        onClick={() => onSelectArchetype?.(isFocused ? null : arch)}
-                        className={`cursor-pointer transition-colors duration-100 ${
-                          isFocused ? 'bg-slate-100' : 'hover:bg-slate-50'
-                        }`}
-                      >
-                        <td className="py-1 pr-2 whitespace-nowrap">
-                          <span className="inline-flex items-center gap-1.5">
-                            <span className={`w-2 h-2 rounded-full shrink-0 ${style.dot}`} />
-                            <strong className="text-slate-900">{meta.shortBadge}</strong>
-                            <span className="font-sans text-slate-600">{meta.label}</span>
-                          </span>
-                        </td>
-                        <td className="py-1 px-1.5 text-right font-semibold text-slate-900">
-                          {st.activeCount}
-                        </td>
-                        <td className="py-1 px-1.5 text-right text-slate-700">{st.exited}</td>
-                        <td className="py-1 px-1.5 text-right text-slate-700">
-                          {st.avgWait.toFixed(1)}s
-                        </td>
-                        <td className="py-1 px-1.5 text-right text-slate-700">
-                          {avgKmh} km/h
-                        </td>
-                        <td className="py-1 px-1.5 text-right text-slate-700">{st.overtakes}</td>
-                        <td className="py-1 px-1.5 text-right text-slate-700">
-                          {st.markingCrosses}
-                        </td>
-                        <td className="py-1 px-1.5 text-right text-slate-700">
-                          {st.hardBrakes ?? 0}
-                        </td>
-                        <td className="py-1 px-1.5 text-right text-slate-700">
-                          {st.yieldsGiven ?? 0} / {st.handshakes ?? 0}
-                        </td>
-                        <td
-                          className={`py-1 pl-1.5 text-right font-semibold ${
-                            frustPct >= 60
-                              ? 'text-rose-700'
-                              : frustPct >= 35
-                              ? 'text-amber-700'
-                              : 'text-slate-700'
-                          }`}
-                        >
-                          {frustPct}%
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 };

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { IntersectionCanvas } from './canvas/IntersectionCanvas';
-import { ParameterInspector } from './components/ParameterInspector';
+import { QuickSidebar } from './components/QuickSidebar';
+import { SettingsPage } from './components/SettingsPage';
 import { TelemetryStrip } from './components/TelemetryStrip';
 import { TopBar } from './components/TopBar';
 import { DrawWorkspace } from './draw/DrawWorkspace';
@@ -13,12 +14,11 @@ import { simConfigToTopology } from './engine/topologyBuilder';
 import { IntersectionTopology } from './engine/topologyTypes';
 import { DriverArchetype, MapOverlayLayers, SimConfig, SimSnapshot } from './engine/types';
 
-export type AppView = 'simulator' | 'draw';
+export type AppView = 'simulator' | 'draw' | 'settings';
 
 const UI_THROTTLE_MS = 80;
 
 const MemoTopBar = React.memo(TopBar);
-const MemoParameterInspector = React.memo(ParameterInspector);
 const MemoTelemetryStrip = React.memo(TelemetryStrip);
 
 interface ErrorBoundaryState {
@@ -233,8 +233,6 @@ function AppContent() {
   const handleSelectVehicle = useCallback((id: number | null) => {
     setSelectedVehicleId(id);
   }, []);
-  const handleZoomIn = useCallback(() => setZoom((z) => Math.min(2.2, +(z + 0.1).toFixed(1))), []);
-  const handleZoomOut = useCallback(() => setZoom((z) => Math.max(0.6, +(z - 0.1).toFixed(1))), []);
   const handleZoomReset = useCallback(() => setZoom(1), []);
   const handleZoomChange = useCallback((nextZoom: number) => {
     if (!Number.isFinite(nextZoom)) return;
@@ -342,16 +340,6 @@ function AppContent() {
         phaseDuration={phaseDuration}
         simTime={uiSnapshot.stats.simTime}
         environment={uiSnapshot.stats.environment}
-        zoom={zoom}
-        showGrid={showGrid}
-        onToggleGrid={handleToggleGrid}
-        overlayLayers={overlayLayers}
-        onChangeOverlayLayers={handleChangeOverlayLayers}
-        focusedArchetype={focusedArchetype}
-        onSelectArchetype={handleSelectArchetype}
-        onZoomIn={handleZoomIn}
-        onZoomOut={handleZoomOut}
-        onZoomReset={handleZoomReset}
       />
 
       <div className={activeView === 'draw' ? 'flex-1 min-h-0 flex flex-col' : 'hidden'}>
@@ -361,10 +349,33 @@ function AppContent() {
           onSimulateTopology={handleSimulateTopology}
         />
       </div>
-      {activeView !== 'draw' && (
+
+      {activeView === 'settings' && (
+        <SettingsPage
+          config={inspectorConfig}
+          onChangeConfig={handleConfigChange}
+          onResetDefaults={handleResetDefaults}
+          onOpenInDraw={handleOpenCurrentInDraw}
+          onBackToSimulator={() => setActiveView('simulator')}
+          onDownloadReport={handleDownloadReport}
+          isExporting={isExporting}
+          stats={uiSnapshot.stats}
+          zoom={zoom}
+          onZoomChange={handleZoomChange}
+          onZoomReset={handleZoomReset}
+          showGrid={showGrid}
+          onToggleGrid={handleToggleGrid}
+          overlayLayers={overlayLayers}
+          onChangeOverlayLayers={handleChangeOverlayLayers}
+          focusedArchetype={focusedArchetype}
+          onSelectArchetype={handleSelectArchetype}
+        />
+      )}
+
+      {activeView === 'simulator' && (
         <main className="flex-1 min-h-0 p-2.5 flex flex-col gap-2.5 overflow-y-auto">
           <div className="flex-1 min-h-0 flex flex-col lg:flex-row gap-2.5">
-            <div className="flex-1 min-h-[340px] min-w-0">
+            <div className="flex-1 min-h-[360px] min-w-0">
               <IntersectionCanvas
                 snapshotRef={snapshotRef}
                 uiSnapshot={uiSnapshot}
@@ -382,12 +393,12 @@ function AppContent() {
                 onSelectVehicle={handleSelectVehicle}
               />
             </div>
-            <MemoParameterInspector
+            <QuickSidebar
               config={inspectorConfig}
               onChange={handleConfigChange}
-              onResetDefaults={handleResetDefaults}
-              onOpenInDraw={handleOpenCurrentInDraw}
-              driverStats={uiSnapshot.stats.driverStats}
+              overlayLayers={overlayLayers}
+              onChangeOverlayLayers={handleChangeOverlayLayers}
+              onOpenSettings={() => setActiveView('settings')}
             />
           </div>
 
@@ -396,8 +407,6 @@ function AppContent() {
             signal={uiSnapshot.signal}
             armNames={inspectorConfig.armNames}
             compiledTopology={compiledTopology}
-            focusedArchetype={focusedArchetype}
-            onSelectArchetype={handleSelectArchetype}
           />
         </main>
       )}
