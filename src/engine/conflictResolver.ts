@@ -71,6 +71,23 @@ const CRITICAL_GAP_BASE: Record<SimVehicle['vClass'], number> = {
 };
 
 /**
+ * Projects opponent arrival time over distance `d` using current acceleration intent
+ * (`prevAccel` and `brakingHard`) and harmonic/average speed between current and projected velocity.
+ */
+function estimateKinematicArrivalTime(d: number, oppSpeed: number, other: SimVehicle): number {
+  const dist = Math.max(0, d);
+  const oppAccel = other.brakingHard
+    ? Math.min(-1.2, other.prevAccel ?? -1.8)
+    : Math.max(-2.5, Math.min(2.0, other.prevAccel ?? 0));
+  const vProj = Math.max(
+    1.2,
+    Math.sqrt(Math.max(0, oppSpeed * oppSpeed + 2 * oppAccel * Math.min(dist, 18)))
+  );
+  const avgSpeed = Math.max(1.2, 0.5 * (oppSpeed + vProj));
+  return dist / avgSpeed;
+}
+
+/**
  * Evaluates right-of-way priority conflicts (No. 2 — straight vehicles take priority over crossing turns!)
  * including:
  * - Permissive right-turns yielding to oncoming straight traffic (2-phase simultaneous signals) with in-box staging
@@ -91,13 +108,19 @@ export function evaluatePriorityConflictYield(
   const pathKey = v.pathKey;
   if (!pathKey) return none;
 
+  const frustration = v.frustration ?? 0;
+
   // 1. Pre-intersection U-Turn yielding to oncoming exit stream on the same physical arm
   if (v.isUTurn && v.distanceAlongPath < v.stopLineDist + 2.5) {
     const frontBumper = v.distanceAlongPath + v.length * 0.5;
     const distToTurn = v.stopLineDist - frontBumper;
     if (distToTurn > -1.5 && distToTurn < 24) {
       const nearby = spatialHash.queryRadius(v.x, v.y, Math.min(48, weather.sightDistance), queryBuf);
-      const critGap = CRITICAL_GAP_BASE[v.vClass] * weather.gapAcceptanceMult * (0.9 + 0.25 * discipline.discipline);
+      const frustGapMult = 1 - Math.min(0.24, frustration * 0.24);
+      const critGap = Math.max(
+        1.65,
+        CRITICAL_GAP_BASE[v.vClass] * weather.gapAcceptanceMult * (0.9 + 0.25 * discipline.discipline) * frustGapMult
+      );
       const originArmGeom = topology.armsById[v.originArm];
       const oneLaneOpp = (originArmGeom?.def.inLanes ?? 1) <= 1;
       for (const other of nearby) {
@@ -111,8 +134,9 @@ export function evaluatePriorityConflictYield(
         const dy = v.y - other.y;
         const forwardToMe = dx * Math.cos(other.heading) + dy * Math.sin(other.heading);
         if (forwardToMe < -other.length) continue; // Already passed us
-        const ttc = forwardToMe / Math.max(2.0, other.speed);
-        if (ttc < critGap || forwardToMe < 10.0) {
+        const oppSpeed = other.brakingHard ? Math.max(1.2, other.speed) : Math.max(2.0, other.speed);
+        const tOppArrive = estimateKinematicArrivalTime(forwardToMe, oppSpeed, other);
+        if (tOppArrive < critGap || forwardToMe < 9.0) {
           return {
             shouldYield: true,
             yieldGap: Math.max(0.15, distToTurn),
@@ -135,7 +159,11 @@ export function evaluatePriorityConflictYield(
         const mergePt = v.compiledPath?.sample(v.exitLineDist);
         if (mergePt) {
           const nearby = spatialHash.queryRadius(mergePt.x, mergePt.y, Math.min(42, weather.sightDistance), queryBuf);
-          const critGap = CRITICAL_GAP_BASE[v.vClass] * 0.72 * weather.gapAcceptanceMult;
+          const frustGapMult = 1 - Math.min(0.24, frustration * 0.24);
+          const critGap = Math.max(
+            1.45,
+            CRITICAL_GAP_BASE[v.vClass] * 0.72 * weather.gapAcceptanceMult * frustGapMult
+          );
           const destGeom = topology.armsById[v.destArm];
           const destOuterLane = Math.max(0, (destGeom?.def.outLanes ?? 1) - 1);
           for (const other of nearby) {
@@ -150,8 +178,9 @@ export function evaluatePriorityConflictYield(
             const mdy = mergePt.y - other.y;
             const otherDistToMerge = mdx * Math.cos(other.heading) + mdy * Math.sin(other.heading);
             if (otherDistToMerge < -(other.length * 0.5 + 2.0) || otherDistToMerge > 34) continue;
-            const ttc = Math.max(0, otherDistToMerge) / Math.max(2.0, other.speed);
-            if (ttc < critGap && (other.speed > 0.8 || Math.abs(otherDistToMerge) < 8.0)) {
+            const oppSpeed = other.brakingHard ? Math.max(1.2, other.speed) : Math.max(2.0, other.speed);
+            const tOppArrive = estimateKinematicArrivalTime(otherDistToMerge, oppSpeed, other);
+            if (tOppArrive < critGap && (other.speed > 0.8 || Math.abs(otherDistToMerge) < 8.0)) {
               return {
                 shouldYield: true,
                 yieldGap: Math.max(0.15, distToMerge),
@@ -167,24 +196,36 @@ export function evaluatePriorityConflictYield(
   }
 
   const frontBumper = v.distanceAlongPath + v.length * 0.5;
-  // 3. Cooperative Courtesy Yield: if a conflicting cross-arm vehicle is trapped in the box (>= 2.2s),
-  // hold approaching vehicles behind the stop line briefly so the box can clear (only if comfortably before stop line).
+  // 3. Cooperative Courtesy Yield: if a conflicting cross-arm vehicle is trapped in the box (>= 2.2s,
+  // or >= 1.6s near the center conflict zone for disciplined drivers), hold approaching vehicles
+  // behind the stop line briefly so the box can clear.
   const distToStopLine = v.stopLineDist - frontBumper;
-  if (distToStopLine > 1.5 && distToStopLine < 12.0 && !v.isSlipLane && !v.isUTurn) {
-    const nearbyBox = spatialHash.queryRadius(v.x, v.y, 26, queryBuf);
+  const canBaseCourtesy = distToStopLine > 1.5 && distToStopLine < 12.0;
+  const canDisciplinedCourtesy =
+    discipline.discipline >= 0.6 && distToStopLine > 2.2 && distToStopLine < 13.0;
+  if ((canBaseCourtesy || canDisciplinedCourtesy) && !v.isSlipLane && !v.isUTurn) {
+    const nearbyBox = spatialHash.queryRadius(v.x, v.y, 42, queryBuf);
     for (const other of nearbyBox) {
       if (other.id === v.id || other.originArm === v.originArm) continue;
+      if (other.isSlipLane || other.isUTurn) continue;
       if (
         !other.hasExitedIntersection &&
-        other.distanceAlongPath + other.length * 0.5 > other.stopLineDist + 0.5 &&
-        (other.boxWaitTime ?? 0) >= 2.2
+        other.distanceAlongPath + other.length * 0.5 > other.stopLineDist + 0.5
       ) {
-        return {
-          shouldYield: true,
-          yieldGap: Math.max(0.15, distToStopLine),
-          speedCap: 4.5,
-          reason: 'yellow-box',
-        };
+        const wait = other.boxWaitTime ?? 0;
+        const standardTrapped = canBaseCourtesy && wait >= 2.2;
+        const disciplinedTrapped =
+          canDisciplinedCourtesy &&
+          wait >= 1.6 &&
+          other.distanceAlongPath < other.exitLineDist - 1.5;
+        if (standardTrapped || disciplinedTrapped) {
+          return {
+            shouldYield: true,
+            yieldGap: Math.max(0.15, distToStopLine),
+            speedCap: 4.5,
+            reason: 'yellow-box',
+          };
+        }
       }
     }
   }
@@ -201,11 +242,20 @@ export function evaluatePriorityConflictYield(
 
   const nearby = spatialHash.queryRadius(v.x, v.y, Math.min(54, weather.sightDistance), queryBuf);
   const profileScale = v.profile === 'aggressive' ? 0.82 : v.profile === 'cautious' ? 1.18 : 1.0;
-  const critGap =
+  const frustGapMult = 1 - Math.min(0.24, frustration * 0.24);
+  const critGap = Math.max(
+    1.55,
     CRITICAL_GAP_BASE[v.vClass] *
-    profileScale *
-    weather.gapAcceptanceMult *
-    (0.85 + 0.3 * discipline.discipline);
+      profileScale *
+      weather.gapAcceptanceMult *
+      (0.85 + 0.3 * discipline.discipline) *
+      frustGapMult
+  );
+  // In-box creeping: waiting right-turners inch carefully toward turning arc while watching oncoming stream
+  const creepOffset =
+    boxWait > 0.8 || frustration > 0.25
+      ? Math.min(1.35, boxWait * 0.24 + frustration * 0.75) * (0.6 + 0.4 * (1 - discipline.discipline))
+      : 0;
 
   let closestYieldGap = Infinity;
 
@@ -219,9 +269,8 @@ export function evaluatePriorityConflictYield(
     const otherPathKey = amA ? cz.pathKeyB : cz.pathKeyA;
     const otherConflictS = amA ? cz.sB : cz.sA;
 
-    // Stage just at the box entry lip (or safely before the conflict point) so waiting right-turners
-    // NEVER park deep inside the opposing straight corridor and deadlock with oncoming traffic!
-    const stagingS = Math.min(myConflictS - 2.6, v.stopLineDist + 0.6);
+    // Stage near box lip (creeping carefully toward the turning arc when waiting), never entering the opposing straight corridor
+    const stagingS = Math.min(myConflictS - 2.15, v.stopLineDist + 0.6 + creepOffset);
     if (v.distanceAlongPath > stagingS + 1.5) continue;
     const gapToStaging = stagingS - frontBumper;
     if (gapToStaging < -0.6 || gapToStaging > 28.0) continue; // Already past staging or too far away
@@ -244,12 +293,18 @@ export function evaluatePriorityConflictYield(
       if (other.speed < 0.4 && distOtherToConflict > 6.0) continue;
       if (boxWait > 3.2 && other.speed < 0.35 && distOtherToConflict > 2.5) continue;
 
-      // Estimate time for oncoming straight vehicle to reach conflict vs time for us to clear it
-      const oppSpeed = Math.max(other.speed, distOtherToConflict < 14 ? 4.5 : 2.5);
-      const tOppArrive = Math.max(0, distOtherToConflict) / oppSpeed;
-      const tSelfClear = (Math.max(0, myConflictS - v.distanceAlongPath) + v.length + 2.5) / Math.max(3.8, v.speed + 2.2);
+      // Project opponent arrival using current velocity and kinematic acceleration intent
+      const baseOppMin =
+        other.brakingHard || (other.speed < 2.6 && distOtherToConflict > 8.0)
+          ? Math.max(1.3, other.speed * 0.95)
+          : distOtherToConflict < 14
+            ? 4.2
+            : 2.5;
+      const oppSpeed = Math.max(other.speed, baseOppMin);
+      const tOppArrive = estimateKinematicArrivalTime(distOtherToConflict, oppSpeed, other);
+      const tSelfClear = (Math.max(0, myConflictS - v.distanceAlongPath) + v.length + 2.3) / Math.max(4.0, v.speed + 2.4);
 
-      if (distOtherToConflict < 3.5 || tOppArrive < Math.max(critGap * 0.72, tSelfClear + 0.9)) {
+      if (distOtherToConflict < 3.5 || tOppArrive < Math.max(critGap * 0.72, tSelfClear + 0.75)) {
         if (gapToStaging < closestYieldGap) {
           closestYieldGap = Math.max(0.15, gapToStaging);
         }
@@ -318,4 +373,204 @@ export function shouldHoldForYellowBox(
   }
 
   return nearestBlockedExitDist < requiredSpace;
+}
+
+/**
+ * Preventive Space-Time Box Anti-Gridlock (Phase 2):
+ * Evaluates right before a vehicle crosses `stopLineDist` on green whether entering the box
+ * would conflict with stalled cross-stream traffic on a conflict zone or trap the vehicle
+ * behind saturated downstream traffic inside the box over a conflict zone.
+ */
+export function shouldHoldForConflictCorridor(
+  v: SimVehicle,
+  vehicles: readonly SimVehicle[],
+  topology: CompiledTopology,
+  spatialHash: SpatialHashGrid,
+  discipline: DisciplineParams,
+  queryBuf: SimVehicle[]
+): boolean {
+  if (v.isSlipLane || v.isUTurn || !v.pathKey) return false;
+
+  const frontBumper = v.distanceAlongPath + v.length * 0.5;
+  const distToStop = v.stopLineDist - frontBumper;
+  if (distToStop < -0.1 || distToStop > 14.0) return false;
+
+  // Respect driver discipline so low-discipline chaotic scenarios still exhibit realistic push-ins
+  if (v.respectsYellowBox === false && discipline.discipline < 0.55) return false;
+  if (discipline.discipline < 0.4 && v.profile === 'aggressive') return false;
+
+  const zones = topology.conflictsByPathKey[v.pathKey];
+  if (!zones || zones.length === 0) return false;
+
+  const queried = spatialHash.queryRadius(v.x, v.y, 46, queryBuf);
+  const nearby = queried.length > 0 ? queried : vehicles;
+
+  // a) Cross-stream stalled on one of v's conflict zones inside the box
+  for (let z = 0; z < zones.length; z++) {
+    const cz = zones[z];
+    const amA = cz.pathKeyA === v.pathKey;
+    const otherArm = amA ? cz.originArmB : cz.originArmA;
+    const otherPathKey = amA ? cz.pathKeyB : cz.pathKeyA;
+    const otherMovement = amA ? cz.movementB : cz.movementA;
+    const otherConflictS = amA ? cz.sB : cz.sA;
+
+    for (let i = 0; i < nearby.length; i++) {
+      const other = nearby[i];
+      if (other.id === v.id || other.originArm === v.originArm) continue;
+      if (other.originArm !== otherArm || other.isSlipLane || other.isUTurn) continue;
+      if (other.pathKey !== otherPathKey && other.turn !== otherMovement) continue;
+      if (other.speed >= 0.75 || (other.boxWaitTime ?? 0) < 0.6) continue;
+
+      const otherFront = other.distanceAlongPath + other.length * 0.5;
+      const otherRear = other.distanceAlongPath - other.length * 0.5;
+      if (otherFront >= otherConflictS - 3.2 && otherRear <= otherConflictS + 2.8) {
+        return true;
+      }
+    }
+  }
+
+  // b) Same-movement / downstream box saturation trapping v on entry or over a conflict zone
+  const destArmGeom = topology.armsById[v.destArm];
+  for (let i = 0; i < nearby.length; i++) {
+    const other = nearby[i];
+    if (other.id === v.id || other.isSlipLane || other.isUTurn) continue;
+    if (other.speed >= 0.65) continue;
+
+    const otherFront = other.distanceAlongPath + other.length * 0.5;
+    const otherRear = other.distanceAlongPath - other.length * 0.5;
+    if (otherFront <= other.stopLineDist + 0.3 || otherRear >= other.exitLineDist + 0.5) {
+      continue;
+    }
+
+    const sameOriginAhead =
+      other.originArm === v.originArm &&
+      other.distanceAlongPath > v.distanceAlongPath &&
+      (other.laneIndex === v.laneIndex || other.pathKey === v.pathKey);
+    const sameDestLane =
+      other.destArm === v.destArm &&
+      (!destArmGeom ||
+        destArmGeom.def.outLanes <= 1 ||
+        other.destLaneIndex === undefined ||
+        v.destLaneIndex === undefined ||
+        other.destLaneIndex === v.destLaneIndex);
+
+    if (!sameOriginAhead && !sameDestLane) continue;
+
+    let projectedOtherRear: number;
+    if (other.originArm === v.originArm) {
+      projectedOtherRear = otherRear;
+    } else {
+      const distBeforeExit = other.exitLineDist - other.distanceAlongPath;
+      if (distBeforeExit > 7.5) continue;
+      projectedOtherRear = v.exitLineDist - distBeforeExit - other.length * 0.5;
+    }
+
+    if (projectedOtherRear - v.stopLineDist < v.length + 1.8) {
+      return true;
+    }
+
+    if (other.destArm === v.destArm || other.distanceAlongPath - other.stopLineDist <= 7.5) {
+      const vStoppedFront = projectedOtherRear - 0.6;
+      const vStoppedRear = vStoppedFront - v.length;
+      for (let z = 0; z < zones.length; z++) {
+        const cz = zones[z];
+        const myConflictS = cz.pathKeyA === v.pathKey ? cz.sA : cz.sB;
+        if (vStoppedFront >= myConflictS - 1.6 && vStoppedRear <= myConflictS + 1.6) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Cooperative Zipper Merge & Give-Way (No. 3):
+ * Rolling vehicles in the receiving lane gently open a 1-car pocket when an adjacent vehicle
+ * is merging back from an oncoming pass / lane-change or waiting at a slip-lane exit merge.
+ */
+export function evaluateZipperMergeGiveWay(
+  v: SimVehicle,
+  nearby: readonly SimVehicle[],
+  lw: number,
+  weather: WeatherPhysicsProfile,
+  discipline: DisciplineParams
+): { yieldGap: number; speedCap: number } {
+  const none = { yieldGap: Infinity, speedCap: Infinity };
+  if (v.isReversing || v.isSlipLane || v.isUTurn) return none;
+  if (v.overtakeState && v.overtakeState !== 'none') return none;
+  if (v.speed < 0.8) return none;
+  // Never yield mid-box to let someone merge inside intersection
+  if (v.distanceAlongPath > v.stopLineDist - 3.5 && !v.hasExitedIntersection) return none;
+
+  const cosH = Math.cos(v.heading);
+  const sinH = Math.sin(v.heading);
+  let bestGap = Infinity;
+  let bestCap = Infinity;
+
+  for (let i = 0; i < nearby.length; i++) {
+    const other = nearby[i];
+    if (other.id === v.id || other.isReversing) continue;
+
+    const dx = other.x - v.x;
+    const dy = other.y - v.y;
+    const fwd = dx * cosH + dy * sinH;
+    // Outward-left normal in Canvas 2D Y-down is (sinH, -cosH)
+    const latSigned = dx * sinH - dy * cosH;
+
+    const cosO = Math.cos(other.heading);
+    const sinO = Math.sin(other.heading);
+    const sameHeading = cosH * cosO + sinH * sinO > 0.65;
+
+    let shouldYield = false;
+    if (sameHeading && (!v.hasExitedIntersection || (other.hasExitedIntersection && other.destArm === v.destArm))) {
+      const sameLegApproach =
+        !v.hasExitedIntersection && other.originArm === v.originArm && other.distanceAlongPath < other.stopLineDist - 3.0;
+      const sameLegExit = v.hasExitedIntersection && other.hasExitedIntersection && other.destArm === v.destArm;
+      if (sameLegApproach || sameLegExit) {
+        const returningMerger =
+          other.overtakeState === 'merge_back' ||
+          other.overtakeState === 'abort' ||
+          (Boolean(other.crossingMarking) && Math.abs(other.targetLateralOffset) < Math.abs(other.lateralOffset) - 0.12) ||
+          (other.laneChangeDir !== null && Math.abs(other.targetLateralOffset - other.lateralOffset) > 0.25);
+        const steeringTowardMe =
+          latSigned * other.lateralVelocity < -0.05 ||
+          (other.overtakeState === 'abort' && latSigned < 0);
+        const minFwd = v.profile === 'aggressive' && other.overtakeState !== 'abort' ? 2.0 : 0.45;
+        if (
+          returningMerger &&
+          steeringTowardMe &&
+          Math.abs(latSigned) > 0.45 &&
+          Math.abs(latSigned) < lw * 1.15 &&
+          fwd >= minFwd &&
+          fwd < 13.5 &&
+          (v.profile !== 'aggressive' || other.overtakeState === 'abort' || discipline.discipline >= 0.45)
+        ) {
+          shouldYield = true;
+        }
+      }
+    } else if (
+      v.hasExitedIntersection &&
+      other.isSlipLane &&
+      other.destArm === v.destArm &&
+      other.distanceAlongPath > other.exitLineDist - 12.0 &&
+      (other.waitingTime ?? 0) > 1.8 &&
+      Math.abs(latSigned) < lw * 1.35 &&
+      fwd > 1.2 &&
+      fwd < 14.0
+    ) {
+      shouldYield = true;
+    }
+
+    if (!shouldYield) continue;
+    const gap = Math.max(0.85, fwd - (v.length + other.length) * 0.5 - 0.55);
+    if (gap < bestGap) {
+      bestGap = gap;
+      const cap = Math.max(1.5, Math.min(v.maxSpeed * 0.68, other.speed + 0.85)) * weather.speedMult[v.vClass];
+      bestCap = Math.min(bestCap, cap);
+    }
+  }
+
+  return { yieldGap: bestGap, speedCap: bestCap };
 }

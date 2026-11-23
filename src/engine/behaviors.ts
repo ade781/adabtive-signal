@@ -100,11 +100,44 @@ export function findBlockingLeader(
   spatialHash?: SpatialHashGrid,
   weather?: WeatherPhysicsProfile,
   queryBuf?: SimVehicle[]
-): { nearestGap: number; leadSpeed: number; blockingLeader: SimVehicle | null; isSqueezingPast: boolean } {
+): {
+  nearestGap: number;
+  leadSpeed: number;
+  blockingLeader: SimVehicle | null;
+  isSqueezingPast: boolean;
+  secondGap: number;
+  secondLeadSpeed: number;
+  secondLeader: SimVehicle | null;
+} {
   let nearestGap = Infinity;
   let leadSpeed = v.maxSpeed;
   let blockingLeader: SimVehicle | null = null;
+  let secondGap = Infinity;
+  let secondLeadSpeed = v.maxSpeed;
+  let secondLeader: SimVehicle | null = null;
   let isSqueezingPast = false;
+
+  const recordLeader = (gapVal: number, spdVal: number, cand: SimVehicle) => {
+    const clampedGap = Math.max(0.05, gapVal);
+    if (clampedGap < nearestGap) {
+      if (blockingLeader && blockingLeader.id !== cand.id) {
+        secondGap = nearestGap;
+        secondLeadSpeed = leadSpeed;
+        secondLeader = blockingLeader;
+      }
+      nearestGap = clampedGap;
+      leadSpeed = spdVal;
+      blockingLeader = cand;
+    } else if (
+      clampedGap > nearestGap + 0.2 &&
+      clampedGap < secondGap &&
+      (!blockingLeader || cand.id !== blockingLeader.id)
+    ) {
+      secondGap = clampedGap;
+      secondLeadSpeed = spdVal;
+      secondLeader = cand;
+    }
+  };
 
   const originArmGeom = topology?.armsById[v.originArm];
   const myLaneCenters = originArmGeom?.inLaneCenters;
@@ -200,11 +233,7 @@ export function findBlockingLeader(
       }
       if (longOverlap && latSep >= minLatNeed + tailSwingPad1 && !sameTurnTightCurve) continue;
       const gapAlong = other.distanceAlongPath - v.distanceAlongPath - (other.length + v.length) * 0.5;
-      if (gapAlong < nearestGap) {
-        nearestGap = Math.max(0.05, gapAlong);
-        leadSpeed = other.speed;
-        blockingLeader = other;
-      }
+      recordLeader(gapAlong, other.speed, other);
       continue;
     }
 
@@ -258,10 +287,8 @@ export function findBlockingLeader(
         const latSep = rawLatSep * turnScale;
         if (latSep < minLatNeed) {
           const arcGap = other.distanceAlongPath - v.distanceAlongPath - (other.length + v.length) * 0.5;
-          if (arcGap < 45 && arcGap < nearestGap) {
-            nearestGap = Math.max(0.05, arcGap);
-            leadSpeed = other.speed;
-            blockingLeader = other;
+          if (arcGap < 45) {
+            recordLeader(arcGap, other.speed, other);
           }
         }
       }
@@ -375,7 +402,7 @@ export function findBlockingLeader(
         : 0;
     if (forwardProj <= minForwardProj) continue;
 
-    if (gapAlong < nearestGap) {
+    if (gapAlong < nearestGap || (gapAlong < secondGap && (other.originArm === v.originArm || other.destArm === v.destArm))) {
       const boxWait = v.boxWaitTime ?? 0;
       const notOverlapping = gapAlong > -0.35 || latProj >= myEffW * 0.5 + otherProjLat - 0.12;
       if (
@@ -408,7 +435,6 @@ export function findBlockingLeader(
       ) {
         continue;
       }
-      nearestGap = Math.max(0.05, gapAlong);
       const crossYieldSpeed =
         dotCos < -0.45
           ? 0 // Opposing vehicle in our corridor: treat as zero/head-on hazard!
@@ -419,12 +445,11 @@ export function findBlockingLeader(
               : other.originArm !== v.originArm || other.turn !== v.turn
                 ? Math.max(0, other.speed * dotCos)
                 : other.speed;
-      leadSpeed = crossYieldSpeed;
-      blockingLeader = other;
+      recordLeader(gapAlong, crossYieldSpeed, other);
     }
   }
 
-  return { nearestGap, leadSpeed, blockingLeader, isSqueezingPast };
+  return { nearestGap, leadSpeed, blockingLeader, isSqueezingPast, secondGap, secondLeadSpeed, secondLeader };
 }
 
 export function updateMotorcycleSeepage(
@@ -470,7 +495,8 @@ export function updateMotorcycleSeepage(
     v.distanceAlongPath > 6.5 &&
     v.distanceAlongPath < v.stopLineDist - 22.0 &&
     v.turn !== 'left' &&
-    (v.laneIndex === 0 || v.turn === 'straight');
+    (v.laneIndex === 0 || v.turn === 'straight') &&
+    ((blockingLeader !== null && blockingLeader.speed < 2.5 && nearestGap < 9.0) || frustration >= 0.35);
 
   const myEffW = effClearanceWidth(v);
   const myGlobalLat = getGlobalLat(v.laneIndex, v.lateralOffset, armLw, laneCenters);

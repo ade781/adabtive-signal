@@ -15,7 +15,7 @@ export const DEFAULT_CONFIG: SimConfig = {
   armGreenDurations: undefined,
   yellowDuration: 3,
   allRedDuration: 1.5,
-  adaptiveSignal: true,
+  adaptiveSignal: false,
   armWeights: { north: 1, east: 1, south: 1, west: 1 },
   leftTurnOnRed: true,
   motorSwarmMode: true,

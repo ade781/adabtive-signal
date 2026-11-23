@@ -15,6 +15,7 @@ import {
 import {
   computeDisciplineParams,
   evaluatePriorityConflictYield,
+  evaluateZipperMergeGiveWay,
   negotiateDeadlockPriority,
   shouldHoldForYellowBox,
 } from './conflictResolver';
@@ -667,22 +668,35 @@ export class TrafficSimulation {
     return avail[avail.length - 1].kind;
   }
 
-  private pickLaneForTurn(armId: string, turn: MovementKind): number {
+  private pickLaneForTurn(armId: string, turn: MovementKind, vClass?: VehicleClass): number {
     const armGeom = this.compiledTopology.armsById[armId];
     const L = Math.max(1, armGeom?.def.inLanes ?? this.config.lanesPerDirection);
     if (L === 1) return 0;
     if (turn === 'left') return L - 1;
     if (turn === 'right' || turn === 'uturn') return 0;
+
+    // Queue- & heavy-impedance-aware dynamic lane selection for straight traffic
+    const laneScores = new Array<number>(L).fill(0);
+    for (const v of this.vehicles) {
+      if (v.originArm !== armId || v.isSlipLane || v.distanceAlongPath >= v.stopLineDist) continue;
+      if (v.laneIndex < 0 || v.laneIndex >= L) continue;
+      let cost = v.vClass === 'heavy' ? 2.8 : v.vClass === 'car' ? 1.2 : 0.45;
+      if (v.speed < 1.5) cost += 1.4;
+      else if (v.speed < 4.5) cost += 0.5;
+      if (v.vClass === 'heavy' && v.speed < 5.5) cost += 2.2;
+      if (v.distanceAlongPath < 18.0) cost += 1.5;
+      laneScores[v.laneIndex] += cost;
+    }
+
     let bestLane = 0;
-    let bestCount = Infinity;
+    let bestScore = Infinity;
     const startOffset = Math.floor(this.rng() * L);
     for (let i = 0; i < L; i++) {
       const lane = (startOffset + i) % L;
-      const count = this.vehicles.filter(
-        (v) => v.originArm === armId && v.laneIndex === lane && !v.isSlipLane && v.distanceAlongPath < v.stopLineDist
-      ).length;
-      if (count < bestCount) {
-        bestCount = count;
+      const heavyCruiseBias = vClass === 'heavy' && lane === 0 ? -0.4 : 0;
+      const score = laneScores[lane] + heavyCruiseBias + this.rng() * 0.2;
+      if (score < bestScore) {
+        bestScore = score;
         bestLane = lane;
       }
     }
@@ -763,7 +777,7 @@ export class TrafficSimulation {
 
       const turn = this.pickMovementForArm(armId);
       const useSlipLane = turn === 'left' && Boolean(this.compiledTopology.slipPathsByArm[armId]);
-      const laneIndex = useSlipLane ? armGeom.def.inLanes - 1 : this.pickLaneForTurn(armId, turn);
+      const laneIndex = useSlipLane ? armGeom.def.inLanes - 1 : this.pickLaneForTurn(armId, turn, vClass);
       const compiledPath: CompiledMovementPath | undefined = useSlipLane
         ? this.compiledTopology.slipPathsByArm[armId]
         : this.compiledTopology.pathLookup[armId]?.[turn]?.[laneIndex];
@@ -1068,8 +1082,16 @@ export class TrafficSimulation {
       // Racing-game style curvature lookahead speed cap (brakes BEFORE sharp apexes!)
       desiredV = computeCurvatureTargetSpeed(v, v.compiledPath, desiredV, weather);
 
-      // 2. Perception via 2D Spatial Hash Grid
-      let { nearestGap, leadSpeed, blockingLeader, isSqueezingPast } = findBlockingLeader(
+      // 2. Perception via 2D Spatial Hash Grid (2-vehicle lookahead)
+      let {
+        nearestGap,
+        leadSpeed,
+        blockingLeader,
+        isSqueezingPast,
+        secondGap,
+        secondLeadSpeed,
+        secondLeader,
+      } = findBlockingLeader(
         v,
         this.vehicles,
         lw,
@@ -1111,8 +1133,10 @@ export class TrafficSimulation {
       const distToStop = effectiveStopDist - frontBumper;
       const alreadyInBox = frontBumper > v.stopLineDist + 0.25;
 
+      let stopForYellowFlag = false;
       if (!v.isSlipLane && !v.isUTurn && v.distanceAlongPath < v.stopLineDist && !alreadyInBox) {
         const stopForYellow = light === 'yellow' && this.shouldStopForYellow(v, distToStop);
+        stopForYellowFlag = stopForYellow;
         if (light === 'yellow' && !stopForYellow && v.turn === 'straight') {
           desiredV *= 1.18;
         }
@@ -1304,6 +1328,52 @@ export class TrafficSimulation {
 
       if (v.laneChangeDir && (!v.overtakeState || v.overtakeState === 'none') && Math.abs(v.lateralOffset - v.targetLateralOffset) < 0.2) {
         v.laneChangeDir = null;
+      }
+
+      // 6b. Multi-Leader Shockwave Lookahead (2 vehicles ahead) & Eco-Approach Gliding
+      if (!v.isReversing && (!v.overtakeState || v.overtakeState === 'none')) {
+        const effDecel = Math.max(0.8, v.comfortDecel * weather.comfortDecelMult);
+        if (
+          secondLeader !== null &&
+          secondGap < 38.0 &&
+          secondLeadSpeed < 3.5 &&
+          (blockingLeader?.speed ?? desiredV) > secondLeadSpeed + 1.8
+        ) {
+          const shockwaveCap = Math.max(
+            secondLeadSpeed + 2.4,
+            Math.sqrt(Math.max(0, 2 * effDecel * 0.72 * Math.max(1.0, secondGap - 1.5)))
+          );
+          desiredV = Math.min(desiredV, shockwaveCap);
+        }
+
+        const shouldEcoGlide =
+          !v.isSlipLane &&
+          !v.isUTurn &&
+          distToStop > 16.0 &&
+          distToStop < 72.0 &&
+          !canLTOR &&
+          !v.willRunRed &&
+          ((light === 'red') ||
+            stopForYellowFlag ||
+            (blockingLeader !== null &&
+              blockingLeader.originArm === v.originArm &&
+              blockingLeader.distanceAlongPath < v.stopLineDist &&
+              blockingLeader.speed < 1.0 &&
+              physicalGap < 42.0));
+        if (shouldEcoGlide) {
+          const glideAnchorDist = Math.max(0, Math.min(distToStop, physicalGap) - 3.5);
+          const glideCap = Math.max(4.6, Math.sqrt(Math.max(0, 2 * effDecel * 0.48 * glideAnchorDist)));
+          desiredV = Math.min(desiredV, glideCap);
+        }
+
+        // Cooperative Zipper Merge & Give-Way
+        const nearbyZip = this.spatialHash.queryRadius(v.x, v.y, 16, this.queryBufB);
+        const zipper = evaluateZipperMergeGiveWay(v, nearbyZip, lw, weather, discipline);
+        if (zipper.yieldGap < nearestGap) {
+          nearestGap = zipper.yieldGap;
+          leadSpeed = Math.min(leadSpeed, zipper.speedCap);
+          desiredV = Math.min(desiredV, zipper.speedCap);
+        }
       }
 
       // 7. Pure Pursuit / Stanley Smooth Lateral Controller (No. 2)

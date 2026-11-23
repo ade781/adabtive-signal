@@ -1,6 +1,8 @@
-import { SimVehicle } from './behaviors';
+import { effClearanceWidth, getGlobalLat, SimVehicle } from './behaviors';
 import { WeatherPhysicsProfile } from './environmentDynamics';
-import { CompiledMovementPath } from './topologyTypes';
+import { sampleWithLateralOffset } from './geometry';
+import { SpatialHashGrid } from './spatialHash';
+import { CompiledArmGeometry, CompiledMovementPath } from './topologyTypes';
 import { VehicleClass } from './types';
 
 export const WHEELBASE_BY_CLASS: Record<VehicleClass, number> = {
@@ -118,28 +120,82 @@ export function computePurePursuitLateralStep(
 }
 
 /**
- * Predictive swept-position check at horizons t = 0.35s and 0.8s for proactive 2D collision avoidance.
- * Returns predicted time-to-conflict if two vehicles' trajectories will intersect dangerously close.
+ * Computes intent-aware world velocity (vx, vy) incorporating lateral steering motion
+ * and upcoming curve turning tangent when approaching or inside a turning maneuver.
  */
-export function predictSweptCollisionTTC(
+function computeIntendedVelocity(v: SimVehicle, horizonSample: number): { vx: number; vy: number } {
+  let effHeading = v.heading;
+  if (
+    v.compiledPath &&
+    v.turn !== 'straight' &&
+    v.speed > 1.2 &&
+    v.distanceAlongPath > v.stopLineDist - 2.0 &&
+    !v.hasExitedIntersection
+  ) {
+    const lookDist = Math.min(v.exitLineDist, v.distanceAlongPath + Math.max(1.2, v.speed * horizonSample * 0.6));
+    const ahead = v.compiledPath.sample(lookDist);
+    effHeading = ahead.heading;
+  }
+  const cosH = Math.cos(effHeading);
+  const sinH = Math.sin(effHeading);
+  // Canvas LHT outward-left normal of heading is (sin h, -cos h)
+  const latVx = sinH * v.lateralVelocity * 0.75;
+  const latVy = -cosH * v.lateralVelocity * 0.75;
+  return {
+    vx: cosH * v.speed + latVx,
+    vy: sinH * v.speed + latVy,
+  };
+}
+
+export interface LateralOffsetBounds {
+  minOffsetDelta: number;
+  maxOffsetDelta: number;
+}
+
+export interface PredictiveConflict2DResult {
+  brakeGap: number;
+  speedCap: number;
+  evasiveLatDelta: number;
+  evasiveUrgency: number;
+}
+
+export interface LateralDecisionLike {
+  v: SimVehicle;
+  nextLat: number;
+  nextLatVel: number;
+}
+
+const EVASIVE_CLASS_SHARE: Record<VehicleClass, number> = {
+  motor: 0.85,
+  car: 0.55,
+  heavy: 0.22,
+};
+
+interface SweptConflictDetails {
+  willCollide: boolean;
+  ttc: number;
+  minDist: number;
+  px: number;
+  py: number;
+  safeR: number;
+  forwardAtT: number;
+}
+
+function computeSweptConflictDetails(
   a: SimVehicle,
   b: SimVehicle,
-  maxHorizon = 1.4
-): { willCollide: boolean; ttc: number; minDist: number } {
+  maxHorizon: number
+): SweptConflictDetails {
   const cosA = Math.cos(a.heading);
   const sinA = Math.sin(a.heading);
-  const cosB = Math.cos(b.heading);
-  const sinB = Math.sin(b.heading);
 
-  const vAx = cosA * a.speed;
-  const vAy = sinA * a.speed;
-  const vBx = cosB * b.speed;
-  const vBy = sinB * b.speed;
+  const velA = computeIntendedVelocity(a, maxHorizon);
+  const velB = computeIntendedVelocity(b, maxHorizon);
 
   const rx = b.x - a.x;
   const ry = b.y - a.y;
-  const vx = vBx - vAx;
-  const vy = vBy - vAy;
+  const vx = velB.vx - velA.vx;
+  const vy = velB.vy - velA.vy;
 
   const v2 = vx * vx + vy * vy;
   let tStar = 0;
@@ -151,31 +207,71 @@ export function predictSweptCollisionTTC(
   const py = ry + vy * tStar;
   const minDist = Math.hypot(px, py);
 
-  const aEffW = a.vClass === 'motor' ? 0.72 : a.width;
-  const bEffW = b.vClass === 'motor' ? 0.72 : b.width;
+  const aEffW = effClearanceWidth(a);
+  const bEffW = effClearanceWidth(b);
   // Tight lateral-aware collision envelope so parallel lanes never false-trigger swept conflict
   const safeR = (aEffW + bEffW) * 0.5 + 0.45;
 
   // Check if B is genuinely ahead of A along A's heading at tStar and moving across A's path
   const forwardAtT = px * cosA + py * sinA;
-  const willCollide = minDist < safeR && forwardAtT > 0.2 && forwardAtT < a.length * 0.5 + b.length * 0.5 + 3.0 && tStar > 0.04;
+  const willCollide =
+    minDist < safeR &&
+    forwardAtT > 0.2 &&
+    forwardAtT < a.length * 0.5 + b.length * 0.5 + 3.0 &&
+    tStar > 0.04;
 
-  return { willCollide, ttc: tStar, minDist };
+  return { willCollide, ttc: tStar, minDist, px, py, safeR, forwardAtT };
+}
+
+/**
+ * Intent-aware predictive swept-position check at horizons up to maxHorizon for proactive 2D collision avoidance.
+ * Incorporates lateral velocity, lane-change/turning spline trajectory, and returns predicted time-to-conflict.
+ */
+export function predictSweptCollisionTTC(
+  a: SimVehicle,
+  b: SimVehicle,
+  maxHorizon = 1.4
+): { willCollide: boolean; ttc: number; minDist: number } {
+  const res = computeSweptConflictDetails(a, b, maxHorizon);
+  return { willCollide: res.willCollide, ttc: res.ttc, minDist: res.minDist };
+}
+
+function chooseDeadCenterEscapeSign(
+  v: SimVehicle,
+  dotHeading: number,
+  effMinDelta: number,
+  effMaxDelta: number,
+  hasBounds: boolean
+): number {
+  const negRoom = hasBounds ? Math.max(0, -effMinDelta) : 0.85;
+  const posRoom = hasBounds ? Math.max(0, effMaxDelta) : 0.85;
+  if (negRoom < 0.08 && posRoom >= 0.12) return 1;
+  if (posRoom < 0.08 && negRoom >= 0.12) return -1;
+
+  // For opposing head-on alignments in LHT, both keeping to their own outward-left (+1) yields opposite world escapes
+  if (dotHeading < -0.35 && posRoom >= 0.12) return 1;
+
+  if (v.turn === 'left') return 1;
+  if (v.turn === 'right' || v.turn === 'uturn') return -1;
+  return v.id % 2 === 0 ? 1 : -1;
 }
 
 /**
  * Proactive 2D predictive collision scan for intersection box crossings, merges, and lane sweeps.
- * Uses predictSweptCollisionTTC against nearby moving vehicles so vehicles decelerate smoothly
- * before diagonal/lateral conflicts become physical bumper deadlocks.
+ * Combines intent-aware longitudinal braking with Hybrid ORCA / Asymmetric Velocity-Obstacle
+ * 2D lateral evasion in LHT Canvas Y-down coordinates (+lateralOffset = outward-left normal).
  */
 export function evaluatePredictiveConflict2D(
   v: SimVehicle,
   nearby: readonly SimVehicle[],
-  weather: WeatherPhysicsProfile
-): { brakeGap: number; speedCap: number } {
+  weather: WeatherPhysicsProfile,
+  bounds?: LateralOffsetBounds
+): PredictiveConflict2DResult {
   let brakeGap = Infinity;
   let speedCap = Infinity;
-  if (v.speed < 1.1 || v.isReversing) return { brakeGap, speedCap };
+  if (v.speed < 0.4 || v.isReversing) {
+    return { brakeGap, speedCap, evasiveLatDelta: 0, evasiveUrgency: 0 };
+  }
 
   const vNearOrInBox = v.distanceAlongPath > v.stopLineDist - 7.0 && !v.hasExitedIntersection;
   const vManeuvering =
@@ -183,23 +279,56 @@ export function evaluatePredictiveConflict2D(
     Boolean(v.overtakeState && v.overtakeState !== 'none') ||
     Boolean(v.crossingMarking);
 
-  if (!vNearOrInBox && !vManeuvering) return { brakeGap, speedCap };
+  if (!vNearOrInBox && !vManeuvering) {
+    return { brakeGap, speedCap, evasiveLatDelta: 0, evasiveUrgency: 0 };
+  }
 
   const cosV = Math.cos(v.heading);
   const sinV = Math.sin(v.heading);
-  const horizon = Math.min(1.35, 0.75 + v.speed * 0.04) * weather.reactionMult;
+  const baseHorizon = Math.min(1.35, 0.75 + v.speed * 0.04) * weather.reactionMult;
+  const allowBraking = v.speed >= 1.1;
+
+  const hasBounds = Boolean(bounds);
+  const rawMinB = bounds ? Math.min(bounds.minOffsetDelta, bounds.maxOffsetDelta) : -0.85;
+  const rawMaxB = bounds ? Math.max(bounds.minOffsetDelta, bounds.maxOffsetDelta) : 0.85;
+  const effMinDelta = Math.max(-0.85, rawMinB);
+  const effMaxDelta = Math.min(0.85, rawMaxB);
+
+  let maxUrgency = 0;
+  let posPush = 0;
+  let negPush = 0;
 
   for (let i = 0; i < nearby.length; i++) {
     const other = nearby[i];
-    if (other.id === v.id || other.speed < 0.7 || other.isReversing) continue;
+    if (other.id === v.id || other.isReversing) continue;
+
+    const otherInBox = other.distanceAlongPath >= other.stopLineDist - 2.0 && !other.hasExitedIntersection;
+    const minOtherSpeed = otherInBox && vNearOrInBox ? 0.4 : 0.7;
+    if (other.speed < minOtherSpeed) continue;
 
     // Skip vehicles safely parallel in same-arm lanes unless one is changing lanes or crossing markings
     const sameArm = other.originArm === v.originArm;
-    const otherManeuvering =
+    const otherHasIntentShift =
       Boolean(other.laneChangeDir) ||
+      Math.abs(other.targetLateralOffset - other.lateralOffset) > 0.35;
+    const otherManeuvering =
+      otherHasIntentShift ||
       Boolean(other.overtakeState && other.overtakeState !== 'none') ||
       Boolean(other.crossingMarking);
     if (sameArm && !vManeuvering && !otherManeuvering && v.turn === other.turn) continue;
+
+    // Skip diverging turners on approach already separating smoothly away toward their turn side
+    if (
+      sameArm &&
+      v.distanceAlongPath < v.stopLineDist - 3.5 &&
+      other.distanceAlongPath < other.stopLineDist - 3.5 &&
+      v.turn !== other.turn &&
+      !other.laneChangeDir &&
+      Math.abs(other.lateralOffset - v.lateralOffset) > 0.55 &&
+      Math.sign(other.lateralVelocity) === Math.sign(other.lateralOffset - v.lateralOffset)
+    ) {
+      continue;
+    }
 
     // Avoid cross-arm false triggers for vehicles still comfortably behind their red stop line
     if (!sameArm && other.distanceAlongPath + other.length * 0.5 < other.stopLineDist - 1.5 && !other.isSlipLane) {
@@ -215,25 +344,531 @@ export function evaluatePredictiveConflict2D(
     // For non-merging, non-maneuvering opposite streams, oncoming FSM/defensive yield already handles it
     if (dot < -0.55 && !vManeuvering && !otherManeuvering) continue;
 
-    const pred = predictSweptCollisionTTC(v, other, horizon);
-    if (!pred.willCollide || pred.ttc > 1.1) continue;
+    const scanHorizon = otherHasIntentShift ? Math.min(1.55, baseHorizon * 1.15) : baseHorizon;
+    const pred = computeSweptConflictDetails(v, other, scanHorizon);
+    const ttcBrakeCap = otherHasIntentShift ? 1.25 : 1.1;
+    const hasSweptConflict = pred.willCollide && pred.ttc <= scanHorizon;
+
+    const inBoxOrMerge =
+      v.distanceAlongPath > v.stopLineDist - 4.0 ||
+      other.distanceAlongPath > other.stopLineDist - 4.0 ||
+      !sameArm ||
+      v.destArm === other.destArm;
+    const shearPred =
+      !hasSweptConflict && scanHorizon < 1.35 && inBoxOrMerge
+        ? computeSweptConflictDetails(v, other, 1.35)
+        : pred;
+    const isDiagonalOrShear =
+      dot < 0.9 ||
+      Boolean(v.laneChangeDir) ||
+      otherHasIntentShift ||
+      v.turn !== other.turn ||
+      shearPred.minDist < shearPred.safeR - 0.1;
+    const hasShearConflict =
+      inBoxOrMerge &&
+      isDiagonalOrShear &&
+      shearPred.minDist < shearPred.safeR + 0.55 &&
+      shearPred.ttc < 1.35 &&
+      shearPred.ttc > 0.04 &&
+      shearPred.forwardAtT > -v.length * 0.35;
+
+    if (!hasSweptConflict && !hasShearConflict) continue;
 
     // Priority tiebreak: straight > right/left, non-maneuvering > maneuvering, closer to exit > farther
     const vPriorityBoost = (v.turn === 'straight' ? 2 : 0) + (vManeuvering ? -1 : 1);
     const oPriorityBoost = (other.turn === 'straight' ? 2 : 0) + (otherManeuvering ? -1 : 1);
-    if (vPriorityBoost > oPriorityBoost && other.speed < v.speed * 1.1) continue;
-    if (vPriorityBoost === oPriorityBoost) {
-      const vRem = v.exitLineDist - v.distanceAlongPath;
-      const oRem = other.exitLineDist - other.distanceAlongPath;
-      if (vRem < oRem - 1.0) continue;
+    const vRem = v.exitLineDist - v.distanceAlongPath;
+    const oRem = other.exitLineDist - other.distanceAlongPath;
+
+    let yieldForBrake = true;
+    if (vPriorityBoost > oPriorityBoost && other.speed < v.speed * 1.1) {
+      yieldForBrake = false;
+    } else if (vPriorityBoost === oPriorityBoost && vRem < oRem - 1.0) {
+      yieldForBrake = false;
     }
 
-    const estGap = Math.max(0.3, fwd - (v.length + other.length) * 0.5 - 0.35);
-    if (estGap < brakeGap) {
-      brakeGap = estGap;
-      speedCap = Math.min(speedCap, Math.max(1.8, pred.ttc * 4.5));
+    if (allowBraking && other.speed >= 0.7 && pred.willCollide && pred.ttc <= ttcBrakeCap && yieldForBrake) {
+      const estGap = Math.max(0.3, fwd - (v.length + other.length) * 0.5 - 0.35);
+      if (estGap < brakeGap) {
+        brakeGap = estGap;
+        speedCap = Math.min(speedCap, Math.max(1.8, pred.ttc * 4.5));
+      }
+    }
+
+    // Hybrid ORCA lateral evasion vector in LHT (+lateralOffset = outward-left normal (sinV, -cosV))
+    const activePred = hasSweptConflict ? pred : shearPred;
+    const activeHorizon = hasSweptConflict ? scanHorizon : Math.max(scanHorizon, 1.35);
+    const u = Math.max(0, Math.min(1, 1 - activePred.ttc / Math.max(0.1, activeHorizon)));
+    if (u <= 0) continue;
+
+    const latAtTStar = activePred.px * sinV - activePred.py * cosV;
+    const escapeSign =
+      Math.abs(latAtTStar) < 0.08
+        ? chooseDeadCenterEscapeSign(v, dot, effMinDelta, effMaxDelta, hasBounds)
+        : latAtTStar > 0
+          ? -1
+          : 1;
+
+    let priorityWeight: number;
+    if (vPriorityBoost > oPriorityBoost) {
+      priorityWeight = 0.25;
+    } else if (vPriorityBoost < oPriorityBoost || vManeuvering) {
+      priorityWeight = vPriorityBoost < oPriorityBoost ? 1.0 : 0.9;
+    } else if (vRem < oRem - 1.0) {
+      priorityWeight = 0.35;
+    } else if (oRem < vRem - 1.0) {
+      priorityWeight = 0.95;
+    } else {
+      priorityWeight = 0.65;
+    }
+
+    const overlapSeverity = Math.max(0.15, activePred.safeR + 0.4 - activePred.minDist);
+    const mag = Math.min(0.85, EVASIVE_CLASS_SHARE[v.vClass] * priorityWeight * u * overlapSeverity);
+
+    if (u > maxUrgency) maxUrgency = u;
+    if (escapeSign > 0) {
+      if (mag > posPush) posPush = mag;
+    } else {
+      if (mag > negPush) negPush = mag;
     }
   }
 
-  return { brakeGap, speedCap };
+  let evasiveLatDelta = 0;
+  let evasiveUrgency = 0;
+  if (maxUrgency > 0) {
+    const rawDelta = Math.max(-0.85, Math.min(0.85, posPush - negPush));
+    if (hasBounds) {
+      // Never flip evasion sign into a blocked direction toward the threat
+      if ((rawDelta > 0 && effMaxDelta <= 0) || (rawDelta < 0 && effMinDelta >= 0)) {
+        evasiveLatDelta = 0;
+      } else {
+        evasiveLatDelta = Math.max(effMinDelta, Math.min(effMaxDelta, rawDelta));
+      }
+    } else {
+      evasiveLatDelta = rawDelta;
+    }
+
+    if (Math.abs(evasiveLatDelta) < 1e-4) {
+      evasiveLatDelta = 0;
+      evasiveUrgency = 0;
+    } else {
+      evasiveUrgency = maxUrgency;
+    }
+  }
+
+  return { brakeGap, speedCap, evasiveLatDelta, evasiveUrgency };
+}
+
+/**
+ * Combines a baseline lateral target with an ORCA evasive delta and clamps strictly inside road/lane bounds.
+ */
+export function computeSafeLateralTarget(
+  v: SimVehicle,
+  baseTargetLat: number,
+  evasiveDelta: number,
+  minLatBound: number,
+  maxLatBound: number
+): number {
+  const lo = Math.min(minLatBound, maxLatBound);
+  const hi = Math.max(minLatBound, maxLatBound);
+  if (v.isReversing || v.speed < 0.4) {
+    return Math.max(lo, Math.min(hi, baseTargetLat));
+  }
+  let effDelta = evasiveDelta;
+  if ((v.overtakeState === 'merge_back' || v.overtakeState === 'abort') && effDelta < 0) {
+    effDelta = 0;
+  }
+  return Math.max(lo, Math.min(hi, baseTargetLat + effDelta));
+}
+
+/**
+ * Fast per-vehicle lateral safety check against nearby traffic (both same-arm approach and 2D world space).
+ */
+export function isLateralMoveSafeAgainstNeighbors(
+  v: SimVehicle,
+  candGlobalLat: number,
+  curGlobalLat: number,
+  lw: number,
+  laneCenters: readonly number[] | undefined,
+  nearby: readonly SimVehicle[],
+  dt: number,
+  minClearPad?: number
+): boolean {
+  const myEffW = effClearanceWidth(v);
+  const cosH = Math.cos(v.heading);
+  const sinH = Math.sin(v.heading);
+  const stepSigned = candGlobalLat - curGlobalLat;
+  const estHalfMedian = laneCenters && laneCenters.length > 0 ? Math.max(0, laneCenters[0] - lw * 0.5) : 0;
+
+  for (let i = 0; i < nearby.length; i++) {
+    const other = nearby[i];
+    if (other.id === v.id) continue;
+
+    if (
+      other.originArm === v.originArm &&
+      v.distanceAlongPath < v.stopLineDist - 0.5 &&
+      other.distanceAlongPath < other.stopLineDist - 0.5
+    ) {
+      const speedBuf = other.distanceAlongPath > v.distanceAlongPath ? Math.max(0, v.speed - other.speed) * 0.6 : 0;
+      const returningAcrossCenter = curGlobalLat < estHalfMedian + 0.25 && stepSigned > 0;
+      const longBuf = returningAcrossCenter ? 0.45 : 2.2;
+      if (Math.abs(other.distanceAlongPath - v.distanceAlongPath) < (v.length + other.length) * 0.5 + longBuf + speedBuf) {
+        const otherG = getGlobalLat(
+          other.laneIndex,
+          other.lateralOffset + other.lateralVelocity * dt,
+          lw,
+          laneCenters
+        );
+        const defaultPad = v.vClass === 'motor' ? 0.18 : 0.42;
+        const swingPad = returningAcrossCenter
+          ? Math.min(0.04, minClearPad ?? 0.04)
+          : minClearPad ?? defaultPad;
+        const sumHalfW = (myEffW + effClearanceWidth(other)) * 0.5;
+        const tightParallelMotorPivot =
+          v.vClass === 'motor' &&
+          v.speed < 2.2 &&
+          !returningAcrossCenter &&
+          (!v.overtakeState || v.overtakeState === 'none') &&
+          !v.crossingMarking &&
+          Math.abs(other.distanceAlongPath - v.distanceAlongPath) < (v.length + other.length) * 0.5 + 0.35 &&
+          Math.abs(curGlobalLat - otherG) < sumHalfW + 0.24;
+
+        if (
+          tightParallelMotorPivot ||
+          (Math.abs(candGlobalLat - otherG) < sumHalfW + swingPad &&
+            Math.abs(candGlobalLat - otherG) < Math.abs(curGlobalLat - otherG))
+        ) {
+          return false;
+        }
+      }
+    } else {
+      const cosO = Math.cos(other.heading);
+      const sinO = Math.sin(other.heading);
+      const dotHeading = cosH * cosO + sinH * sinO;
+      if (dotHeading < 0.35 && !(dotHeading < -0.45 && stepSigned < 0)) continue;
+
+      const dx = other.x - v.x;
+      const dy = other.y - v.y;
+      const fwd = dx * cosH + dy * sinH;
+      const speedBuf = fwd > 0 ? Math.max(0, v.speed - other.speed) * 0.55 : 0;
+      const oppExtra = dotHeading < -0.45 ? 1.4 : 0;
+      if (Math.abs(fwd) < (v.length + other.length) * 0.5 + 1.8 + speedBuf + oppExtra) {
+        const curOtherLat = dx * sinH - dy * cosH;
+        const candOtherLat = curOtherLat - stepSigned;
+        const oHalfW = effClearanceWidth(other) * 0.5;
+        const otherHalfLat =
+          other.isSlipLane || v.isSlipLane || dotHeading < 0.92
+            ? Math.abs(-cosO * sinH + sinO * cosH) * (other.length * 0.5) +
+              Math.abs(sinO * sinH + cosO * cosH) * oHalfW
+            : oHalfW;
+        const minClear = myEffW * 0.5 + otherHalfLat + (minClearPad ?? 0.22) + (dotHeading < -0.45 ? 0.25 : 0);
+        if (Math.abs(candOtherLat) < minClear && Math.abs(candOtherLat) < Math.abs(curOtherLat)) {
+          return false;
+        }
+      }
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Clamps a candidate local lateralOffset step against neighboring vehicles, falling back to half-step or zero-step.
+ */
+export function clampCandidateLateralStep(
+  v: SimVehicle,
+  candLat: number,
+  curLat: number,
+  lw: number,
+  laneCenters: readonly number[] | undefined,
+  nearby: readonly SimVehicle[],
+  dt: number,
+  minClearPad?: number
+): { safeLat: number; blocked: boolean } {
+  const curGlobalLat = getGlobalLat(v.laneIndex, curLat, lw, laneCenters);
+  const candGlobalLat = getGlobalLat(v.laneIndex, candLat, lw, laneCenters);
+  if (
+    isLateralMoveSafeAgainstNeighbors(v, candGlobalLat, curGlobalLat, lw, laneCenters, nearby, dt, minClearPad)
+  ) {
+    return { safeLat: candLat, blocked: false };
+  }
+
+  const halfLat = curLat + (candLat - curLat) * 0.5;
+  const halfGlobalLat = getGlobalLat(v.laneIndex, halfLat, lw, laneCenters);
+  if (
+    Math.abs(halfLat - curLat) > 1e-4 &&
+    isLateralMoveSafeAgainstNeighbors(v, halfGlobalLat, curGlobalLat, lw, laneCenters, nearby, dt, minClearPad)
+  ) {
+    return { safeLat: halfLat, blocked: true };
+  }
+
+  return { safeLat: curLat, blocked: true };
+}
+
+function resolveArmBucketLateralGuard(
+  bucket: LateralDecisionLike[],
+  isApproach: boolean,
+  lw: number,
+  armsById: Record<string, CompiledArmGeometry>,
+  dt: number,
+  minClearPad: number
+): void {
+  if (bucket.length < 2) return;
+  bucket.sort((a, b) => a.v.distanceAlongPath - b.v.distanceAlongPath);
+
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 0; i < bucket.length; i++) {
+      const da = bucket[i];
+      const a = da.v;
+      const armId = isApproach ? a.originArm : a.destArm;
+      const armGeom = armsById[armId];
+      const laneCenters = isApproach ? armGeom?.inLaneCenters : armGeom?.outLaneCenters;
+      const halfMedian = armGeom?.halfMedian ?? 0;
+      const laneIdxA = isApproach ? a.laneIndex : (a.destLaneIndex ?? a.laneIndex);
+      const lwA = (isApproach ? armGeom?.def.inLaneWidths[laneIdxA] : armGeom?.def.outLaneWidths[laneIdxA]) ?? lw;
+      const effWA = effClearanceWidth(a);
+
+      for (let j = i + 1; j < bucket.length; j++) {
+        const db = bucket[j];
+        const b = db.v;
+        // Bucket is sorted by distanceAlongPath; once gaps exceed max vehicle length + step margin, stop scanning
+        if (b.distanceAlongPath - a.distanceAlongPath > (a.length + b.length) * 0.5 + 2.5) {
+          break;
+        }
+
+        const sA = a.distanceAlongPath + (a.isReversing ? -a.speed : a.speed) * dt;
+        const sB = b.distanceAlongPath + (b.isReversing ? -b.speed : b.speed) * dt;
+        const overlapSpan = (a.length + b.length) * 0.5 + 0.35;
+        if (
+          Math.abs(a.distanceAlongPath - b.distanceAlongPath) >= overlapSpan &&
+          Math.abs(sA - sB) >= overlapSpan
+        ) {
+          continue;
+        }
+
+        const laneIdxB = isApproach ? b.laneIndex : (b.destLaneIndex ?? b.laneIndex);
+        const lwB = (isApproach ? armGeom?.def.inLaneWidths[laneIdxB] : armGeom?.def.outLaneWidths[laneIdxB]) ?? lw;
+
+        const curLatA = getGlobalLat(laneIdxA, a.lateralOffset, lwA, laneCenters);
+        const curLatB = getGlobalLat(laneIdxB, b.lateralOffset, lwB, laneCenters);
+        const candLatA = getGlobalLat(laneIdxA, da.nextLat, lwA, laneCenters);
+        const candLatB = getGlobalLat(laneIdxB, db.nextLat, lwB, laneCenters);
+
+        const reqSep = (effWA + effClearanceWidth(b)) * 0.5 + minClearPad;
+        const candSep = Math.abs(candLatA - candLatB);
+        const curSep = Math.abs(curLatA - curLatB);
+        if (candSep >= reqSep || candSep >= curSep) continue;
+
+        const aIsLower =
+          curLatA < curLatB - 1e-6 || (Math.abs(curLatA - curLatB) <= 1e-6 && a.id < b.id);
+        const deltaA = da.nextLat - a.lateralOffset;
+        const deltaB = db.nextLat - b.lateralOffset;
+        const closeA = aIsLower ? Math.max(0, deltaA) : Math.max(0, -deltaA);
+        const closeB = aIsLower ? Math.max(0, -deltaB) : Math.max(0, deltaB);
+        const totalClose = closeA + closeB;
+        if (totalClose <= 1e-6) continue;
+
+        if (curSep >= reqSep) {
+          const slack = curSep - reqSep;
+          if (totalClose <= slack + 1e-6) continue;
+
+          const aReturning = isApproach && curLatA < halfMedian + 0.25 && deltaA > 0;
+          const bReturning = isApproach && curLatB < halfMedian + 0.25 && deltaB > 0;
+          let allowedA: number;
+          let allowedB: number;
+          if (aReturning && !bReturning) {
+            allowedA = Math.min(closeA, slack);
+            allowedB = Math.max(0, slack - allowedA);
+          } else if (bReturning && !aReturning) {
+            allowedB = Math.min(closeB, slack);
+            allowedA = Math.max(0, slack - allowedB);
+          } else {
+            const scale = slack / totalClose;
+            allowedA = closeA * scale;
+            allowedB = closeB * scale;
+          }
+
+          if (closeA > 0 && allowedA < closeA) {
+            da.nextLat = a.lateralOffset + Math.sign(deltaA) * allowedA;
+            da.nextLatVel = 0;
+          }
+          if (closeB > 0 && allowedB < closeB) {
+            db.nextLat = b.lateralOffset + Math.sign(deltaB) * allowedB;
+            db.nextLatVel = 0;
+          }
+        } else {
+          // Already tighter than reqSep: block any inward closing step while allowing separation moves
+          if (closeA > 0) {
+            da.nextLat = a.lateralOffset;
+            da.nextLatVel = 0;
+          }
+          if (closeB > 0) {
+            db.nextLat = b.lateralOffset;
+            db.nextLatVel = 0;
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Post-decision pairwise lateral guard across all vehicles on the same approach arm or exit leg.
+ * Prevents two longitudinally overlapping vehicles from converging laterally into an OBB overlap in one `dt` tick.
+ */
+export function resolvePairwiseLateralGuard(
+  decisions: LateralDecisionLike[],
+  lw: number,
+  armsById: Record<string, CompiledArmGeometry>,
+  dt: number,
+  minClearPad = 0.14
+): void {
+  if (decisions.length < 2) return;
+
+  const approachByArm = new Map<string, LateralDecisionLike[]>();
+  const exitByArm = new Map<string, LateralDecisionLike[]>();
+
+  for (let i = 0; i < decisions.length; i++) {
+    const d = decisions[i];
+    const v = d.v;
+    if (v.isSlipLane || v.isUTurn) continue;
+
+    if (v.distanceAlongPath < v.stopLineDist - 0.3) {
+      let bucket = approachByArm.get(v.originArm);
+      if (!bucket) {
+        bucket = [];
+        approachByArm.set(v.originArm, bucket);
+      }
+      bucket.push(d);
+    } else if (v.hasExitedIntersection) {
+      let bucket = exitByArm.get(v.destArm);
+      if (!bucket) {
+        bucket = [];
+        exitByArm.set(v.destArm, bucket);
+      }
+      bucket.push(d);
+    }
+  }
+
+  for (const bucket of approachByArm.values()) {
+    resolveArmBucketLateralGuard(bucket, true, lw, armsById, dt, minClearPad);
+  }
+  for (const bucket of exitByArm.values()) {
+    resolveArmBucketLateralGuard(bucket, false, lw, armsById, dt, minClearPad);
+  }
+}
+
+function resampleVehiclePose(v: SimVehicle): void {
+  if (!v.path) return;
+  const pt = sampleWithLateralOffset(
+    v.path,
+    v.distanceAlongPath,
+    v.lateralOffset,
+    v.isReversing ? -v.lateralVelocity : v.lateralVelocity,
+    v.speed
+  );
+  v.x = pt.x;
+  v.y = pt.y;
+  v.heading = pt.heading;
+}
+
+/**
+ * Post-step symmetric lateral separation helper for same-arm pre-stop vehicles with longitudinal overlap.
+ * Gently nudges overlapping parallel vehicles apart within approach carriageway bounds.
+ */
+export function enforceParallelLateralSeparation(
+  vehicles: SimVehicle[],
+  lw: number,
+  armsById: Record<string, CompiledArmGeometry>,
+  spatialHash: SpatialHashGrid,
+  queryBuf: SimVehicle[]
+): void {
+  if (vehicles.length < 2) return;
+
+  for (let pass = 0; pass < 2; pass++) {
+    let anyAdjusted = false;
+    spatialHash.rebuild(vehicles);
+
+    for (let i = 0; i < vehicles.length; i++) {
+      const a = vehicles[i];
+      if (a.isSlipLane || a.isUTurn || a.isReversing) continue;
+      if (a.distanceAlongPath >= a.stopLineDist - 0.25) continue;
+
+      const armGeom = armsById[a.originArm];
+      if (!armGeom) continue;
+
+      const roadMin = armGeom.halfMedian + 0.38;
+      const roadMax = armGeom.halfMedian + armGeom.inWidth - 0.38;
+      if (roadMax <= roadMin + 0.1) continue;
+
+      const laneCenters = armGeom.inLaneCenters;
+      const lwA = armGeom.def.inLaneWidths[a.laneIndex] ?? lw;
+      const effWA = effClearanceWidth(a);
+
+      spatialHash.queryRadius(a.x, a.y, Math.max(10.5, a.length + 7.5), queryBuf);
+
+      for (let j = 0; j < queryBuf.length; j++) {
+        const b = queryBuf[j];
+        if (b.id <= a.id) continue;
+        if (b.originArm !== a.originArm || b.isSlipLane || b.isUTurn || b.isReversing) continue;
+        if (b.distanceAlongPath >= b.stopLineDist - 0.25) continue;
+
+        if (Math.abs(a.distanceAlongPath - b.distanceAlongPath) >= (a.length + b.length) * 0.5 * 0.88) {
+          continue;
+        }
+
+        const lwB = armGeom.def.inLaneWidths[b.laneIndex] ?? lw;
+        const latA = getGlobalLat(a.laneIndex, a.lateralOffset, lwA, laneCenters);
+        const latB = getGlobalLat(b.laneIndex, b.lateralOffset, lwB, laneCenters);
+        const latSep = Math.abs(latA - latB);
+        const reqSep = (effWA + effClearanceWidth(b)) * 0.5 + 0.05;
+        if (latSep >= reqSep) continue;
+
+        const deficit = reqSep - latSep;
+        const targetPush = Math.min(deficit, 0.36);
+
+        const aIsLower =
+          latA < latB - 1e-4 ||
+          (Math.abs(latA - latB) <= 1e-4 &&
+            (a.laneIndex < b.laneIndex || (a.laneIndex === b.laneIndex && a.id < b.id)));
+
+        const roomA = aIsLower ? Math.max(0, latA - roadMin) : Math.max(0, roadMax - latA);
+        const roomB = aIsLower ? Math.max(0, roadMax - latB) : Math.max(0, latB - roadMin);
+
+        const wA = a.vClass === 'motor' ? 1.0 : a.vClass === 'car' ? 0.65 : 0.25;
+        const wB = b.vClass === 'motor' ? 1.0 : b.vClass === 'car' ? 0.65 : 0.25;
+        const totalW = wA + wB;
+
+        let magA = Math.min(roomA, targetPush * (wA / totalW));
+        let magB = Math.min(roomB, targetPush * (wB / totalW));
+        const rem = targetPush - (magA + magB);
+        if (rem > 1e-5) {
+          const extraA = Math.min(roomA - magA, rem);
+          magA += extraA;
+          const rem2 = rem - extraA;
+          if (rem2 > 1e-5) {
+            magB += Math.min(roomB - magB, rem2);
+          }
+        }
+
+        const shiftA = aIsLower ? -magA : magA;
+        const shiftB = aIsLower ? magB : -magB;
+
+        if (Math.abs(shiftA) > 1e-5) {
+          a.lateralOffset += shiftA;
+          if (Math.sign(a.lateralVelocity) !== Math.sign(shiftA)) a.lateralVelocity = 0;
+          resampleVehiclePose(a);
+          anyAdjusted = true;
+        }
+        if (Math.abs(shiftB) > 1e-5) {
+          b.lateralOffset += shiftB;
+          if (Math.sign(b.lateralVelocity) !== Math.sign(shiftB)) b.lateralVelocity = 0;
+          resampleVehiclePose(b);
+          anyAdjusted = true;
+        }
+      }
+    }
+
+    if (!anyAdjusted) break;
+  }
 }
