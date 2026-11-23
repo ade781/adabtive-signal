@@ -1,5 +1,6 @@
 import { effClearanceWidth, getGlobalLat, SimVehicle } from './behaviors';
 import { DisciplineParams } from './conflictResolver';
+import { getDriverTraits } from './driverIntelligence';
 import { WeatherPhysicsProfile } from './environmentDynamics';
 import { computeIidmAcceleration } from './longitudinalAI';
 import { isOccludedByHeavyVehicle } from './perceptionAI';
@@ -29,8 +30,13 @@ function idmAccel(v: SimVehicle, desiredV: number, gap: number, leadSpeed: numbe
 }
 
 function getPoliteness(v: SimVehicle, discipline: DisciplineParams): number {
-  const base = v.profile === 'aggressive' ? 0.06 : v.profile === 'normal' ? 0.24 : 0.55;
-  return Math.max(0.02, Math.min(0.8, base * (0.65 + 0.55 * discipline.discipline)));
+  const traits = getDriverTraits(v);
+  const frust = Math.max(0, Math.min(1, v.frustration ?? 0));
+  const effPoliteness = Math.max(
+    0.02,
+    traits.politeness * (1 - 0.55 * frust * traits.frustrationMobilSensitivity)
+  );
+  return Math.max(0.02, Math.min(0.85, effPoliteness * (0.65 + 0.55 * discipline.discipline)));
 }
 
 /**
@@ -110,9 +116,9 @@ function scanCandidateLane(
     const movingLeft = candCenter > curCenter;
     const inSweepCorridor = movingLeft
       ? (otherLat > curCenter + 0.15 && otherLat < candCenter + minLatClear) ||
-        (otherTargetLat > curCenter + 0.15 && otherTargetLat < candCenter + minLatClear)
+      (otherTargetLat > curCenter + 0.15 && otherTargetLat < candCenter + minLatClear)
       : (otherLat < curCenter - 0.15 && otherLat > candCenter - minLatClear) ||
-        (otherTargetLat < curCenter - 0.15 && otherTargetLat > candCenter - minLatClear);
+      (otherTargetLat < curCenter - 0.15 && otherTargetLat > candCenter - minLatClear);
 
     if (!inTargetLane && !inSweepCorridor) continue;
 
@@ -228,7 +234,8 @@ export function evaluateMobilLaneChange(
   weather: WeatherPhysicsProfile,
   discipline: DisciplineParams,
   onOvertake: () => void,
-  dt?: number
+  dt?: number,
+  onHandshake?: () => void
 ): boolean {
   if (v.vClass === 'heavy' || v.isSlipLane || v.isUTurn) return false;
   if (v.overtakeState && v.overtakeState !== 'none') {
@@ -264,14 +271,16 @@ export function evaluateMobilLaneChange(
   const laneCount = isOnApproach ? armGeom.def.inLanes : armGeom.def.outLanes;
   if (laneCount < 2) return false;
 
+  const traits = getDriverTraits(v);
   const curLane = isOnApproach ? v.laneIndex : (v.destLaneIndex ?? Math.min(v.laneIndex, laneCount - 1));
   const distToStop = v.stopLineDist - v.distanceAlongPath;
 
-  // Mandatory Lane Change (MLC) Pre-Sorting toward designated turn lane
+  // Ide #7: Adaptive Mandatory Lane Change (MLC) Pre-Sorting horizon per archetype
+  const mlcHorizon = traits.mlcPreSortHorizon;
   const needMlcLeft = isOnApproach && v.turn === 'left' && curLane < laneCount - 1;
   const needMlcRight = isOnApproach && (v.turn === 'right' || v.turn === 'uturn') && curLane > 0;
   const mlcTargetLane = needMlcLeft ? curLane + 1 : needMlcRight ? curLane - 1 : -1;
-  const isMlcTrigger = mlcTargetLane !== -1 && distToStop < 52.0;
+  const isMlcTrigger = mlcTargetLane !== -1 && distToStop < mlcHorizon;
 
   // Trigger 1: Blocked by a slower leader (moving overtake — works even at low speeds > 0.6 m/s!)
   const blockedBySlow =
@@ -305,19 +314,26 @@ export function evaluateMobilLaneChange(
     return false;
   }
 
+  const frust = Math.max(0, Math.min(1, v.frustration ?? 0));
   const politeness = getPoliteness(v, discipline);
-  const bSafe = (v.profile === 'aggressive' ? 4.4 : 3.5) * weather.comfortDecelMult;
-  const accelThreshold = (v.vClass === 'motor' ? 0.14 : 0.16) * (1.25 - 0.35 * discipline.overtakeBoldness);
+  const bSafe = 3.65 * traits.bSafeMult * weather.comfortDecelMult;
+  const frustThreshScale = Math.max(0.55, 1 - 0.32 * frust * traits.frustrationMobilSensitivity);
+  const accelThreshold =
+    (v.vClass === 'motor' ? 0.14 : 0.16) *
+    traits.mobilThresholdScale *
+    frustThreshScale *
+    (1.25 - 0.35 * discipline.overtakeBoldness);
 
   const curLeadSpeed = blockingLeader ? blockingLeader.speed : desiredV;
   const aCur = idmAccel(v, desiredV, nearestGap, curLeadSpeed, weather);
 
   const curQueueAhead = wantQueueBalance
-    ? countQueueInLane(vehicles, activeArmId, curLane, v.distanceAlongPath, true)
+    ? countQueueInLane(vehicles, activeArmId, curLane, v.distanceAlongPath, true, traits.laneImpedanceSensitivity)
     : 0;
 
   let bestCandLane = -1;
   let bestScore = -Infinity;
+  let bestHandshakePartnerId: number | undefined;
 
   for (const candLane of [curLane - 1, curLane + 1]) {
     if (!isLaneValidForVehicle(v, candLane, curLane, laneCount, isOnExit)) continue;
@@ -332,17 +348,32 @@ export function evaluateMobilLaneChange(
     );
     if (scan.newLeader && scan.newLeaderGap < minReqFrontGap) continue;
 
-    // MOBIL Safety Criterion on new follower
+    // MOBIL Safety Criterion on new follower (+ Ide #10 Cooperative Merge Handshake relaxation)
     let followerDeltaA = 0;
+    let partnerYielding = false;
     if (scan.newFollower) {
+      const nf = scan.newFollower;
+      partnerYielding =
+        nf.yieldTargetId === v.id ||
+        v.handshakePartnerId === nf.id ||
+        (Boolean(nf.isYielding) && (nf.prevAccel ?? 0) < -0.7);
       const nfDesired =
-        scan.newFollower.maxSpeed * scan.newFollower.speedFactor * weather.speedMult[scan.newFollower.vClass];
+        nf.maxSpeed * nf.speedFactor * weather.speedMult[nf.vClass];
       const nfOldGap = scan.newLeader ? scan.newFollowerGap + v.length + scan.newLeaderGap : Infinity;
-      const aNfOld = idmAccel(scan.newFollower, nfDesired, nfOldGap, scan.newLeader?.speed ?? nfDesired, weather);
-      const aNfNew = idmAccel(scan.newFollower, nfDesired, scan.newFollowerGap, v.speed, weather);
-      const dvRear = Math.max(0, scan.newFollower.speed - v.speed);
-      const minRearKinematic = (dvRear * dvRear) / (2 * Math.max(1.5, bSafe)) + scan.newFollower.minGap + 0.8;
-      if (aNfNew < -bSafe || scan.newFollowerGap < minRearKinematic) continue;
+      const aNfOld = idmAccel(nf, nfDesired, nfOldGap, scan.newLeader?.speed ?? nfDesired, weather);
+      const aNfNew = idmAccel(nf, nfDesired, scan.newFollowerGap, v.speed, weather);
+      const dvRear = Math.max(0, nf.speed - v.speed);
+      const rawMinRear = (dvRear * dvRear) / (2 * Math.max(1.5, bSafe)) + nf.minGap + 0.8;
+      // Preserve strict kinematic minimum safety even under cooperative handshake
+      const hardKinematicFloor =
+        (dvRear * dvRear) / (2 * Math.max(2.5, nf.comfortDecel * 1.4 * weather.comfortDecelMult)) +
+        nf.minGap * 0.75;
+      const effMinRear = partnerYielding ? Math.max(hardKinematicFloor, rawMinRear * 0.8) : rawMinRear;
+      const effFollowerDecelNeed = partnerYielding ? aNfNew * 0.8 : aNfNew;
+      const maxEmergencyFollowerDecel = -5.2 * weather.emergencyDecelMult;
+      if (effFollowerDecelNeed < -bSafe || aNfNew < maxEmergencyFollowerDecel || scan.newFollowerGap < effMinRear) {
+        continue;
+      }
       followerDeltaA = aNfNew - aNfOld;
     }
 
@@ -352,7 +383,14 @@ export function evaluateMobilLaneChange(
 
     // Queue balance bonus when approaching red/stopped/high-friction queue
     if (wantQueueBalance) {
-      const candQueue = countQueueInLane(vehicles, activeArmId, candLane, v.distanceAlongPath, true);
+      const candQueue = countQueueInLane(
+        vehicles,
+        activeArmId,
+        candLane,
+        v.distanceAlongPath,
+        true,
+        traits.laneImpedanceSensitivity
+      );
       if (candQueue + 1 < curQueueAhead) {
         incentive += (curQueueAhead - candQueue) * 0.45;
       }
@@ -360,12 +398,13 @@ export function evaluateMobilLaneChange(
 
     // Toledo MLC rising utility incentive toward designated turn lane
     if (candLane === mlcTargetLane) {
-      incentive += 2.0 + 3.2 * (1 - Math.min(1, Math.max(0, distToStop) / 55));
+      incentive += 2.0 + 3.2 * (1 - Math.min(1, Math.max(0, distToStop) / Math.max(25, mlcHorizon)));
     }
 
     if (incentive > accelThreshold && incentive > bestScore) {
       bestScore = incentive;
       bestCandLane = candLane;
+      bestHandshakePartnerId = partnerYielding && scan.newFollower ? scan.newFollower.id : undefined;
     }
   }
 
@@ -377,12 +416,12 @@ export function evaluateMobilLaneChange(
   const dir: 'left' | 'right' = bestCandLane > curLane ? 'left' : 'right';
   const isUrgentMlc = bestCandLane === mlcTargetLane && distToStop < 20.0;
 
-  // Pre-change blinker signaling window for disciplined drivers on discretionary changes
-  if (!isMidRoadStuck && !isUrgentMlc && discipline.discipline >= 0.5 && (dt ?? 0) > 0) {
+  // Pre-change blinker signaling window scaled by archetype signalLeadTime
+  if (!isMidRoadStuck && !isUrgentMlc && (discipline.discipline >= 0.5 || traits.courtesyYieldBias >= 1.1) && (dt ?? 0) > 0) {
     if (v.pendingLaneChangeDir !== dir) {
       v.pendingLaneChangeDir = dir;
       v.turnSignalActive = dir;
-      v.signalLeadTimer = 0.32;
+      v.signalLeadTimer = traits.signalLeadTime;
       return false;
     }
     v.signalLeadTimer = Math.max(0, (v.signalLeadTimer ?? 0) - dt!);
@@ -393,7 +432,7 @@ export function evaluateMobilLaneChange(
   }
 
   const cooldown = v.vClass === 'motor' ? 1.4 : 2.2;
-  return commitLaneChange(
+  const committed = commitLaneChange(
     v,
     topology,
     armGeom,
@@ -405,12 +444,21 @@ export function evaluateMobilLaneChange(
     cooldown,
     v.vClass === 'car' ? onOvertake : undefined
   );
+  if (committed && bestHandshakePartnerId !== undefined) {
+    v.handshakePartnerId = bestHandshakePartnerId;
+    if (!v.handshakeCounted) {
+      v.handshakeCounted = true;
+      onHandshake?.();
+    }
+  }
+  return committed;
 }
 
 /**
- * Courtesy Keep-Left Shift (LHT): Heavy trucks and cautious drivers cruising slower than 84% of desired speed
- * yield the innermost fast lane (`laneIndex = 0` or inner lane) to an open outer-left lane (`curLane + 1`)
- * whenever a faster same-arm follower is closing within 22m.
+ * Courtesy Keep-Left Shift (LHT) & Ide #9 Straightaway Tailgate Pressure Loop:
+ * Heavy trucks, buses on busBayArms, defensive drivers, and commuters experiencing
+ * close rear tailgate pressure yield inner lanes to an open outer-left lane (`curLane + 1`),
+ * while aggressive drivers exhibit mild ego resistance.
  */
 export function evaluateCourtesyLaneShift(
   v: SimVehicle,
@@ -421,14 +469,27 @@ export function evaluateCourtesyLaneShift(
   desiredV: number,
   weather: WeatherPhysicsProfile,
   discipline: DisciplineParams,
-  onLaneChange?: () => void
+  onLaneChange?: () => void,
+  onTailgateYield?: () => void,
+  preferOuterCurb = false
 ): boolean {
+  const traits = getDriverTraits(v);
   if (v.turn !== 'straight') return false;
-  if (v.vClass !== 'heavy' && v.profile !== 'cautious') return false;
   if (v.isSlipLane || v.isUTurn) return false;
   if (v.overtakeState && v.overtakeState !== 'none') return false;
   if ((v.laneChangeCooldown ?? 0) > 0) return false;
   if (Math.abs(v.lateralOffset - v.targetLateralOffset) > 0.35) return false;
+
+  const pressure = v.tailgatePressure ?? 0;
+  const effTailgateTrigger = pressure * traits.tailgateYieldSens;
+  const tailgateTriggered = effTailgateTrigger >= 0.48 && traits.tailgateYieldSens >= 0.75;
+  const classicEligible =
+    v.vClass === 'heavy' ||
+    traits.archetype === 'defensive' ||
+    traits.archetype === 'transit' ||
+    traits.archetype === 'logistics';
+  const busBayShift = preferOuterCurb && traits.archetype === 'transit';
+  if (!classicEligible && !tailgateTriggered && !busBayShift) return false;
 
   const isOnApproach = v.distanceAlongPath > 8.0 && v.distanceAlongPath < v.stopLineDist - 22.0 && light === 'green';
   const isOnExit = v.distanceAlongPath > v.exitLineDist + 6.0 && v.distanceAlongPath < v.totalPathLength - 18.0;
@@ -444,35 +505,40 @@ export function evaluateCourtesyLaneShift(
   const curLane = isOnApproach ? v.laneIndex : (v.destLaneIndex ?? Math.min(v.laneIndex, laneCount - 1));
   const candLane = curLane + 1;
   if (candLane >= laneCount) return false;
-  if (v.speed >= desiredV * 0.84 || v.speed < 0.3) return false;
+
+  const maxSpeedForYield = tailgateTriggered || busBayShift ? desiredV * 1.05 : desiredV * 0.84;
+  if (v.speed >= maxSpeedForYield || v.speed < 0.3) return false;
 
   const myS = isOnApproach ? v.distanceAlongPath : v.distanceAlongPath - v.exitLineDist;
-  let hasClosingFollower = false;
+  let hasClosingFollower = tailgateTriggered || (busBayShift && isOnApproach);
 
-  for (const other of vehicles) {
-    if (other.id === v.id || other.isSlipLane || other.isUTurn) continue;
-    const sameLeg = isOnApproach
-      ? other.originArm === activeArmId && other.laneIndex === curLane && other.distanceAlongPath < other.stopLineDist
-      : other.destArm === activeArmId &&
+  if (!hasClosingFollower) {
+    for (const other of vehicles) {
+      if (other.id === v.id || other.isSlipLane || other.isUTurn) continue;
+      const sameLeg = isOnApproach
+        ? other.originArm === activeArmId && other.laneIndex === curLane && other.distanceAlongPath < other.stopLineDist
+        : other.destArm === activeArmId &&
         (other.destLaneIndex ?? Math.min(other.laneIndex, laneCount - 1)) === curLane &&
         other.distanceAlongPath >= other.exitLineDist;
-    if (!sameLeg) continue;
+      if (!sameLeg) continue;
 
-    const otherS = isOnApproach ? other.distanceAlongPath : other.distanceAlongPath - other.exitLineDist;
-    const deltaS = myS - otherS;
-    if (deltaS > 0 && deltaS < 22.0 && other.speed > v.speed + 2.0) {
-      hasClosingFollower = true;
-      break;
+      const otherS = isOnApproach ? other.distanceAlongPath : other.distanceAlongPath - other.exitLineDist;
+      const deltaS = myS - otherS;
+      if (deltaS > 0 && deltaS < 22.0 && other.speed > v.speed + 2.0) {
+        hasClosingFollower = true;
+        break;
+      }
     }
   }
   if (!hasClosingFollower) return false;
 
   const scan = scanCandidateLane(v, vehicles, armGeom, lw, curLane, candLane, laneCount, isOnApproach);
   if (scan.sideBlocked) return false;
-  if (scan.newLeader && scan.newLeaderGap < 26.0) return false;
+  const minLeaderGap = tailgateTriggered || busBayShift ? 18.0 : 26.0;
+  if (scan.newLeader && scan.newLeaderGap < minLeaderGap) return false;
 
   if (scan.newFollower) {
-    const bSafe = (v.profile === 'aggressive' ? 4.4 : 3.5) * weather.comfortDecelMult * (0.85 + 0.25 * discipline.discipline);
+    const bSafe = 3.65 * traits.bSafeMult * weather.comfortDecelMult * (0.85 + 0.25 * discipline.discipline);
     const nfDesired =
       scan.newFollower.maxSpeed * scan.newFollower.speedFactor * weather.speedMult[scan.newFollower.vClass];
     const aNfNew = idmAccel(scan.newFollower, nfDesired, scan.newFollowerGap, v.speed, weather);
@@ -483,7 +549,11 @@ export function evaluateCourtesyLaneShift(
   }
 
   const cooldown = v.vClass === 'heavy' ? 3.0 : 2.4;
-  return commitLaneChange(v, topology, armGeom, lw, curLane, candLane, isOnApproach, 'left', cooldown, onLaneChange);
+  const shifted = commitLaneChange(v, topology, armGeom, lw, curLane, candLane, isOnApproach, 'left', cooldown, onLaneChange);
+  if (shifted && tailgateTriggered) {
+    onTailgateYield?.();
+  }
+  return shifted;
 }
 
 /**
@@ -496,7 +566,8 @@ function countQueueInLane(
   armId: string,
   lane: number,
   myS: number,
-  isApproach: boolean
+  isApproach: boolean,
+  impedanceSensitivity = 1.0
 ): number {
   let score = 0;
   for (const o of vehicles) {
@@ -514,8 +585,8 @@ function countQueueInLane(
       } else {
         continue;
       }
-      if (o.vClass === 'heavy') score += 1.2;
-      if (o.turn === 'right' || o.turn === 'uturn' || o.turnSignalActive === 'right') score += 1.6;
+      if (o.vClass === 'heavy') score += 1.2 * impedanceSensitivity;
+      if (o.turn === 'right' || o.turn === 'uturn' || o.turnSignalActive === 'right') score += 1.6 * impedanceSensitivity;
     }
   }
   return score;
@@ -587,8 +658,8 @@ export function updateOncomingOvertakeFSM(
     isOnApproach
       ? other.originArm === v.originArm && other.laneIndex === v.laneIndex && other.distanceAlongPath < other.stopLineDist
       : other.destArm === v.destArm &&
-        (other.destLaneIndex ?? Math.min(other.laneIndex, outLanesCount - 1)) === myOutLane &&
-        other.distanceAlongPath >= other.exitLineDist;
+      (other.destLaneIndex ?? Math.min(other.laneIndex, outLanesCount - 1)) === myOutLane &&
+      other.distanceAlongPath >= other.exitLineDist;
 
   // Helper: scan oncoming vehicles along the same physical corridor via Spatial Hash
   const findNearestOncoming = (applyOcclusion = false): { dist: number; closingSpeed: number; opp: SimVehicle | null } => {
@@ -630,9 +701,11 @@ export function updateOncomingOvertakeFSM(
     return { dist: nearestDist, closingSpeed, opp: nearestOpp };
   };
 
+  const traits = getDriverTraits(v);
   // --- STATE: NONE (Evaluate whether to initiate oncoming-lane overtake) ---
   if (state === 'none') {
     if (armHasMedian || !weather.allowOncomingOvertake) return result;
+    if (!traits.allowOncomingInLightRain && weather.condition !== 'clear') return result;
     // Oncoming-lane overtaking occurs on 1-lane undivided roads (cars & motors), or 2-lane undivided for cars when blocked
     if (armGeom.def.inLanes > 2) return result;
     if (armGeom.def.inLanes >= 2 && v.vClass === 'motor') return result;
@@ -659,8 +732,13 @@ export function updateOncomingOvertakeFSM(
       (isOnExit || (isOnApproach && distToStop > 32.0 && light === 'green'));
     if (isOnApproach && blockingLeader.speed < 1.2 && !isMidRoadStaticBypass) return result;
     const speedDeficit = desiredV - blockingLeader.speed;
-    const baseDeficit = v.profile === 'aggressive' ? 1.8 : v.profile === 'normal' ? 2.5 : 3.6;
-    const minDeficit = baseDeficit / Math.max(0.7, discipline.overtakeBoldness);
+    const frust = Math.max(0, Math.min(1, v.frustration ?? 0));
+    const baseDeficit = Math.max(1.75, 3.8 - 2.35 * traits.riskTolerance);
+    const frustDeficitMult =
+      traits.archetype === 'hurried' || traits.archetype === 'courier'
+        ? Math.max(0.76, 1 - 0.24 * frust * traits.frustrationMobilSensitivity)
+        : 1.0;
+    const minDeficit = (baseDeficit * frustDeficitMult) / Math.max(0.7, discipline.overtakeBoldness);
     if (speedDeficit < minDeficit) return result;
 
     // Check return gap ahead of blockingLeader in our lane so we don't get trapped in oncoming lane
@@ -692,8 +770,8 @@ export function updateOncomingOvertakeFSM(
     let convoyEndS = leaderFrontS;
 
     if (aheadOfLeaderGap < neededReturnGap) {
-      // Check if we can safely overtake the entire 2-vehicle convoy in one continuous pass
-      if (!convoyLead || convoyLead.speed >= desiredV - 1.6 || (!isOnExit && light !== 'green')) {
+      // Check if archetype allows overtaking a 2-vehicle convoy in one continuous pass
+      if (!traits.allowOncomingConvoyPass || !convoyLead || convoyLead.speed >= desiredV - 1.6 || (!isOnExit && light !== 'green')) {
         return result;
       }
       convoyEndS = toMyFrameS(convoyLead) + convoyLead.length * 0.5;
@@ -734,12 +812,14 @@ export function updateOncomingOvertakeFSM(
     if (isOnApproach && distToStop < myRunwayNeeded + 22.0) return result;
     if (isOnExit && v.totalPathLength - v.distanceAlongPath < myRunwayNeeded + 10.0) return result;
     const safetyMargin =
-      (v.profile === 'aggressive' ? 1.55 : v.profile === 'normal' ? 2.15 : 2.8) *
+      Math.max(1.65, 2.55 - traits.riskTolerance) *
+      traits.oncomingMarginMult *
       weather.gapAcceptanceMult *
       (0.82 + 0.36 * discipline.discipline);
 
     const oncoming = findNearestOncoming(true);
-    const requiredClearDist = (passSpeed + 11.5) * (tPass + safetyMargin);
+    const heavyOncomingPenalty = oncoming.opp?.vClass === 'heavy' ? 1.2 : 1.0;
+    const requiredClearDist = (passSpeed + 11.5) * (tPass + safetyMargin) * heavyOncomingPenalty;
     const actualTTC = oncoming.dist / oncoming.closingSpeed;
     if (
       (oncoming.dist < Math.min(weather.sightDistance * 0.92, requiredClearDist) && actualTTC < tPass + safetyMargin) ||
@@ -779,8 +859,13 @@ export function updateOncomingOvertakeFSM(
     v.turnSignalActive = 'right';
     result.speedBoost = 1.18;
 
+    const heavyOppAbort = oncoming.opp?.vClass === 'heavy' && oncoming.dist < 32.0;
     const suddenThreat =
-      oncoming.dist < 26.0 || oncoming.dist / oncoming.closingSpeed < 2.2 || approachingNoPassZone || armHasMedian;
+      heavyOppAbort ||
+      oncoming.dist < 26.0 ||
+      oncoming.dist / oncoming.closingSpeed < 2.2 ||
+      approachingNoPassZone ||
+      armHasMedian;
     if (suddenThreat || !target) {
       v.overtakeState = 'abort';
       v.targetLateralOffset = 0;
@@ -908,7 +993,10 @@ export function evaluateDefensiveYieldForOncomingOvertaker(
 ): { speedCap: number; defensiveShiftLeft: number } {
   if (v.overtakeState && v.overtakeState !== 'none') return { speedCap: Infinity, defensiveShiftLeft: 0 };
 
-  const nearby = spatialHash.queryRadius(v.x, v.y, 34, queryBuf);
+  const traits = getDriverTraits(v);
+  const risk = traits.riskTolerance;
+  const scanRange = 39 - 12 * risk;
+  const nearby = spatialHash.queryRadius(v.x, v.y, scanRange, queryBuf);
   const cosH = Math.cos(v.heading);
   const sinH = Math.sin(v.heading);
 
@@ -924,10 +1012,13 @@ export function evaluateDefensiveYieldForOncomingOvertaker(
     const dy = other.y - v.y;
     const forward = dx * cosH + dy * sinH;
     const lat = Math.abs(-dx * sinH + dy * cosH);
-    if (forward > 0 && forward < 32 && lat < 3.4) {
+    if (forward > 0 && forward < scanRange - 2 && lat < 3.4) {
+      const baseShift = v.vClass === 'heavy' ? 0.16 : 0.38;
+      const shiftScale = Math.max(0.75, 1.3 - 0.62 * risk);
+      const capScale = Math.max(0.84, Math.min(1.0, 0.83 + 0.35 * risk));
       return {
-        speedCap: forward < 14 ? 3.5 : 6.5,
-        defensiveShiftLeft: v.vClass === 'heavy' ? 0.15 : 0.38,
+        speedCap: (forward < 14 ? 3.5 : 6.5) * capScale,
+        defensiveShiftLeft: baseShift * shiftScale,
       };
     }
   }

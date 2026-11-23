@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "tsx src/engine/test_sim.ts && tsx src/engine/test_adaptive_and_export.ts && tsx src/engine/test_v2_features.ts"
+    "test": "tsx src/engine/test_sim.ts && tsx src/engine/test_adaptive_and_export.ts && tsx src/engine/test_v2_features.ts && tsx src/engine/test_driver_intelligence.ts"
   },
   "dependencies": {
     "lucide-react": "^0.469.0",

@@ -2,10 +2,266 @@ import { DEFAULT_CONFIG } from './constants';
 import { GIWANGAN_TOPOLOGY } from './giwanganBlueprint';
 import { SCENARIO_PRESETS } from './presets';
 import { buildSignalPhasesForTopology, simConfigToTopology } from './topologyBuilder';
-import { ArmDef, IntersectionTopology } from './topologyTypes';
+import { ArmDef, IntersectionTopology, LandmarkItem } from './topologyTypes';
 import { SimConfig } from './types';
 
 export { GIWANGAN_TOPOLOGY };
+
+/**
+ * Ide #13: Explicit real-world Indonesian city landmarks for the 5 non-Giwangan field blueprints.
+ * Matches quadrant layout & preloaded SVG assets in drawStaticRoad.ts so Draw -> Simulasi
+ * preserves authentic city identity rather than falling back to generic buildings.
+ */
+export const FIELD_BLUEPRINT_LANDMARKS: Readonly<Record<string, readonly LandmarkItem[]>> = {
+  'brimob-yogya': [
+    {
+      id: 'mako-brimob-baciro',
+      assetKey: '/assets/infra/city/landmark-mako-brimob.svg',
+      x: -28,
+      y: -26,
+      width: 26,
+      height: 20,
+      rotationRad: 0,
+      label: 'Mako Brimob Baciro',
+    },
+    {
+      id: 'taru-martani-ruko',
+      assetKey: '/assets/infra/city/landmark-pasar-tradisional.svg',
+      x: 28,
+      y: -26,
+      width: 24,
+      height: 18,
+      rotationRad: 0,
+      label: 'Taru Martani & Ruko',
+    },
+    {
+      id: 'ruko-gondosuli',
+      assetKey: '/assets/infra/city/landmark-ruko-row.svg',
+      x: -28,
+      y: 24,
+      width: 24,
+      height: 16,
+      rotationRad: 0,
+      label: 'Ruko Gondosuli',
+    },
+    {
+      id: 'mandala-krida',
+      assetKey: '/assets/infra/city/landmark-stadion-corner.svg',
+      x: 30,
+      y: 26,
+      width: 28,
+      height: 20,
+      rotationRad: 0,
+      label: 'Kawasan Mandala Krida',
+    },
+  ],
+  'lamper-semarang': [
+    {
+      id: 'eks-lotte-mart-majapahit',
+      assetKey: '/assets/infra/city/building-commercial-mall.svg',
+      x: -36,
+      y: -32,
+      width: 28,
+      height: 20,
+      rotationRad: 0,
+      label: 'Eks Lotte Mart Majapahit',
+    },
+    {
+      id: 'ruko-gajah-raya',
+      assetKey: '/assets/infra/city/landmark-ruko-row.svg',
+      x: 34,
+      y: -30,
+      width: 26,
+      height: 18,
+      rotationRad: 0,
+      label: 'Ruko Jl. Gajah Raya',
+    },
+    {
+      id: 'rs-bhayangkara-helipad',
+      assetKey: '/assets/infra/city/helipad-roof.svg',
+      x: -34,
+      y: 30,
+      width: 24,
+      height: 20,
+      rotationRad: 0,
+      label: 'Kawasan RS Bhayangkara',
+    },
+    {
+      id: 'rs-bhayangkara-tower',
+      assetKey: '/assets/infra/city/building-tower-glass.svg',
+      x: -62,
+      y: 30,
+      width: 20,
+      height: 18,
+      rotationRad: 0,
+      label: 'Gedung RS Bhayangkara',
+    },
+    {
+      id: 'ruko-lamper-tengah',
+      assetKey: '/assets/infra/city/landmark-ruko-row.svg',
+      x: 34,
+      y: 30,
+      width: 26,
+      height: 18,
+      rotationRad: 0,
+      label: 'Ruko Lamper Tengah',
+    },
+  ],
+  'sulawesi-banjarmasin': [
+    {
+      id: 'pasar-lama-banjarmasin',
+      assetKey: '/assets/infra/city/landmark-pasar-tradisional.svg',
+      x: -34,
+      y: -30,
+      width: 26,
+      height: 20,
+      rotationRad: 0,
+      label: 'Pasar Lama',
+    },
+    {
+      id: 'masjid-jami-banjarmasin',
+      assetKey: '/assets/infra/city/landmark-masjid-jami.svg',
+      x: 34,
+      y: -30,
+      width: 26,
+      height: 20,
+      rotationRad: 0,
+      label: 'Kawasan Masjid Jami',
+    },
+    {
+      id: 'tepi-sungai-pond',
+      assetKey: '/assets/infra/city/park-pond.svg',
+      x: 62,
+      y: -30,
+      width: 20,
+      height: 18,
+      rotationRad: 0,
+    },
+    {
+      id: 'kampung-bugis',
+      assetKey: '/assets/infra/city/building-roof-1.svg',
+      x: -32,
+      y: 28,
+      width: 24,
+      height: 18,
+      rotationRad: 0,
+      label: 'Kampung Bugis',
+    },
+    {
+      id: 'tepi-sungai-jembatan',
+      assetKey: '/assets/infra/city/landmark-ruko-row.svg',
+      x: 34,
+      y: 28,
+      width: 26,
+      height: 18,
+      rotationRad: 0,
+      label: 'Tepi Sungai & Jembatan',
+    },
+  ],
+  'laswi-bandung': [
+    {
+      id: 'koridor-laswi',
+      assetKey: '/assets/infra/city/building-tower-glass.svg',
+      x: -34,
+      y: -32,
+      width: 26,
+      height: 20,
+      rotationRad: 0,
+      label: 'Koridor Laswi',
+    },
+    {
+      id: 'spbu-laswi',
+      assetKey: '/assets/infra/city/landmark-spbu-pertamina.svg',
+      x: 36,
+      y: -32,
+      width: 26,
+      height: 18,
+      rotationRad: 0,
+      label: 'SPBU & Halte TMB',
+    },
+    {
+      id: 'trans-studio-bandung',
+      assetKey: '/assets/infra/city/building-commercial-mall.svg',
+      x: -36,
+      y: 32,
+      width: 30,
+      height: 22,
+      rotationRad: 0,
+      label: 'Kawasan Trans Studio',
+    },
+    {
+      id: 'pelajar-pejuang-45',
+      assetKey: '/assets/infra/city/building-terrace-green.svg',
+      x: 34,
+      y: 32,
+      width: 26,
+      height: 18,
+      rotationRad: 0,
+      label: 'Pelajar Pejuang 45',
+    },
+    {
+      id: 'halte-bus-tmb-laswi',
+      assetKey: '/assets/infra/city/bus-shelter-top.svg',
+      x: 62,
+      y: 17,
+      width: 12,
+      height: 6,
+      rotationRad: 0,
+      label: 'Halte Bus TMB',
+    },
+  ],
+  'bondowoso-malang': [
+    {
+      id: 'kampus-widya-karya',
+      assetKey: '/assets/infra/city/landmark-kampus-wilis.svg',
+      x: -28,
+      y: -26,
+      width: 26,
+      height: 20,
+      rotationRad: 0,
+      label: 'Kampus Widya Karya',
+    },
+    {
+      id: 'taman-retawu',
+      assetKey: '/assets/infra/city/park-plaza.svg',
+      x: 28,
+      y: -26,
+      width: 24,
+      height: 18,
+      rotationRad: 0,
+      label: 'Taman Jl. Retawu',
+    },
+    {
+      id: 'kolam-taman-retawu',
+      assetKey: '/assets/infra/city/park-pond.svg',
+      x: 54,
+      y: -26,
+      width: 18,
+      height: 16,
+      rotationRad: 0,
+    },
+    {
+      id: 'pasar-buku-wilis',
+      assetKey: '/assets/infra/city/landmark-pasar-tradisional.svg',
+      x: -28,
+      y: 24,
+      width: 26,
+      height: 18,
+      rotationRad: 0,
+      label: 'Pasar Buku Wilis',
+    },
+    {
+      id: 'sentra-kuliner-malang',
+      assetKey: '/assets/infra/city/landmark-ruko-row.svg',
+      x: 28,
+      y: 24,
+      width: 24,
+      height: 16,
+      rotationRad: 0,
+      label: 'Sentra Kuliner & Kafe',
+    },
+  ],
+};
 
 export interface StaticSamplingBlueprint {
   id: string;
@@ -185,6 +441,10 @@ function buildFieldSamplingBlueprints(): StaticSamplingBlueprint[] {
     topo.source = preset.source;
     topo.description = preset.description;
     topo.staticMapImage = `/assets/maps/${preset.id}.svg`;
+    const fieldLandmarks = FIELD_BLUEPRINT_LANDMARKS[preset.id];
+    if (fieldLandmarks && fieldLandmarks.length > 0) {
+      topo.landmarks = fieldLandmarks.map((lm) => ({ ...lm }));
+    }
     if (mergedCfg.hasMedian) {
       topo.arms = topo.arms.map((a) => ({ ...a, medianWidth: 1.2 }));
     }

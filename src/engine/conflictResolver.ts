@@ -1,4 +1,5 @@
 import { SimVehicle } from './behaviors';
+import { getDriverTraits } from './driverIntelligence';
 import { WeatherPhysicsProfile } from './environmentDynamics';
 import { isOccludedByHeavyVehicle } from './perceptionAI';
 import { SpatialHashGrid } from './spatialHash';
@@ -48,12 +49,34 @@ export function negotiateDeadlockPriority(self: SimVehicle, blocker: SimVehicle)
   // Vehicle further from clearing the intersection yields to the one closer to exiting
   const selfRem = self.exitLineDist - self.distanceAlongPath;
   const blockerRem = blocker.exitLineDist - blocker.distanceAlongPath;
-  if (Math.abs(selfRem - blockerRem) > 0.8) {
+  if (Math.abs(selfRem - blockerRem) >= 1.2) {
     return selfRem > blockerRem ? 'yield' : 'proceed';
+  }
+
+  // Ide #10: SVO / Courtesy asymmetric tiebreaker when class and remaining distance are comparable
+  const selfCourtesy = getDriverTraits(self).courtesyYieldBias;
+  const blockerCourtesy = getDriverTraits(blocker).courtesyYieldBias;
+  if (Math.abs(selfCourtesy - blockerCourtesy) > 0.05) {
+    return selfCourtesy > blockerCourtesy ? 'yield' : 'proceed';
   }
 
   // Deterministic tiebreaker so both never pick the same action simultaneously
   return self.id > blocker.id ? 'yield' : 'proceed';
+}
+
+/**
+ * Ide #5: Frustration-coupled courtesy bias.
+ * High frustration (> 0.65) modestly reduces courtesy on non-defensive/transit drivers
+ * while keeping defensive & transit drivers reliably courteous.
+ */
+function getEffectiveCourtesyYieldBias(v: SimVehicle): number {
+  const traits = getDriverTraits(v);
+  const frust = v.frustration ?? 0;
+  if (frust <= 0.65 || traits.archetype === 'defensive' || traits.archetype === 'transit') {
+    return traits.courtesyYieldBias;
+  }
+  const excess = Math.min(1, (frust - 0.65) / 0.35);
+  return Math.max(0.42, traits.courtesyYieldBias * (1 - 0.22 * excess));
 }
 
 export interface ConflictYieldDecision {
@@ -63,6 +86,7 @@ export interface ConflictYieldDecision {
   /** Optional speed cap while approaching yield point */
   speedCap: number;
   reason: 'none' | 'opposing-straight' | 'slip-merge' | 'uturn-yield' | 'yellow-box';
+  targetId?: number;
 }
 
 const CRITICAL_GAP_BASE: Record<SimVehicle['vClass'], number> = {
@@ -83,8 +107,10 @@ function computeCriticalGapModifiers(
   includeQueueWait: boolean,
   options?: { hasSwarmShield?: boolean; gapCautiousMult?: number }
 ): number {
+  const traits = getDriverTraits(v);
   const svoAngle = v.svoAngle ?? 0.35;
   const svoFactor = Math.max(0.84, Math.min(1.2, 0.94 + 0.16 * (svoAngle / (Math.PI / 4))));
+  const riskFactor = Math.max(0.86, Math.min(1.16, 1.1 - 0.24 * traits.riskTolerance));
   const gapCautiousMult = options?.gapCautiousMult ?? 1.0;
   const swarmShieldMult = options?.hasSwarmShield && v.vClass === 'motor' ? 0.86 : 1.0;
   const connectedMult = v.isConnected ? 0.9 : 1.0;
@@ -95,12 +121,12 @@ function computeCriticalGapModifiers(
   const waitDecay = Math.min(
     0.26,
     Math.max(0, boxWait - 0.35) * 0.065 +
-      frustration * 0.24 +
-      Math.max(0, queueWait - 1.2) * 0.025
+    frustration * 0.24 +
+    Math.max(0, queueWait - 1.2) * 0.025
   );
   const dynamicGapDecay = Math.max(0.72, 1 - waitDecay);
 
-  return svoFactor * gapCautiousMult * swarmShieldMult * connectedMult * dynamicGapDecay;
+  return svoFactor * riskFactor * gapCautiousMult * swarmShieldMult * connectedMult * dynamicGapDecay;
 }
 
 /**
@@ -193,6 +219,7 @@ export function evaluatePriorityConflictYield(
             yieldGap: Math.max(0.15, distToTurn),
             speedCap: 5.0,
             reason: 'uturn-yield',
+            targetId: other.id,
           };
         }
       }
@@ -238,6 +265,7 @@ export function evaluatePriorityConflictYield(
                 yieldGap: Math.max(0.05, distToMerge),
                 speedCap: distToMerge <= 0 ? 0.5 : 5.2,
                 reason: 'slip-merge',
+                targetId: other.id,
               };
             }
           }
@@ -276,6 +304,7 @@ export function evaluatePriorityConflictYield(
             yieldGap: Math.max(0.15, distToStopLine),
             speedCap: 4.5,
             reason: 'yellow-box',
+            targetId: other.id,
           };
         }
       }
@@ -293,15 +322,16 @@ export function evaluatePriorityConflictYield(
   const boxWait = v.boxWaitTime ?? 0;
 
   const nearby = spatialHash.queryRadius(v.x, v.y, Math.min(54, weather.sightDistance), queryBuf);
-  const profileScale = v.profile === 'aggressive' ? 0.82 : v.profile === 'cautious' ? 1.18 : 1.0;
+  const vTraits = getDriverTraits(v);
+  const profileScale = Math.max(0.82, Math.min(1.18, 1.21 - 0.46 * vTraits.riskTolerance));
   const gapModifiers = computeCriticalGapModifiers(v, false, options);
   const critGap = Math.max(
     1.2,
     CRITICAL_GAP_BASE[v.vClass] *
-      profileScale *
-      weather.gapAcceptanceMult *
-      (0.85 + 0.3 * discipline.discipline) *
-      gapModifiers
+    profileScale *
+    weather.gapAcceptanceMult *
+    (0.85 + 0.3 * discipline.discipline) *
+    gapModifiers
   );
   // In-box creeping: waiting right-turners inch carefully toward turning arc while watching oncoming stream
   const creepOffset =
@@ -310,6 +340,7 @@ export function evaluatePriorityConflictYield(
       : 0;
 
   let closestYieldGap = Infinity;
+  let closestTargetId: number | undefined;
 
   for (const cz of zones) {
     const amA = cz.pathKeyA === pathKey;
@@ -392,6 +423,7 @@ export function evaluatePriorityConflictYield(
       if (distOtherToConflict < 3.5 || tOppArrive < Math.max(critGap * 0.72, tSelfClear + 0.75)) {
         if (gapToStaging < closestYieldGap) {
           closestYieldGap = Math.max(0.15, gapToStaging);
+          closestTargetId = other.id;
         }
       }
     }
@@ -403,6 +435,7 @@ export function evaluatePriorityConflictYield(
       yieldGap: closestYieldGap,
       speedCap: 6.2,
       reason: 'opposing-straight',
+      targetId: closestTargetId,
     };
   }
 
@@ -482,7 +515,7 @@ export function shouldHoldForConflictCorridor(
 
   // Respect driver discipline so low-discipline chaotic scenarios still exhibit realistic push-ins
   if (v.respectsYellowBox === false && discipline.discipline < 0.55) return false;
-  if (discipline.discipline < 0.4 && v.profile === 'aggressive') return false;
+  if (discipline.discipline < 0.4 && getDriverTraits(v).riskTolerance >= 0.72) return false;
 
   const zones = topology.conflictsByPathKey[v.pathKey];
   if (!zones || zones.length === 0) return false;
@@ -581,18 +614,20 @@ export function evaluateZipperMergeGiveWay(
   lw: number,
   weather: WeatherPhysicsProfile,
   discipline: DisciplineParams
-): { yieldGap: number; speedCap: number } {
-  const none = { yieldGap: Infinity, speedCap: Infinity };
+): { yieldGap: number; speedCap: number; requester?: SimVehicle | null } {
+  const none = { yieldGap: Infinity, speedCap: Infinity, requester: null as SimVehicle | null };
   if (v.isReversing || v.isSlipLane || v.isUTurn) return none;
   if (v.overtakeState && v.overtakeState !== 'none') return none;
   if (v.speed < 0.8) return none;
   // Never yield mid-box to let someone merge inside intersection
   if (v.distanceAlongPath > v.stopLineDist - 3.5 && !v.hasExitedIntersection) return none;
 
+  const effCourtesy = getEffectiveCourtesyYieldBias(v);
   const cosH = Math.cos(v.heading);
   const sinH = Math.sin(v.heading);
   let bestGap = Infinity;
   let bestCap = Infinity;
+  let bestRequester: SimVehicle | null = null;
 
   for (let i = 0; i < nearby.length; i++) {
     const other = nearby[i];
@@ -607,6 +642,9 @@ export function evaluateZipperMergeGiveWay(
     const cosO = Math.cos(other.heading);
     const sinO = Math.sin(other.heading);
     const sameHeading = cosH * cosO + sinH * sinO > 0.65;
+    const otherTraits = getDriverTraits(other);
+    const otherIsPriorityHeavy = otherTraits.archetype === 'transit' || other.vClass === 'heavy';
+    const maxYieldHorizon = otherIsPriorityHeavy && effCourtesy >= 0.95 ? 16.5 : 13.5;
 
     let shouldYield = false;
     if (sameHeading && (!v.hasExitedIntersection || (other.hasExitedIntersection && other.destArm === v.destArm))) {
@@ -619,18 +657,30 @@ export function evaluateZipperMergeGiveWay(
           other.overtakeState === 'abort' ||
           (Boolean(other.crossingMarking) && Math.abs(other.targetLateralOffset) < Math.abs(other.lateralOffset) - 0.12) ||
           (other.laneChangeDir !== null && Math.abs(other.targetLateralOffset - other.lateralOffset) > 0.25);
+        const laneChangeTowardMe =
+          (other.laneChangeDir === 'right' && latSigned > 0) ||
+          (other.laneChangeDir === 'left' && latSigned < 0);
         const steeringTowardMe =
           latSigned * other.lateralVelocity < -0.05 ||
+          laneChangeTowardMe ||
           (other.overtakeState === 'abort' && latSigned < 0);
-        const minFwd = v.profile === 'aggressive' && other.overtakeState !== 'abort' ? 2.0 : 0.45;
+        const minFwd =
+          other.overtakeState === 'abort'
+            ? 0.45
+            : Math.max(0.45, Math.min(2.0, 2.55 - 1.75 * effCourtesy));
+        const willingToYield =
+          effCourtesy >= 0.78 ||
+          other.overtakeState === 'abort' ||
+          otherIsPriorityHeavy ||
+          discipline.discipline >= 0.45;
         if (
           returningMerger &&
           steeringTowardMe &&
           Math.abs(latSigned) > 0.45 &&
           Math.abs(latSigned) < lw * 1.15 &&
           fwd >= minFwd &&
-          fwd < 13.5 &&
-          (v.profile !== 'aggressive' || other.overtakeState === 'abort' || discipline.discipline >= 0.45)
+          fwd < maxYieldHorizon &&
+          willingToYield
         ) {
           shouldYield = true;
         }
@@ -640,10 +690,10 @@ export function evaluateZipperMergeGiveWay(
       other.isSlipLane &&
       other.destArm === v.destArm &&
       other.distanceAlongPath > other.exitLineDist - 12.0 &&
-      (other.waitingTime ?? 0) > 1.8 &&
+      (other.waitingTime ?? 0) > (effCourtesy >= 1.15 ? 1.3 : 1.8) &&
       Math.abs(latSigned) < lw * 1.35 &&
       fwd > 1.2 &&
-      fwd < 14.0
+      fwd < maxYieldHorizon
     ) {
       shouldYield = true;
     }
@@ -654,10 +704,16 @@ export function evaluateZipperMergeGiveWay(
       bestGap = gap;
       const cap = Math.max(1.5, Math.min(v.maxSpeed * 0.68, other.speed + 0.85)) * weather.speedMult[v.vClass];
       bestCap = Math.min(bestCap, cap);
+      bestRequester = other;
     }
   }
 
-  return { yieldGap: bestGap, speedCap: bestCap };
+  if (bestRequester !== null) {
+    v.yieldTargetId = bestRequester.id;
+    bestRequester.handshakePartnerId = v.id;
+  }
+
+  return { yieldGap: bestGap, speedCap: bestCap, requester: bestRequester };
 }
 
 /**
@@ -673,15 +729,18 @@ export function evaluateSvoCourtesyYield(
   topology: CompiledTopology,
   weather: WeatherPhysicsProfile,
   discipline: DisciplineParams
-): { shouldYield: boolean; speedCap: number; yieldGap: number } {
+): { shouldYield: boolean; speedCap: number; yieldGap: number; targetId?: number } {
   const none = { shouldYield: false, speedCap: Infinity, yieldGap: Infinity };
   if (signalState !== 'permissive-green' && signalState !== 'protected-green') return none;
   if (v.turn !== 'straight' || v.isSlipLane || v.isUTurn || !v.pathKey) return none;
   if (v.isReversing || (v.overtakeState && v.overtakeState !== 'none')) return none;
   if (v.distanceAlongPath >= v.stopLineDist - 2.0) return none;
 
+  const traits = getDriverTraits(v);
+  const effCourtesy = getEffectiveCourtesyYieldBias(v);
   const svoAngle = v.svoAngle ?? 0.35;
-  if (Math.sin(svoAngle) < 0.32) return none;
+  const effSvoSin = Math.sin(svoAngle) * (effCourtesy / Math.max(0.5, traits.courtesyYieldBias));
+  if (effSvoSin < 0.32) return none;
 
   const frontBumper = v.distanceAlongPath + v.length * 0.5;
   const distToStop = v.stopLineDist - frontBumper;
@@ -738,6 +797,7 @@ export function evaluateSvoCourtesyYield(
           shouldYield: true,
           speedCap: Math.max(4.4, 5.8 * weather.speedMult[v.vClass]),
           yieldGap: Math.max(0.5, distToStop),
+          targetId: other.id,
         };
       }
     }
@@ -757,20 +817,23 @@ export function evaluateBlinkerIntentPocket(
   nearby: readonly SimVehicle[],
   lw: number,
   weather: WeatherPhysicsProfile
-): { yieldGap: number; speedCap: number } {
-  const none = { yieldGap: Infinity, speedCap: Infinity };
+): { yieldGap: number; speedCap: number; requester?: SimVehicle | null } {
+  const none = { yieldGap: Infinity, speedCap: Infinity, requester: null as SimVehicle | null };
   if (v.isReversing || v.isSlipLane || v.isUTurn) return none;
   if (v.overtakeState && v.overtakeState !== 'none') return none;
   if (v.speed < 0.8) return none;
   if (v.distanceAlongPath > v.stopLineDist - 3.5 && !v.hasExitedIntersection) return none;
 
+  const effCourtesy = getEffectiveCourtesyYieldBias(v);
   const svoAngle = v.svoAngle ?? 0.35;
-  if (Math.sin(svoAngle) < 0.24 && !v.isConnected) return none;
+  const effSvo = svoAngle * (0.75 + 0.25 * effCourtesy);
+  if (Math.sin(effSvo) < 0.24 && !v.isConnected) return none;
 
   const cosH = Math.cos(v.heading);
   const sinH = Math.sin(v.heading);
   let bestGap = Infinity;
   let bestCap = Infinity;
+  let bestRequester: SimVehicle | null = null;
 
   for (let i = 0; i < nearby.length; i++) {
     const other = nearby[i];
@@ -794,7 +857,9 @@ export function evaluateBlinkerIntentPocket(
     const dx = other.x - v.x;
     const dy = other.y - v.y;
     const fwd = dx * cosH + dy * sinH;
-    if (fwd < 1.0 || fwd > 14.0) continue;
+    const otherIsHeavyOrTransit = other.vClass === 'heavy' || other.archetype === 'transit';
+    const maxPocketFwd = otherIsHeavyOrTransit && effCourtesy >= 0.95 ? 16.5 : 14.0;
+    if (fwd < 1.0 || fwd > maxPocketFwd) continue;
 
     // In Canvas 2D Y-down LHT, outward-left normal is (sinH, -cosH) -> latSigned > 0 means other is to v's LEFT
     const latSigned = dx * sinH - dy * cosH;
@@ -812,8 +877,14 @@ export function evaluateBlinkerIntentPocket(
       const cap =
         Math.max(2.2, Math.min(v.maxSpeed * 0.72, other.speed + 1.0)) * weather.speedMult[v.vClass];
       bestCap = Math.min(bestCap, cap);
+      bestRequester = other;
     }
   }
 
-  return { yieldGap: bestGap, speedCap: bestCap };
+  if (bestRequester !== null) {
+    v.yieldTargetId = bestRequester.id;
+    bestRequester.handshakePartnerId = v.id;
+  }
+
+  return { yieldGap: bestGap, speedCap: bestCap, requester: bestRequester };
 }

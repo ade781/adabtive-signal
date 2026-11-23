@@ -1,3 +1,4 @@
+import { MapBehavioralContext, resolveMapContext } from '../engine/mapContextAI';
 import { CompiledTopology } from '../engine/topologyTypes';
 import { SimConfig } from '../engine/types';
 import { getLoadedAsset } from './assetLoader';
@@ -279,6 +280,215 @@ function drawCustomTopologyEnvironment(
   }
 }
 
+function getCautionZoneLabel(envId: string): string {
+  if (envId === 'bondowoso-malang') return 'ZONA KAMPUS';
+  if (envId === 'lamper-semarang') return 'ZONA RS';
+  return 'ZONA TERTIB';
+}
+
+function drawUprightLocalText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  parentAngleRad: number,
+  color: string,
+  font: string
+): void {
+  let norm = parentAngleRad % (Math.PI * 2);
+  if (norm > Math.PI) norm -= Math.PI * 2;
+  if (norm <= -Math.PI) norm += Math.PI * 2;
+  const flip = norm > Math.PI / 2 || norm <= -Math.PI / 2;
+
+  ctx.save();
+  ctx.translate(x, y);
+  if (flip) ctx.rotate(Math.PI);
+  ctx.font = font;
+  ctx.fillStyle = color;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 0, 0);
+  ctx.restore();
+}
+
+interface ArmContextMarkingParams {
+  armId: string;
+  armAngleRad: number;
+  stopX: number;
+  armEnd: number;
+  curbY: number;
+  curbFlare?: number;
+  slipSetback: number;
+  mapCtx: MapBehavioralContext;
+}
+
+/**
+ * Ide #13: Renders subtle Indonesian map-aware architectural markings in arm-local coordinates
+ * (+X = outward upstream from stop line, +Y = outer left LHT curb & sidewalk).
+ * Shared cleanly by both standard 4-arm and custom N-arm topology renderers.
+ */
+function drawArmContextMarkings(ctx: CanvasRenderingContext2D, p: ArmContextMarkingParams): void {
+  const { armId, armAngleRad, stopX, armEnd, curbY, curbFlare = 0, slipSetback, mapCtx } = p;
+  if (mapCtx.id === 'default') return;
+
+  const hasBusBay = mapCtx.busBayArms.includes(armId);
+  const hasCaution = mapCtx.cautionArms.includes(armId);
+  const hasMarket = mapCtx.marketArms.includes(armId);
+  if (!hasBusBay && !hasCaution && !hasMarket) return;
+
+  const safeUpstreamMin = slipSetback > 0 ? Math.max(22, slipSetback + 5) : 16;
+
+  // 1. Bus Shelter / Terminal Bay Markings (e.g. Laswi TMB, Giwangan Terminal, Lamper Trans Semarang)
+  if (hasBusBay) {
+    const x0 = stopX + safeUpstreamMin;
+    const x1 = Math.min(armEnd - 2.5, x0 + 18);
+    if (x1 - x0 >= 7) {
+      const bayDepth = 1.15;
+      const taper = 1.6;
+      const yOuter = curbY - 0.06;
+      const yInner = curbY - bayDepth;
+
+      ctx.save();
+      // Subtle recessed indigo bay tint
+      ctx.fillStyle = 'rgba(99, 102, 241, 0.16)';
+      ctx.beginPath();
+      ctx.moveTo(x0, yOuter);
+      ctx.lineTo(x0 + taper, yInner);
+      ctx.lineTo(x1 - taper, yInner);
+      ctx.lineTo(x1, yOuter);
+      ctx.closePath();
+      ctx.fill();
+
+      // Dashed amber inner bay boundary
+      ctx.strokeStyle = 'rgba(245, 158, 11, 0.88)';
+      ctx.lineWidth = 0.22;
+      ctx.setLineDash([1.25, 0.85]);
+      ctx.beginPath();
+      ctx.moveTo(x0, yOuter);
+      ctx.lineTo(x0 + taper, yInner);
+      ctx.lineTo(x1 - taper, yInner);
+      ctx.lineTo(x1, yOuter);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Indigo accent bar directly along outer curb
+      ctx.strokeStyle = 'rgba(99, 102, 241, 0.82)';
+      ctx.lineWidth = 0.16;
+      ctx.beginPath();
+      ctx.moveTo(x0 + 0.5, yOuter - 0.04);
+      ctx.lineTo(x1 - 0.5, yOuter - 0.04);
+      ctx.stroke();
+
+      drawUprightLocalText(
+        ctx,
+        'HALTE / BUS',
+        (x0 + x1) * 0.5,
+        (yInner + yOuter) * 0.5,
+        armAngleRad,
+        'rgba(254, 243, 199, 0.92)',
+        '700 0.78px "JetBrains Mono", monospace'
+      );
+      ctx.restore();
+    }
+  }
+
+  // 2. Market Friction Curb Edge (e.g. Sulawesi Banjarmasin Pasar Lama, Wilis)
+  if (hasMarket) {
+    const x0 = stopX + (slipSetback > 0 ? Math.max(20, slipSetback + 4) : 12);
+    const x1 = Math.min(armEnd - 2.5, x0 + 24);
+    if (x1 - x0 >= 6) {
+      ctx.save();
+      // Subtle terracotta asphalt edge wash
+      ctx.fillStyle = 'rgba(194, 65, 12, 0.16)';
+      ctx.fillRect(x0, curbY - 0.58, x1 - x0, 0.52);
+
+      // Terracotta dashed curb-edge line
+      ctx.strokeStyle = 'rgba(234, 88, 12, 0.84)';
+      ctx.lineWidth = 0.2;
+      ctx.setLineDash([1.15, 0.85]);
+      ctx.beginPath();
+      ctx.moveTo(x0, curbY - 0.56);
+      ctx.lineTo(x1, curbY - 0.56);
+      ctx.stroke();
+
+      // Secondary warm amber guide near curb
+      ctx.strokeStyle = 'rgba(245, 158, 11, 0.72)';
+      ctx.lineWidth = 0.12;
+      ctx.setLineDash([0.65, 0.95]);
+      ctx.beginPath();
+      ctx.moveTo(x0 + 0.4, curbY - 0.14);
+      ctx.lineTo(x1 - 0.4, curbY - 0.14);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+  }
+
+  // 3. Campus / Hospital / Enforcement Caution Sidewalk Border Accent
+  if (hasCaution) {
+    const x0 = stopX + (slipSetback > 0 ? Math.max(22, slipSetback + 5) : 14);
+    const x1 = Math.min(armEnd - 2.5, x0 + 18);
+    if (x1 - x0 >= 6) {
+      const bandY = curbY + curbFlare * 0.55 + 0.46;
+      const bandH = 0.74;
+      const label = getCautionZoneLabel(mapCtx.id);
+
+      ctx.save();
+      // Subtle base tint on sidewalk border
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.06)';
+      ctx.fillRect(x0, bandY, x1 - x0, bandH);
+
+      // Twin alternating diagonal amber & emerald caution stripes
+      ctx.lineWidth = 0.22;
+      let stripeIdx = 0;
+      for (let sx = x0 + 0.4; sx < x1 - 0.6; sx += 1.5) {
+        ctx.strokeStyle =
+          stripeIdx % 2 === 0 ? 'rgba(245, 158, 11, 0.82)' : 'rgba(16, 185, 129, 0.82)';
+        ctx.beginPath();
+        ctx.moveTo(sx, bandY + bandH);
+        ctx.lineTo(sx + 0.62, bandY);
+        ctx.stroke();
+        stripeIdx++;
+      }
+
+      // Crisp architectural hairline borders
+      ctx.strokeStyle = 'rgba(15, 23, 42, 0.22)';
+      ctx.lineWidth = 0.09;
+      ctx.strokeRect(x0, bandY, x1 - x0, bandH);
+
+      // Clean micro-text badge on outer sidewalk edge
+      const cx = (x0 + x1) * 0.5;
+      const cy = bandY + bandH + 0.82;
+      ctx.font = '700 0.74px "JetBrains Mono", monospace';
+      const tw = ctx.measureText(label).width + 1.1;
+      const th = 1.25;
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+      ctx.strokeStyle =
+        mapCtx.id === 'bondowoso-malang'
+          ? 'rgba(16, 185, 129, 0.72)'
+          : mapCtx.id === 'lamper-semarang'
+            ? 'rgba(245, 158, 11, 0.78)'
+            : 'rgba(14, 165, 233, 0.65)';
+      ctx.lineWidth = 0.12;
+      ctx.beginPath();
+      ctx.roundRect(cx - tw / 2, cy - th / 2, tw, th, 0.3);
+      ctx.fill();
+      ctx.stroke();
+
+      drawUprightLocalText(
+        ctx,
+        label,
+        cx,
+        cy + 0.03,
+        armAngleRad,
+        '#0F172A',
+        '700 0.74px "JetBrains Mono", monospace'
+      );
+      ctx.restore();
+    }
+  }
+}
+
 export function drawTopologyRoadWorld(
   ctx: CanvasRenderingContext2D,
   compiled: CompiledTopology,
@@ -286,10 +496,17 @@ export function drawTopologyRoadWorld(
     showPathPreviews?: boolean;
     selectedArmId?: string | null;
     wetAsphalt?: boolean;
+    mapContext?: MapBehavioralContext;
   } = {}
 ): void {
   const asphaltMain = options.wetAsphalt ? '#282E38' : '#373D47';
   const asphaltCenter = options.wetAsphalt ? '#222730' : '#2F353E';
+  const mapCtx =
+    options.mapContext ??
+    resolveMapContext({
+      environmentId: compiled.topology.id,
+      scenarioName: compiled.topology.name,
+    });
 
   // 0. Sector environment & real-world landmarks (Terminal Giwangan, SPBU, Brimob, Ruko, trees)
   drawCustomTopologyEnvironment(ctx, compiled);
@@ -598,6 +815,18 @@ export function drawTopologyRoadWorld(
       ctx.restore();
     }
 
+    // Ide #13: Map-aware Bus Bay, Caution Zone & Market Edge architectural markings
+    drawArmContextMarkings(ctx, {
+      armId,
+      armAngleRad: arm.angleRad,
+      stopX: arm.setback,
+      armEnd,
+      curbY: inOuter,
+      curbFlare: flare,
+      slipSetback: arm.def.slipLane?.enabled ? arm.def.slipLane.islandSetback : 0,
+      mapCtx,
+    });
+
     ctx.restore();
   }
 
@@ -832,11 +1061,18 @@ export function drawStaticRoadLayer(
   ctx.scale(pxPerMeter, pxPerMeter);
 
   const wetAsphalt = (config.environment?.weather ?? 'clear') !== 'clear';
+  let mapCtx = resolveMapContext(config);
+  if (mapCtx.id === 'default' && compiledTopology) {
+    mapCtx = resolveMapContext({
+      environmentId: compiledTopology.topology.id,
+      scenarioName: compiledTopology.topology.name,
+    });
+  }
 
   // Custom / N-Arm / Asymmetric / Giwangan Topology Renderer
   if (isCustomTopo && compiledTopology) {
     // Subtle urban grass backdrop around arms
-    drawTopologyRoadWorld(ctx, compiledTopology, { wetAsphalt });
+    drawTopologyRoadWorld(ctx, compiledTopology, { wetAsphalt, mapContext: mapCtx });
     ctx.restore();
     ctx.restore();
     return;
@@ -1224,6 +1460,30 @@ export function drawStaticRoadLayer(
     drawLaneArrowLocal(ctx, off, -halfBox - 6.0, Math.PI, mode);
     drawLaneArrowLocal(ctx, -halfBox - 6.0, -off, Math.PI / 2, mode);
     drawLaneArrowLocal(ctx, halfBox + 6.0, off, -Math.PI / 2, mode);
+  }
+
+  // Ide #13: Map-aware Bus Bay, Caution Zone & Market Edge architectural markings (standard 4-arm)
+  if (mapCtx.id !== 'default') {
+    const stdArms: Array<{ id: 'east' | 'south' | 'west' | 'north'; angleRad: number }> = [
+      { id: 'east', angleRad: 0 },
+      { id: 'south', angleRad: Math.PI / 2 },
+      { id: 'west', angleRad: Math.PI },
+      { id: 'north', angleRad: -Math.PI / 2 },
+    ];
+    for (const a of stdArms) {
+      ctx.save();
+      ctx.rotate(a.angleRad);
+      drawArmContextMarkings(ctx, {
+        armId: a.id,
+        armAngleRad: a.angleRad,
+        stopX: halfBox,
+        armEnd: armLen,
+        curbY: halfRoad,
+        slipSetback: 0,
+        mapCtx,
+      });
+      ctx.restore();
+    }
   }
 
   // Street-name labels along all 4 road arms

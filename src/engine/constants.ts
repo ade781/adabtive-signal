@@ -24,6 +24,13 @@ export const DEFAULT_CONFIG: SimConfig = {
   signalPhasePreset: '4-phase-split',
   yellowBoxEnabled: false,
   driverDiscipline: 0.72,
+  driverProfileMix: {
+    cautiousPct: 22,
+    normalPct: 50,
+    aggressivePct: 28,
+    courierShare: 0.42,
+    preset: 'balanced',
+  },
   smartOvertaking: true,
   oncomingOvertaking: true,
   armNames: undefined,

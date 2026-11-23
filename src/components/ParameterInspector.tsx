@@ -9,17 +9,48 @@ import {
   PenTool,
 } from 'lucide-react';
 import { getArmGreenDuration } from '../engine/constants';
+import {
+  ARCHETYPE_ORDER,
+  ARCHETYPE_TRAITS,
+  DRIVER_MIX_PRESETS,
+  normalizeDriverProfileMix,
+} from '../engine/driverIntelligence';
 import { sampleDemandCurve, WEATHER_PROFILES } from '../engine/environmentDynamics';
+import { MAP_CONTEXTS } from '../engine/mapContextAI';
 import { SCENARIO_PRESETS, ScenarioPreset } from '../engine/presets';
 import { cloneTopology } from '../engine/samplingBlueprints';
 import { SignalPhasePreset, TimeOfDayMode, WeatherCondition } from '../engine/topologyTypes';
-import { ArmId, SimConfig } from '../engine/types';
+import { ArchetypeStat, ArmId, DriverArchetype, DriverProfileMix, SimConfig } from '../engine/types';
 
 interface ParameterInspectorProps {
   config: SimConfig;
   onChange: (partial: Partial<SimConfig>) => void;
   onResetDefaults: () => void;
   onOpenInDraw?: () => void;
+  driverStats?: Record<DriverArchetype, ArchetypeStat>;
+}
+
+const ARCHETYPE_BAR_STYLE: Record<
+  DriverArchetype,
+  { bg: string; dot: string; text: string }
+> = {
+  defensive: { bg: 'bg-emerald-500', dot: 'bg-emerald-500', text: 'text-emerald-700' },
+  commuter: { bg: 'bg-sky-500', dot: 'bg-sky-500', text: 'text-sky-700' },
+  hurried: { bg: 'bg-rose-500', dot: 'bg-rose-500', text: 'text-rose-700' },
+  courier: { bg: 'bg-amber-500', dot: 'bg-amber-500', text: 'text-amber-700' },
+  transit: { bg: 'bg-indigo-500', dot: 'bg-indigo-500', text: 'text-indigo-700' },
+  logistics: { bg: 'bg-slate-500', dot: 'bg-slate-500', text: 'text-slate-700' },
+};
+
+function isSameDriverMix(a: DriverProfileMix, b: DriverProfileMix): boolean {
+  const na = normalizeDriverProfileMix(a);
+  const nb = normalizeDriverProfileMix(b);
+  return (
+    na.cautiousPct === nb.cautiousPct &&
+    na.normalPct === nb.normalPct &&
+    na.aggressivePct === nb.aggressivePct &&
+    Math.abs((na.courierShare ?? 0.42) - (nb.courierShare ?? 0.42)) < 0.015
+  );
 }
 
 type TabId = 'geometry' | 'traffic' | 'signal' | 'environment';
@@ -112,6 +143,7 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
   onChange,
   onResetDefaults,
   onOpenInDraw,
+  driverStats,
 }) => {
   const [activeTab, setActiveTab] = useState<TabId>('geometry');
   const tabsId = useId();
@@ -149,8 +181,10 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
   };
 
   const handleApplyPreset = (preset: ScenarioPreset) => {
+    const mapContext = preset.category === 'field' ? MAP_CONTEXTS[preset.id] : undefined;
     onChange({
       ...preset.patch,
+      ...(mapContext ? { driverProfileMix: { ...mapContext.recommendedMix } } : {}),
       customTopology: preset.patch.customTopology ? cloneTopology(preset.patch.customTopology) : undefined,
       signalPhasePreset: preset.patch.signalPhasePreset ?? '4-phase-split',
       yellowBoxEnabled: preset.patch.yellowBoxEnabled ?? false,
@@ -254,6 +288,68 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
   };
 
   const disciplinePct = Math.round((config.driverDiscipline ?? 0.72) * 100);
+  const connectedPct = Math.round((config.connectedVehicleRatio ?? 0) * 100);
+  const profileMix = normalizeDriverProfileMix(config.driverProfileMix);
+  const activeFieldContext =
+    config.environmentId && config.environmentId !== 'default'
+      ? MAP_CONTEXTS[config.environmentId]
+      : undefined;
+  const mixDiffersFromMap = Boolean(
+    activeFieldContext && !isSameDriverMix(profileMix, activeFieldContext.recommendedMix)
+  );
+  const totalActiveVehicles = driverStats
+    ? ARCHETYPE_ORDER.reduce((sum, arch) => sum + (driverStats[arch]?.activeCount ?? 0), 0)
+    : 0;
+
+  const handleProfileMixChange = (
+    key: 'cautiousPct' | 'normalPct' | 'aggressivePct',
+    val: number
+  ) => {
+    const clamped = Math.round(Math.max(0, Math.min(100, val)));
+    const remaining = 100 - clamped;
+    let nextMix: DriverProfileMix;
+    if (key === 'cautiousPct') {
+      const otherSum = profileMix.normalPct + profileMix.aggressivePct;
+      const normalPct =
+        otherSum > 0
+          ? Math.round((profileMix.normalPct / otherSum) * remaining)
+          : Math.round(remaining * 0.65);
+      nextMix = {
+        ...profileMix,
+        cautiousPct: clamped,
+        normalPct,
+        aggressivePct: Math.max(0, remaining - normalPct),
+        preset: 'custom',
+      };
+    } else if (key === 'normalPct') {
+      const otherSum = profileMix.cautiousPct + profileMix.aggressivePct;
+      const cautiousPct =
+        otherSum > 0
+          ? Math.round((profileMix.cautiousPct / otherSum) * remaining)
+          : Math.round(remaining * 0.45);
+      nextMix = {
+        ...profileMix,
+        cautiousPct,
+        normalPct: clamped,
+        aggressivePct: Math.max(0, remaining - cautiousPct),
+        preset: 'custom',
+      };
+    } else {
+      const otherSum = profileMix.cautiousPct + profileMix.normalPct;
+      const cautiousPct =
+        otherSum > 0
+          ? Math.round((profileMix.cautiousPct / otherSum) * remaining)
+          : Math.round(remaining * 0.3);
+      nextMix = {
+        ...profileMix,
+        cautiousPct,
+        normalPct: Math.max(0, remaining - cautiousPct),
+        aggressivePct: clamped,
+        preset: 'custom',
+      };
+    }
+    onChange({ driverProfileMix: nextMix });
+  };
 
   return (
     <aside className="w-full lg:w-[355px] lg:min-h-0 bg-white border border-slate-200 rounded-lg flex flex-col shrink-0 overflow-hidden">
@@ -292,11 +388,10 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
               tabIndex={selected ? 0 : -1}
               onClick={() => setActiveTab(tab.id)}
               onKeyDown={(e) => handleTabKeyDown(e, idx)}
-              className={`py-2 px-1 text-[11px] font-medium flex flex-col items-center justify-center gap-0.5 border-b-2 transition-colors duration-100 ${
-                selected
+              className={`py-2 px-1 text-[11px] font-medium flex flex-col items-center justify-center gap-0.5 border-b-2 transition-colors duration-100 ${selected
                   ? 'border-slate-900 text-slate-900 bg-white'
                   : 'border-transparent text-slate-500 hover:text-slate-800'
-              }`}
+                }`}
             >
               <Icon className="w-3.5 h-3.5" />
               <span>{tab.label}</span>
@@ -393,11 +488,10 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                         type="button"
                         aria-pressed={config.lanesPerDirection === l}
                         onClick={() => handleLanesChange(l)}
-                        className={`py-1.5 text-xs font-mono font-medium rounded border transition-colors duration-100 ${
-                          config.lanesPerDirection === l
+                        className={`py-1.5 text-xs font-mono font-medium rounded border transition-colors duration-100 ${config.lanesPerDirection === l
                             ? 'bg-slate-900 text-white border-slate-900'
                             : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                        }`}
+                          }`}
                       >
                         {l}
                       </button>
@@ -532,8 +626,8 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                   disciplinePct >= 75
                     ? 'Tertib: patuh Yellow Box, jarang menerobos kuning/merah'
                     : disciplinePct >= 45
-                    ? 'Realistis RI: seimbang antara agresif & patuh'
-                    : 'Chaotic: agresif salip, nekat terobos, sering serobot garis henti'
+                      ? 'Realistis RI: seimbang antara agresif & patuh'
+                      : 'Chaotic: agresif salip, nekat terobos, sering serobot garis henti'
                 }
               />
 
@@ -550,9 +644,193 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                 checked={config.oncomingOvertaking !== false}
                 onToggle={() => onChange({ oncomingOvertaking: config.oncomingOvertaking === false })}
               />
+
+              <div className="pt-2 border-t border-slate-200">
+                <SliderField
+                  label="Rasio Kendaraan Terkoneksi (V2V / CAV)"
+                  value={connectedPct}
+                  unit="%"
+                  min={0}
+                  max={100}
+                  step={5}
+                  onChange={(v) => onChange({ connectedVehicleRatio: +(v / 100).toFixed(2) })}
+                  accent="bg-cyan-600"
+                  hint="Persepsi X-ray tembus truk/bus & iring-iringan CACC lebih rapat"
+                />
+              </div>
+
+              <div className="pt-2 border-t border-slate-200 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-semibold text-slate-700">Komposisi Tipe Pengendara</span>
+                  <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-white text-slate-600 border border-slate-200">
+                    {profileMix.cautiousPct}/{profileMix.normalPct}/{profileMix.aggressivePct}%
+                  </span>
+                </div>
+
+                {activeFieldContext && mixDiffersFromMap && (
+                  <div className="p-2 rounded-md border border-emerald-200 bg-emerald-50 space-y-1.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-[10px] font-semibold text-emerald-900 leading-tight">
+                          Profil berbeda dari karakter peta aktif
+                        </div>
+                        <div className="text-[9px] text-emerald-800 leading-snug mt-0.5 truncate">
+                          {activeFieldContext.label}
+                        </div>
+                      </div>
+                      <span className="text-[9px] font-mono tabular-nums text-emerald-800 bg-white px-1.5 py-0.5 rounded border border-emerald-200 shrink-0">
+                        {activeFieldContext.recommendedMix.cautiousPct}/
+                        {activeFieldContext.recommendedMix.normalPct}/
+                        {activeFieldContext.recommendedMix.aggressivePct}%
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onChange({
+                          driverProfileMix: { ...activeFieldContext.recommendedMix },
+                        })
+                      }
+                      className="w-full px-2 py-1 rounded text-[10px] font-semibold bg-emerald-700 text-white hover:bg-emerald-800 transition-colors duration-100"
+                    >
+                      Sesuaikan Profil Peta
+                    </button>
+                  </div>
+                )}
+
+                {activeFieldContext && !mixDiffersFromMap && (
+                  <div className="px-2 py-1 rounded border border-emerald-200 bg-emerald-50/70 flex items-center justify-between gap-2 text-[9px] text-emerald-800">
+                    <span className="truncate">Tersinkron: {activeFieldContext.label}</span>
+                    <span className="font-mono font-semibold shrink-0">PETA</span>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-1">
+                  {(
+                    Object.keys(DRIVER_MIX_PRESETS) as Array<keyof typeof DRIVER_MIX_PRESETS>
+                  ).map((presetKey) => {
+                    const item = DRIVER_MIX_PRESETS[presetKey];
+                    const active = profileMix.preset === presetKey;
+                    return (
+                      <button
+                        key={presetKey}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => onChange({ driverProfileMix: { ...item.mix } })}
+                        title={item.desc}
+                        className={`px-2 py-1 rounded text-left border transition-colors duration-100 ${active
+                            ? 'bg-indigo-700 text-white border-indigo-700'
+                            : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                          }`}
+                      >
+                        <div className="text-[10px] font-semibold leading-tight truncate">{item.label}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+                <SliderField
+                  label="Hati-hati / Defensif"
+                  value={profileMix.cautiousPct}
+                  unit="%"
+                  min={0}
+                  max={100}
+                  step={2}
+                  onChange={(v) => handleProfileMixChange('cautiousPct', v)}
+                  accent="bg-emerald-500"
+                />
+                <SliderField
+                  label="Komuter Normal"
+                  value={profileMix.normalPct}
+                  unit="%"
+                  min={0}
+                  max={100}
+                  step={2}
+                  onChange={(v) => handleProfileMixChange('normalPct', v)}
+                  accent="bg-sky-500"
+                />
+                <SliderField
+                  label="Agresif / Terburu"
+                  value={profileMix.aggressivePct}
+                  unit="%"
+                  min={0}
+                  max={100}
+                  step={2}
+                  onChange={(v) => handleProfileMixChange('aggressivePct', v)}
+                  accent="bg-rose-500"
+                />
+                <SliderField
+                  label="Proporsi Kurir / Ojol (dari Agresif)"
+                  value={Math.round((profileMix.courierShare ?? 0.42) * 100)}
+                  unit="%"
+                  min={0}
+                  max={100}
+                  step={5}
+                  onChange={(v) =>
+                    onChange({
+                      driverProfileMix: {
+                        ...profileMix,
+                        courierShare: +(v / 100).toFixed(2),
+                        preset: 'custom',
+                      },
+                    })
+                  }
+                  accent="bg-amber-500"
+                  hint="Motor kurir aktif mencari celah RHK & lajur depan"
+                />
+
+                {/* Live Distribution Bar (closed-loop feedback from active vehicles on map) */}
+                <div className="pt-2 border-t border-slate-200 space-y-1.5">
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className="font-semibold text-slate-700">Distribusi Aktif di Peta</span>
+                    <span className="font-mono tabular-nums text-slate-500">
+                      {totalActiveVehicles} kend
+                    </span>
+                  </div>
+                  <div
+                    className="h-2 w-full rounded-full bg-slate-200 overflow-hidden flex"
+                    aria-label="Distribusi arketipe pengendara aktif di peta"
+                  >
+                    {totalActiveVehicles > 0 &&
+                      ARCHETYPE_ORDER.map((arch) => {
+                        const count = driverStats?.[arch]?.activeCount ?? 0;
+                        if (count <= 0) return null;
+                        const pct = (count / totalActiveVehicles) * 100;
+                        const meta = ARCHETYPE_TRAITS[arch];
+                        return (
+                          <div
+                            key={arch}
+                            className={`h-full ${ARCHETYPE_BAR_STYLE[arch].bg}`}
+                            style={{ width: `${pct}%` }}
+                            title={`${meta.label}: ${count} aktif (${Math.round(pct)}%)`}
+                          />
+                        );
+                      })}
+                  </div>
+                  <div className="grid grid-cols-3 gap-1 text-[10px] font-mono tabular-nums">
+                    {ARCHETYPE_ORDER.map((arch) => {
+                      const count = driverStats?.[arch]?.activeCount ?? 0;
+                      const meta = ARCHETYPE_TRAITS[arch];
+                      const style = ARCHETYPE_BAR_STYLE[arch];
+                      return (
+                        <div
+                          key={arch}
+                          title={meta.label}
+                          className="flex items-center justify-between px-1.5 py-0.5 rounded bg-white border border-slate-200"
+                        >
+                          <span className={`inline-flex items-center gap-1 ${style.text}`}>
+                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${style.dot}`} />
+                            <span>{meta.shortBadge}</span>
+                          </span>
+                          <strong className="text-slate-900">{count}</strong>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
             </div>
 
-            {/* Field Presets (5 Sampling RI) */}
+            {/* Field Presets (6 Sampling RI) */}
             <div className="space-y-2.5">
               <div>
                 <div className="flex items-center justify-between mb-1.5">
@@ -574,11 +852,10 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                         aria-pressed={active}
                         onClick={() => handleApplyPreset(preset)}
                         title={preset.source ?? preset.description}
-                        className={`px-2.5 py-1.5 rounded text-left border transition-colors duration-100 ${
-                          active
+                        className={`px-2.5 py-1.5 rounded text-left border transition-colors duration-100 ${active
                             ? 'bg-emerald-900 text-white border-emerald-900'
                             : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                        }`}
+                          }`}
                       >
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-[11px] font-semibold leading-tight">{preset.label}</span>
@@ -612,11 +889,10 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                         aria-pressed={active}
                         onClick={() => handleApplyPreset(preset)}
                         title={preset.description}
-                        className={`px-2 py-1.5 rounded text-left border transition-colors duration-100 ${
-                          active
+                        className={`px-2 py-1.5 rounded text-left border transition-colors duration-100 ${active
                             ? 'bg-slate-900 text-white border-slate-900'
                             : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                        }`}
+                          }`}
                       >
                         <div className="text-[11px] font-semibold leading-tight">{preset.label}</div>
                         <div className={`text-[10px] leading-tight mt-0.5 truncate ${active ? 'text-slate-300' : 'text-slate-400'}`}>
@@ -765,11 +1041,10 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                   type="button"
                   aria-pressed={config.adaptiveSignal}
                   onClick={() => handleManualChange({ adaptiveSignal: true })}
-                  className={`py-1.5 rounded text-xs font-medium border transition-colors duration-100 ${
-                    config.adaptiveSignal
+                  className={`py-1.5 rounded text-xs font-medium border transition-colors duration-100 ${config.adaptiveSignal
                       ? 'bg-slate-900 text-white border-slate-900'
                       : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                  }`}
+                    }`}
                 >
                   Adaptif
                 </button>
@@ -777,11 +1052,10 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                   type="button"
                   aria-pressed={!config.adaptiveSignal}
                   onClick={() => handleManualChange({ adaptiveSignal: false })}
-                  className={`py-1.5 rounded text-xs font-medium border transition-colors duration-100 ${
-                    !config.adaptiveSignal
+                  className={`py-1.5 rounded text-xs font-medium border transition-colors duration-100 ${!config.adaptiveSignal
                       ? 'bg-slate-900 text-white border-slate-900'
                       : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                  }`}
+                    }`}
                 >
                   Fixed-Time
                 </button>
@@ -809,13 +1083,12 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                       disabled={disabled}
                       onClick={() => onChange({ signalPhasePreset: p.id })}
                       title={disabled ? 'Khusus simpang 4 lengan' : p.desc}
-                      className={`p-2 rounded border text-left transition-colors duration-100 ${
-                        disabled
+                      className={`p-2 rounded border text-left transition-colors duration-100 ${disabled
                           ? 'opacity-40 cursor-not-allowed bg-slate-50 border-slate-200 text-slate-400'
                           : active
-                          ? 'bg-indigo-700 text-white border-indigo-700'
-                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                      }`}
+                            ? 'bg-indigo-700 text-white border-indigo-700'
+                            : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                        }`}
                     >
                       <div className="text-[11px] font-semibold leading-tight">{p.label}</div>
                       <div className={`text-[9px] mt-0.5 leading-snug ${active ? 'text-indigo-100' : 'text-slate-500'}`}>
@@ -915,11 +1188,10 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                       key={tm.id}
                       type="button"
                       onClick={() => onChange({ environment: { ...envConfig, timeMode: tm.id } })}
-                      className={`w-full p-2 rounded-md border text-left transition-colors duration-100 ${
-                        active
+                      className={`w-full p-2 rounded-md border text-left transition-colors duration-100 ${active
                           ? 'bg-slate-900 text-white border-slate-900'
                           : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                      }`}
+                        }`}
                     >
                       <div className="text-[11px] font-semibold">{tm.label}</div>
                       <div className={`text-[10px] mt-0.5 ${active ? 'text-slate-300' : 'text-slate-500'}`}>
@@ -976,11 +1248,10 @@ export const ParameterInspector: React.FC<ParameterInspectorProps> = ({
                           environment: { ...envConfig, weather: w.id, dynamicWeather: false },
                         })
                       }
-                      className={`p-2 rounded-md border text-center transition-colors duration-100 ${
-                        active
+                      className={`p-2 rounded-md border text-center transition-colors duration-100 ${active
                           ? 'bg-sky-700 text-white border-sky-700'
                           : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                      }`}
+                        }`}
                     >
                       <div className="text-[11px] font-semibold">{w.label}</div>
                       <div className={`text-[9px] font-mono mt-0.5 ${active ? 'text-sky-100' : 'text-slate-400'}`}>
@@ -1113,14 +1384,12 @@ const ToggleField: React.FC<ToggleFieldProps> = ({ label, description, checked, 
         )}
       </div>
       <span
-        className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full border transition-colors duration-100 ${
-          checked ? 'bg-slate-900 border-slate-900' : 'bg-slate-200 border-slate-300'
-        }`}
+        className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full border transition-colors duration-100 ${checked ? 'bg-slate-900 border-slate-900' : 'bg-slate-200 border-slate-300'
+          }`}
       >
         <span
-          className={`inline-block h-3 w-3 rounded-full bg-white transform transition-transform duration-100 ${
-            checked ? 'translate-x-3.5' : 'translate-x-0.5'
-          }`}
+          className={`inline-block h-3 w-3 rounded-full bg-white transform transition-transform duration-100 ${checked ? 'translate-x-3.5' : 'translate-x-0.5'
+            }`}
         />
       </span>
     </button>

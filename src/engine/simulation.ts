@@ -10,10 +10,10 @@ import {
   findBlockingLeader,
   getGlobalLat,
   SimVehicle,
-  updateMotorcycleSeepage,
 } from './behaviors';
 import {
   computeDisciplineParams,
+  DisciplineParams,
   evaluateBlinkerIntentPocket,
   evaluatePriorityConflictYield,
   evaluateSvoCourtesyYield,
@@ -25,13 +25,17 @@ import {
 import {
   ARM_ORDER,
   DEFAULT_CONFIG,
-  DriverProfile,
   getArmGreenDuration,
-  PROFILE_MULT,
   QUEUE_SPEED_THRESHOLD,
-  SPRITES,
   VEHICLE_SPECS,
 } from './constants';
+import {
+  ARCHETYPE_ORDER,
+  computeContextualBehaviorMod,
+  getDriverTraits,
+  normalizeDriverProfileMix,
+  resolveSpawnDriverIdentity,
+} from './driverIntelligence';
 import { DEFAULT_ENVIRONMENT, EnvironmentState, evaluateEnvironment } from './environmentDynamics';
 import { getEffectiveRoadWidth, getLaneWidth, sampleWithLateralOffset } from './geometry';
 import {
@@ -40,7 +44,13 @@ import {
   evaluateGlosaAndPlatoonDischarge,
   smoothLongitudinalAccel,
 } from './longitudinalAI';
-import { hasMotorSwarmPlatoonShield } from './motorcycleAI';
+import {
+  evaluateMapContextMod,
+  MapBehavioralContext,
+  resolveMapContext,
+  SpatialFrictionGrid,
+} from './mapContextAI';
+import { evaluateMotorcycleCorridorTarget, hasMotorSwarmPlatoonShield } from './motorcycleAI';
 import {
   evaluateCourtesyLaneShift,
   evaluateDefensiveYieldForOncomingOvertaker,
@@ -72,13 +82,16 @@ import {
   SignalPhaseDef,
 } from './topologyTypes';
 import {
+  ArchetypeStat,
   ArmId,
   CycleRecord,
+  DriverArchetype,
   PhaseRecord,
   SignalColor,
   SimConfig,
   SimSnapshot,
   VehicleClass,
+  VehicleIntentTag,
 } from './types';
 
 export { DEFAULT_CONFIG };
@@ -148,6 +161,9 @@ function normalizeConfig(raw: SimConfig): SimConfig {
     hasMedian: Boolean(raw.hasMedian ?? DEFAULT_CONFIG.hasMedian),
     yellowBoxEnabled: Boolean(raw.yellowBoxEnabled ?? DEFAULT_CONFIG.yellowBoxEnabled),
     driverDiscipline: Math.max(0, Math.min(1, Number.isFinite(raw.driverDiscipline) ? raw.driverDiscipline! : 0.72)),
+    driverProfileMix: raw.driverProfileMix
+      ? normalizeDriverProfileMix(raw.driverProfileMix)
+      : { ...DEFAULT_CONFIG.driverProfileMix! },
     smartOvertaking: raw.smartOvertaking !== false,
     oncomingOvertaking: raw.oncomingOvertaking !== false,
     connectedVehicleRatio: Math.max(0, Math.min(1, Number.isFinite(raw.connectedVehicleRatio) ? raw.connectedVehicleRatio! : 0)),
@@ -219,12 +235,40 @@ export class TrafficSimulation {
   private yellowBoxHoldCount = 0;
   private reverseRecoveryCount = 0;
   private markingCrossCount = 0;
+  private archetypeStats: Record<
+    DriverArchetype,
+    {
+      exited: number;
+      totalWait: number;
+      overtakes: number;
+      markingCrosses: number;
+      hardBrakes: number;
+      yieldsGiven: number;
+      yellowBoxHolds: number;
+      tailgateYields: number;
+      handshakes: number;
+      frustrationSum: number;
+      frustrationSamples: number;
+      speedSum: number;
+      speedSamples: number;
+    }
+  > = {
+    defensive: { exited: 0, totalWait: 0, overtakes: 0, markingCrosses: 0, hardBrakes: 0, yieldsGiven: 0, yellowBoxHolds: 0, tailgateYields: 0, handshakes: 0, frustrationSum: 0, frustrationSamples: 0, speedSum: 0, speedSamples: 0 },
+    commuter: { exited: 0, totalWait: 0, overtakes: 0, markingCrosses: 0, hardBrakes: 0, yieldsGiven: 0, yellowBoxHolds: 0, tailgateYields: 0, handshakes: 0, frustrationSum: 0, frustrationSamples: 0, speedSum: 0, speedSamples: 0 },
+    hurried: { exited: 0, totalWait: 0, overtakes: 0, markingCrosses: 0, hardBrakes: 0, yieldsGiven: 0, yellowBoxHolds: 0, tailgateYields: 0, handshakes: 0, frustrationSum: 0, frustrationSamples: 0, speedSum: 0, speedSamples: 0 },
+    courier: { exited: 0, totalWait: 0, overtakes: 0, markingCrosses: 0, hardBrakes: 0, yieldsGiven: 0, yellowBoxHolds: 0, tailgateYields: 0, handshakes: 0, frustrationSum: 0, frustrationSamples: 0, speedSum: 0, speedSamples: 0 },
+    transit: { exited: 0, totalWait: 0, overtakes: 0, markingCrosses: 0, hardBrakes: 0, yieldsGiven: 0, yellowBoxHolds: 0, tailgateYields: 0, handshakes: 0, frustrationSum: 0, frustrationSamples: 0, speedSum: 0, speedSamples: 0 },
+    logistics: { exited: 0, totalWait: 0, overtakes: 0, markingCrosses: 0, hardBrakes: 0, yieldsGiven: 0, yellowBoxHolds: 0, tailgateYields: 0, handshakes: 0, frustrationSum: 0, frustrationSamples: 0, speedSum: 0, speedSamples: 0 },
+  };
   private envState: EnvironmentState = evaluateEnvironment(0, DEFAULT_ENVIRONMENT);
+  private mapContext: MapBehavioralContext = resolveMapContext(DEFAULT_CONFIG);
+  private frictionGrid = new SpatialFrictionGrid(28, 90);
 
   constructor(initialConfig?: Partial<SimConfig>) {
     this.config = normalizeConfig({ ...DEFAULT_CONFIG, ...initialConfig });
     this.compiledTopology = compileTopology(simConfigToTopology(this.config));
     this.phases = this.compiledTopology.topology.phases;
+    this.mapContext = resolveMapContext(this.config);
     this.reset();
   }
 
@@ -286,13 +330,32 @@ export class TrafficSimulation {
     this.yellowBoxHoldCount = 0;
     this.reverseRecoveryCount = 0;
     this.markingCrossCount = 0;
+    for (const arch of ARCHETYPE_ORDER) {
+      const st = this.archetypeStats[arch];
+      st.exited = 0;
+      st.totalWait = 0;
+      st.overtakes = 0;
+      st.markingCrosses = 0;
+      st.hardBrakes = 0;
+      st.yieldsGiven = 0;
+      st.yellowBoxHolds = 0;
+      st.tailgateYields = 0;
+      st.handshakes = 0;
+      st.frustrationSum = 0;
+      st.frustrationSamples = 0;
+      st.speedSum = 0;
+      st.speedSamples = 0;
+    }
     this.envState = evaluateEnvironment(0, this.config.environment);
+    this.mapContext = resolveMapContext(this.config);
+    this.frictionGrid.reset(Math.max(55, Math.ceil(this.compiledTopology.maxExtentMeters)));
     this.spatialHash.clear();
   }
 
   public updateConfig(partial: Partial<SimConfig>): void {
     const prev = this.config;
     this.config = normalizeConfig({ ...this.config, ...partial });
+    this.mapContext = resolveMapContext(this.config);
 
     const customTopologyChanged =
       partial.customTopology !== undefined && partial.customTopology !== prev.customTopology;
@@ -322,6 +385,10 @@ export class TrafficSimulation {
       this.phases = this.compiledTopology.topology.phases;
       if (this.activePhaseIndex >= this.phases.length) {
         this.activePhaseIndex = 0;
+      }
+      const nextExtent = Math.max(55, Math.ceil(this.compiledTopology.maxExtentMeters));
+      if (Math.abs(this.frictionGrid.extentMeters - nextExtent) > 5) {
+        this.frictionGrid.reset(nextExtent);
       }
     }
 
@@ -536,6 +603,7 @@ export class TrafficSimulation {
     for (let s = 0; s < subSteps; s++) {
       this.simTime += subDt;
       this.envState = evaluateEnvironment(this.simTime, this.config.environment);
+      this.frictionGrid.decay(subDt);
       this.advanceSignals(subDt);
       this.spawnVehicles(subDt);
       this.updateVehicles(subDt);
@@ -669,7 +737,7 @@ export class TrafficSimulation {
     for (const aId of nextArms) {
       startQ += this.countQueueForArm(aId);
       const lanes = this.compiledTopology.armsById[aId]?.def.inLanes ?? this.config.lanesPerDirection;
-      assignReactionWave(this.vehicles, aId, lanes, this.envState.weather.reactionMult);
+      assignReactionWave(this.vehicles, aId, lanes, this.envState.weather.reactionMult, this.rng);
     }
     this.currentPhaseStartQueue = startQ;
   }
@@ -706,14 +774,19 @@ export class TrafficSimulation {
     return avail[avail.length - 1].kind;
   }
 
-  private pickLaneForTurn(armId: string, turn: MovementKind, vClass?: VehicleClass): number {
+  private pickLaneForTurn(
+    armId: string,
+    turn: MovementKind,
+    vClass?: VehicleClass,
+    archetype?: string
+  ): number {
     const armGeom = this.compiledTopology.armsById[armId];
     const L = Math.max(1, armGeom?.def.inLanes ?? this.config.lanesPerDirection);
     if (L === 1) return 0;
     if (turn === 'left') return L - 1;
     if (turn === 'right' || turn === 'uturn') return 0;
 
-    // Queue- & heavy-impedance-aware dynamic lane selection for straight traffic
+    // Queue- & heavy-impedance-aware dynamic lane selection for straight traffic with archetype lane preference
     const laneScores = new Array<number>(L).fill(0);
     for (const v of this.vehicles) {
       if (v.originArm !== armId || v.isSlipLane || v.distanceAlongPath >= v.stopLineDist) continue;
@@ -727,13 +800,40 @@ export class TrafficSimulation {
       laneScores[v.laneIndex] += cost;
     }
 
+    const spawnTraits = vClass
+      ? getDriverTraits({
+          vClass,
+          archetype: archetype as DriverArchetype | undefined,
+          profile:
+            archetype === 'defensive' || archetype === 'transit'
+              ? 'cautious'
+              : archetype === 'hurried' || archetype === 'courier'
+                ? 'aggressive'
+                : 'normal',
+        })
+      : undefined;
+    const curbAff = spawnTraits?.curbLaneAffinity ?? 1.0;
+    const isBusBayArm = archetype === 'transit' && this.mapContext.busBayArms.includes(armId);
+
     let bestLane = 0;
     let bestScore = Infinity;
     const startOffset = Math.floor(this.rng() * L);
     for (let i = 0; i < L; i++) {
       const lane = (startOffset + i) % L;
-      const heavyCruiseBias = vClass === 'heavy' && lane === 0 ? -0.4 : 0;
-      const score = laneScores[lane] + heavyCruiseBias + this.rng() * 0.2;
+      // Fix heavy lane bug: in LHT, heavy vehicles (BUS/TRK) strongly prefer the outer left curb lane (L - 1)
+      const heavyCruiseBias =
+        vClass === 'heavy' && lane === L - 1
+          ? -0.55 * curbAff - (isBusBayArm ? 0.5 : 0)
+          : vClass === 'heavy' && lane === 0
+            ? 0.35
+            : 0;
+      const archetypeBias =
+        lane === L - 1 && curbAff > 1.05
+          ? -0.55 * (curbAff - 0.8)
+          : lane === 0 && curbAff < 0.85
+            ? -0.45 * (1.2 - curbAff)
+            : 0;
+      const score = laneScores[lane] + heavyCruiseBias + archetypeBias + this.rng() * 0.2;
       if (score < bestScore) {
         bestScore = score;
         bestLane = lane;
@@ -810,13 +910,22 @@ export class TrafficSimulation {
         ? spec.length + spec.minGap + 1.8
         : spec.length + spec.minGap + 4.5;
 
+    const { profile, archetype, spriteKey } = resolveSpawnDriverIdentity(
+      vClass,
+      this.config,
+      this.envState,
+      this.rng
+    );
+
     for (const armId of armCandidates) {
       const armGeom = this.compiledTopology.armsById[armId];
       if (!armGeom) continue;
 
       const turn = this.pickMovementForArm(armId);
       const useSlipLane = turn === 'left' && Boolean(this.compiledTopology.slipPathsByArm[armId]);
-      const laneIndex = useSlipLane ? armGeom.def.inLanes - 1 : this.pickLaneForTurn(armId, turn, vClass);
+      const laneIndex = useSlipLane
+        ? armGeom.def.inLanes - 1
+        : this.pickLaneForTurn(armId, turn, vClass, archetype);
       const compiledPath: CompiledMovementPath | undefined = useSlipLane
         ? this.compiledTopology.slipPathsByArm[armId]
         : this.compiledTopology.pathLookup[armId]?.[turn]?.[laneIndex];
@@ -863,43 +972,50 @@ export class TrafficSimulation {
 
       const idxInOrder = this.compiledTopology.armOrder.indexOf(armId);
       this.armSpawnCursor = (Math.max(0, idxInOrder) + 1) % this.compiledTopology.armOrder.length;
-      const r = this.rng();
-      const profile: DriverProfile = r < 0.22 ? 'cautious' : r < 0.72 ? 'normal' : 'aggressive';
-      const pMult = PROFILE_MULT[profile];
-      const speedFactor = pMult.speed * (0.95 + this.rng() * 0.1);
-      const accelFactor = pMult.accel * (0.95 + this.rng() * 0.1);
+      const traits = getDriverTraits({ profile, archetype, vClass });
+      const speedFactor = traits.speedMult * (0.95 + this.rng() * 0.1);
+      const accelFactor = traits.accelMult * (0.95 + this.rng() * 0.1);
       const weatherSpeed = this.envState.weather.speedMult[vClass];
       const initialSpeed = Math.min(spec.maxSpeed * speedFactor * weatherSpeed * 0.65, nearestAheadSpeed + 1.5);
       const pathWrapper = makeVehiclePathWrapper(compiledPath);
       const startPt = sampleWithLateralOffset(pathWrapper, 0, lateralOffset, 0, initialSpeed);
-      const sprites = SPRITES[vClass];
 
-      const baseRunRedProb =
-        vClass === 'motor'
-          ? profile === 'aggressive' ? 0.85 : profile === 'normal' ? 0.5 : 0.15
-          : vClass === 'car'
-            ? profile === 'aggressive' ? 0.65 : profile === 'normal' ? 0.25 : 0.05
-            : profile === 'aggressive' ? 0.2 : profile === 'normal' ? 0.05 : 0;
+      const classRedCap = vClass === 'motor' ? 0.92 : vClass === 'car' ? 0.75 : 0.25;
+      const baseRunRedProb = Math.min(classRedCap, traits.riskTolerance * classRedCap * 1.1);
 
-      const respectsYellowBox = this.rng() < discipline.yellowBoxCompliance;
+      const zoneDiscBoost = this.mapContext.cautionArms.includes(armId) ? this.mapContext.zoneDisciplineBoost : 0;
+      const effYellowBoxCompliance = Math.max(
+        0.05,
+        Math.min(0.99, (discipline.yellowBoxCompliance + zoneDiscBoost) * traits.yellowBoxComplianceMult)
+      );
+      const respectsYellowBox = this.rng() < effYellowBoxCompliance;
+      // Strictly 0 when discipline >= 0.65 so RHK pocket invariant remains clean
       const stopCreepMeters =
-        discipline.stopLineCreepProb > 0 && this.rng() < discipline.stopLineCreepProb
-          ? discipline.stopLineCreepMeters * (0.5 + 0.5 * this.rng())
+        discipline.discipline < 0.65 &&
+        discipline.stopLineCreepProb > 0 &&
+        this.rng() < Math.min(0.95, discipline.stopLineCreepProb * (0.65 + 0.35 * traits.stopCreepBias))
+          ? discipline.stopLineCreepMeters * traits.stopCreepBias * (0.5 + 0.5 * this.rng())
           : 0;
 
       const svoDeg =
-        profile === 'cautious'
-          ? 25 + this.rng() * 20
-          : profile === 'normal'
-            ? 12 + this.rng() * 20
-            : this.rng() * 16;
+        archetype === 'defensive'
+          ? 26 + this.rng() * 19
+          : archetype === 'transit'
+            ? 24 + this.rng() * 18
+            : archetype === 'logistics'
+              ? 18 + this.rng() * 18
+              : archetype === 'commuter'
+                ? 12 + this.rng() * 20
+                : archetype === 'courier'
+                  ? 6 + this.rng() * 14
+                  : this.rng() * 14;
       const svoAngle = (svoDeg * Math.PI) / 180;
       const isConnected = this.rng() < (this.config.connectedVehicleRatio ?? 0);
 
       this.vehicles.push({
         id: this.nextVehicleId++,
         vClass,
-        spriteKey: sprites[Math.floor(this.rng() * sprites.length)],
+        spriteKey,
         originArm: armId,
         destArm: compiledPath.destArmId,
         turn,
@@ -912,6 +1028,8 @@ export class TrafficSimulation {
         speedFactor,
         accelFactor,
         profile,
+        archetype,
+        tailgatePressure: 0,
         reactionTimer: 0,
         prevAccel: 0,
         boxWaitTime: 0,
@@ -929,6 +1047,19 @@ export class TrafficSimulation {
         pendingLaneChangeDir: null,
         wideSwingState: 'none',
         occlusionPeekActive: false,
+        cautionTimer: 0,
+        redWaitTime: 0,
+        flankingHazard: 0,
+        yieldTargetId: undefined,
+        leaderId: undefined,
+        handshakePartnerId: undefined,
+        rhkAnticipating: false,
+        intentTag: 'cruise',
+        hardBrakeCounted: false,
+        yieldCounted: false,
+        yellowBoxCounted: false,
+        tailgateYieldCounted: false,
+        handshakeCounted: false,
         willRunRed: this.rng() < Math.min(0.95, baseRunRedProb * discipline.redLightRunMult),
         yellowCommitted: false,
         respectsYellowBox,
@@ -1024,7 +1155,7 @@ export class TrafficSimulation {
     return false;
   }
 
-  private hasLeftTurnMergeConflict(v: SimVehicle): boolean {
+  private hasLeftTurnMergeConflict(v: SimVehicle, ltorGapMult = 1.0): boolean {
     for (const other of this.vehicles) {
       if (other.id === v.id) continue;
       if (other.originArm === v.originArm) {
@@ -1045,31 +1176,150 @@ export class TrafficSimulation {
       const otherSig = this.getMovementSignal(other.originArm, other.turn, other.isSlipLane);
       if (otherSig !== 'red' && other.distanceAlongPath < other.stopLineDist) {
         const otherDistToStop = other.stopLineDist - (other.distanceAlongPath + other.length * 0.5);
-        const gapHorizonSec = v.speed < 2.2 ? 3.2 : 1.8;
-        const minMergeDist = v.speed < 2.2 ? 14.0 : 8.0;
+        const gapHorizonSec = (v.speed < 2.2 ? 3.2 : 1.8) * ltorGapMult;
+        const minMergeDist = (v.speed < 2.2 ? 14.0 : 8.0) * ltorGapMult;
         if (otherDistToStop < Math.max(minMergeDist, other.speed * gapHorizonSec)) return true;
       }
     }
     return false;
   }
 
-  private shouldStopForYellow(v: SimVehicle, distToStop: number): boolean {
+  private applyMotorcycleSeepage(
+    v: SimVehicle,
+    lw: number,
+    roadW: number,
+    desiredV: number,
+    nearestGap: number,
+    blockingLeader: SimVehicle | null,
+    hasPhysicalMedian: boolean,
+    discipline: DisciplineParams,
+    light: SignalColor
+  ): boolean {
+    if (v.isReversing) return false;
+    if (v.overtakeState && v.overtakeState !== 'none') return false;
+    if (v.isSlipLane || v.isUTurn) return false;
+
+    const armGeom = this.compiledTopology.armsById[v.originArm];
+    if (!armGeom) return false;
+
+    const res = evaluateMotorcycleCorridorTarget({
+      v,
+      vehicles: this.vehicles,
+      config: this.config,
+      topology: this.compiledTopology,
+      armGeom,
+      lw,
+      roadW,
+      light,
+      desiredV,
+      nearestGap,
+      blockingLeader,
+      weather: this.envState.weather,
+      ambientDarkness: this.envState.ambientDarkness,
+      hasPhysicalMedian,
+      discipline,
+    });
+    if (!res) return false;
+
+    const armLw = armGeom.def.inLaneWidths[v.laneIndex] ?? lw;
+    const laneCenters = armGeom.inLaneCenters;
+    if (res.targetLane !== v.laneIndex && v.turn === 'straight' && armGeom.def.inLanes >= 2) {
+      const old = v.laneIndex;
+      const nextCompiled = this.compiledTopology.pathLookup[v.originArm]?.[v.turn]?.[res.targetLane];
+      if (nextCompiled) {
+        const oldCenter = laneCenters[old] ?? getGlobalLat(old, 0, armLw);
+        const newCenter = laneCenters[res.targetLane] ?? getGlobalLat(res.targetLane, 0, armLw);
+        v.laneIndex = res.targetLane;
+        v.destLaneIndex = nextCompiled.destLane;
+        v.pathKey = nextCompiled.key;
+        v.compiledPath = nextCompiled;
+        v.path = makeVehiclePathWrapper(nextCompiled);
+        v.stopLineDist = nextCompiled.stopLineDist;
+        v.exitLineDist = nextCompiled.exitLineDist;
+        v.totalPathLength = nextCompiled.totalPathLength;
+        v.lateralOffset += oldCenter - newCenter;
+        v.laneChangeDir = res.targetLane > old ? 'left' : 'right';
+      }
+    }
+
+    const activeCenter = laneCenters[v.laneIndex] ?? getGlobalLat(v.laneIndex, 0, armLw);
+    v.targetLateralOffset = res.targetGlobalLat - activeCenter;
+    v.crossingMarking = res.crossingMarking;
+    return res.isRhkPacking;
+  }
+
+  private shouldStopForYellow(
+    v: SimVehicle,
+    distToStop: number,
+    blockingLeader: SimVehicle | null,
+    physicalGap: number,
+    discipline: DisciplineParams
+  ): boolean {
     if (v.yellowCommitted) return false;
     const weather = this.envState.weather;
-    const effComfortDecel = Math.max(0.8, v.comfortDecel * weather.comfortDecelMult);
-    if (v.willRunRed && ((distToStop < 44.0 && v.speed > 1.5) || distToStop < 12.0)) {
+    const traits = getDriverTraits(v);
+    const effComfortDecel = Math.max(
+      0.8,
+      v.comfortDecel * traits.comfortDecelMult * weather.comfortDecelMult
+    );
+    const tailgate = v.tailgatePressure ?? 0;
+
+    // Ide #11: Yellow/Red Runner Contagion (when discipline < 0.65 and close leader within 8m is running)
+    const leaderRunning =
+      discipline.discipline < 0.65 &&
+      traits.runnerContagionSens > 0 &&
+      blockingLeader !== null &&
+      blockingLeader.originArm === v.originArm &&
+      physicalGap < 8.0 &&
+      Boolean(blockingLeader.yellowCommitted || blockingLeader.willRunRed) &&
+      blockingLeader.speed > 2.5;
+    const contagionBoost = leaderRunning ? 1 + 0.35 * traits.runnerContagionSens : 1.0;
+    const commitBias = traits.yellowCommitBias * contagionBoost;
+
+    const dynamicFrustRun =
+      (v.frustration ?? 0) >= 0.58 &&
+      traits.riskTolerance >= 0.45 &&
+      weather.friction >= 0.72 &&
+      distToStop < 24.0 * Math.min(1.3, commitBias);
+    const tailgatePush =
+      v.vClass !== 'heavy' &&
+      tailgate > 0.58 &&
+      distToStop < 19.0 &&
+      v.speed > 5.0 &&
+      weather.friction >= 0.72 &&
+      traits.riskTolerance >= 0.3;
+
+    if ((v.willRunRed || dynamicFrustRun) && ((distToStop < 44.0 && v.speed > 1.5) || distToStop < 12.0)) {
       v.yellowCommitted = true;
       return false;
     }
-    if (v.vClass !== 'heavy' && v.profile !== 'cautious' && distToStop < v.speed * (this.phaseRemaining + 0.45)) {
+    if (tailgatePush) {
       v.yellowCommitted = true;
       return false;
     }
-    const reactTime = (v.profile === 'aggressive' ? 0.65 : v.profile === 'normal' ? 0.8 : 0.95) * weather.reactionMult;
-    const brakeMult = v.profile === 'aggressive' ? 0.85 : v.profile === 'normal' ? 1.0 : 1.2;
+    if (
+      commitBias >= 0.92 &&
+      (v.vClass !== 'heavy' || traits.archetype === 'logistics') &&
+      distToStop < v.speed * (this.phaseRemaining + 0.45 * commitBias)
+    ) {
+      v.yellowCommitted = true;
+      return false;
+    }
+    if (
+      leaderRunning &&
+      traits.runnerContagionSens >= 0.3 &&
+      weather.friction >= 0.72 &&
+      distToStop < 16.0 * (0.7 + 0.5 * traits.runnerContagionSens) &&
+      v.speed > 3.5
+    ) {
+      v.yellowCommitted = true;
+      return false;
+    }
+    const reactTime = 0.8 * traits.reactionScale * weather.reactionMult;
+    const brakeMult = Math.max(0.75, Math.min(1.28, 1.32 - 0.34 * commitBias));
     const comfortableStopDist =
       v.speed * reactTime + (v.speed * v.speed) / (2 * effComfortDecel * brakeMult);
-    if (distToStop < comfortableStopDist * 0.85) {
+    if (distToStop < comfortableStopDist * (0.76 + 0.14 * commitBias)) {
       v.yellowCommitted = true;
       return false;
     }
@@ -1086,6 +1336,7 @@ export class TrafficSimulation {
     const discipline = computeDisciplineParams(this.config.driverDiscipline);
     const yellowBoxEnabled = Boolean(this.config.yellowBoxEnabled || this.compiledTopology.topology.yellowBoxEnabled);
     const activeArmSet = this.getActivePhaseArmSet();
+    const crossArmYellowSoon = this.activeColor === 'yellow' && !this.isAllRed && this.phaseRemaining <= 1.2;
     let anyActiveOncomingOvertaker = false;
     for (let i = 0; i < this.vehicles.length; i++) {
       const ov = this.vehicles[i].overtakeState;
@@ -1117,6 +1368,13 @@ export class TrafficSimulation {
       if (v.reverseCooldown && v.reverseCooldown > 0) {
         v.reverseCooldown = Math.max(0, v.reverseCooldown - dt);
       }
+      if (v.cautionTimer && v.cautionTimer > 0) {
+        v.cautionTimer = Math.max(0, v.cautionTimer - dt);
+      }
+
+      const wasBrakingHard = Boolean(v.brakingHard);
+      const wasAbortOvertake = v.overtakeState === 'abort';
+      const wasReversing = Boolean(v.isReversing);
 
       const armGeom = this.compiledTopology.armsById[v.originArm];
       const lw = armGeom?.def.inLaneWidths[v.laneIndex] ?? lwDefault;
@@ -1155,13 +1413,51 @@ export class TrafficSimulation {
         v.yellowCommitted = true;
       }
 
-      // 1. Base Desired Speed scaled by driver profile, lane width, & empirical weather reduction
-      let desiredV = v.maxSpeed * v.speedFactor * widthSpeedFactor * weather.speedMult[v.vClass];
+      // 1. Base Desired Speed scaled by driver profile, lane width, & contextual weather adaptation
+      const vTraits = getDriverTraits(v);
+      const ctxBehavior = computeContextualBehaviorMod(
+        vTraits,
+        weather,
+        this.envState.ambientDarkness
+      );
+
+      // Ide #6: Red-light attention drift tracking & cross-yellow RHK launch anticipation
+      if (light === 'red' && !v.isSlipLane && !v.isUTurn && v.distanceAlongPath < v.stopLineDist) {
+        if (v.speed < QUEUE_SPEED_THRESHOLD) {
+          v.redWaitTime = (v.redWaitTime ?? 0) + dt;
+        }
+        if (
+          crossArmYellowSoon &&
+          !activeArmSet.has(v.originArm) &&
+          v.speed < QUEUE_SPEED_THRESHOLD &&
+          distToStop >= -0.3 &&
+          distToStop <= 6.5 &&
+          vTraits.crossYellowAnticipation >= 0.7
+        ) {
+          v.rhkAnticipating = true;
+        } else if (!crossArmYellowSoon && !this.isAllRed) {
+          v.rhkAnticipating = false;
+        }
+      } else if (light === 'green') {
+        v.redWaitTime = 0;
+        v.rhkAnticipating = false;
+      }
+
+      let desiredV =
+        v.maxSpeed *
+        v.speedFactor *
+        widthSpeedFactor *
+        Math.min(1.0, weather.speedMult[v.vClass] * ctxBehavior.speedWeatherGrace);
+
+      // Post-incident cognitive memory speed moderation (-6% while cautionTimer > 0)
+      if ((v.cautionTimer ?? 0) > 0) {
+        desiredV *= 0.94;
+      }
 
       // Racing-game style curvature lookahead speed cap (brakes BEFORE sharp apexes!)
       desiredV = computeCurvatureTargetSpeed(v, v.compiledPath, desiredV, weather);
 
-      // 2. Perception via 2D Spatial Hash Grid (2-vehicle lookahead)
+      // 2. Perception via 2D Spatial Hash Grid (2-vehicle lookahead) — fills this.queryBufA once!
       let {
         nearestGap,
         leadSpeed,
@@ -1179,6 +1475,7 @@ export class TrafficSimulation {
         weather,
         this.queryBufA
       );
+      v.leaderId = blockingLeader ? blockingLeader.id : undefined;
       const physicalGap = nearestGap;
       const physicalLeadSpeed = leadSpeed;
       const vInsideBox = frontBumper > v.stopLineDist + 0.05 && !v.hasExitedIntersection;
@@ -1192,6 +1489,97 @@ export class TrafficSimulation {
           Boolean(blockingLeader.overtakeState && blockingLeader.overtakeState !== 'none') ||
           (vInsideBox && blockingLeader.originArm !== v.originArm && blockingLeader.destArm !== v.destArm));
 
+      // Zero-GC single-pass reuse of this.queryBufA for:
+      // (a) Straightaway Tailgate Pressure (Ide #9), (b) Defensive Flanking Cushion (Ide #11),
+      // and (c) Undivided-Road Oncoming Detection (Ide #13)
+      const cosH = Math.cos(v.heading);
+      const sinH = Math.sin(v.heading);
+      const myEffW = effClearanceWidth(v);
+      let maxTailgatePressure = 0;
+      let maxFlankingHazard = 0;
+      let flankingAwaySign = 0;
+      let hasOncomingNear = false;
+      const checkFlanking =
+        vTraits.flankingCushionMult >= 1.0 &&
+        !v.hasExitedIntersection &&
+        !v.isSlipLane &&
+        !v.isUTurn &&
+        v.distanceAlongPath < v.stopLineDist - 2.0;
+      const nearbyA = this.queryBufA;
+
+      for (let i = 0; i < nearbyA.length; i++) {
+        const other = nearbyA[i];
+        if (other.id === v.id) continue;
+        const dx = other.x - v.x;
+        const dy = other.y - v.y;
+        const fwd = dx * cosH + dy * sinH;
+        // Outward-left normal in Canvas 2D Y-down is (sinH, -cosH)
+        const latSigned = dx * sinH - dy * cosH;
+        const absLat = Math.abs(latSigned);
+
+        if (other.originArm === v.originArm) {
+          // (a) Tailgate pressure from close same-lane follower
+          if (
+            !other.isSlipLane &&
+            !other.isUTurn &&
+            fwd < -0.2 &&
+            other.distanceAlongPath < v.distanceAlongPath &&
+            absLat <= (myEffW + effClearanceWidth(other)) * 0.5 + 0.65
+          ) {
+            const rearGap = Math.max(0.2, -fwd - (v.length + other.length) * 0.5);
+            if (rearGap < 10.0 && other.speed >= Math.max(1.5, v.speed - 0.5)) {
+              const oTraits = getDriverTraits(other);
+              const impatience = 0.55 + 0.45 * oTraits.riskTolerance + 0.35 * (other.frustration ?? 0);
+              const closingFactor = Math.max(
+                0,
+                Math.min(1, ((other.speed - Math.max(0, v.speed - 1.8)) / 5.0 + (10.0 - rearGap) / 11.5) * impatience)
+              );
+              if (closingFactor > maxTailgatePressure) maxTailgatePressure = closingFactor;
+            }
+          }
+
+          // (b) Defensive flanking cushion beside marking-crossing or overtaking neighbor
+          if (
+            checkFlanking &&
+            absLat > 0.3 &&
+            absLat < 1.9 &&
+            Math.abs(other.distanceAlongPath - v.distanceAlongPath) < 5.5 &&
+            (Boolean(other.crossingMarking) || Boolean(other.overtakeState && other.overtakeState !== 'none'))
+          ) {
+            const hazard = Math.min(1, (1 - absLat / 1.9) * 0.65 + 0.35);
+            if (hazard > maxFlankingHazard) {
+              maxFlankingHazard = hazard;
+              flankingAwaySign = latSigned > 0 ? -1 : 1;
+            }
+          }
+        } else if (!hasOncomingNear && fwd > -2.0 && fwd < 38.0 && absLat < roadW + 4.0) {
+          const dotH = cosH * Math.cos(other.heading) + sinH * Math.sin(other.heading);
+          if (dotH < -0.45) {
+            hasOncomingNear = true;
+          }
+        }
+      }
+
+      v.tailgatePressure = Math.min(1, maxTailgatePressure);
+      v.flankingHazard = maxFlankingHazard;
+      if (maxFlankingHazard > 0) {
+        desiredV *= 1 - 0.06 * maxFlankingHazard;
+      }
+
+      const hasPhysicalMedian = this.config.hasMedian || (armGeom?.def.medianWidth ?? 0) > 0.05;
+      const blockedByHeavyAhead =
+        blockingLeader !== null && blockingLeader.vClass === 'heavy' && physicalGap < 18.0;
+      const mapMod = evaluateMapContextMod(
+        v,
+        vTraits,
+        this.mapContext,
+        armGeom,
+        hasPhysicalMedian,
+        hasOncomingNear,
+        blockedByHeavyAhead
+      );
+      desiredV *= mapMod.zoneSpeedScale;
+
       // 3. Signal control, LTOR (per-arm!), RHK pocket, Yellow Box Awareness, & Right-of-Way Priority Yielding
       let stoppingForSignal = false;
       let canLTOR = false;
@@ -1199,6 +1587,11 @@ export class TrafficSimulation {
       const wasHoldingYB = Boolean(v.holdingYellowBox);
       v.isYielding = false;
       v.holdingYellowBox = false;
+      v.yieldTargetId = undefined;
+      if (!v.laneChangeDir && !v.pendingLaneChangeDir && (!v.overtakeState || v.overtakeState === 'none')) {
+        v.handshakePartnerId = undefined;
+        v.handshakeCounted = false;
+      }
 
       const alreadyInBox =
         v.distanceAlongPath >= v.stopLineDist ||
@@ -1206,7 +1599,8 @@ export class TrafficSimulation {
 
       let stopForYellowFlag = false;
       if (!v.isSlipLane && !v.isUTurn && v.distanceAlongPath < v.stopLineDist && !alreadyInBox) {
-        const stopForYellow = light === 'yellow' && this.shouldStopForYellow(v, distToStop);
+        const stopForYellow =
+          light === 'yellow' && this.shouldStopForYellow(v, distToStop, blockingLeader, physicalGap, discipline);
         stopForYellowFlag = stopForYellow;
         if (light === 'yellow' && !stopForYellow && v.turn === 'straight') {
           desiredV *= 1.18;
@@ -1216,12 +1610,13 @@ export class TrafficSimulation {
           v.turn === 'left' &&
           light === 'red' &&
           !this.isBoxOccupiedByConflictingArm(v.originArm) &&
-          !this.hasLeftTurnMergeConflict(v);
+          !this.hasLeftTurnMergeConflict(v, mapMod.ltorGapMult);
         if (canLTOR && frontBumper > v.stopLineDist + 0.25 && v.speed >= 0.35) {
           v.yellowCommitted = true;
         }
-        if (canLTOR && distToStop < 12) {
-          desiredV = Math.min(desiredV, 6.0 * weather.speedMult[v.vClass]);
+        if (canLTOR && distToStop < 14) {
+          const ltorCap = distToStop < 8.0 ? mapMod.ltorSpeedCap : mapMod.ltorSpeedCap * 1.3;
+          desiredV = Math.min(desiredV, ltorCap * weather.speedMult[v.vClass]);
         }
 
         const canRunEarlyRed =
@@ -1277,6 +1672,7 @@ export class TrafficSimulation {
           stoppingForSignal = true;
           if ((holdYellowBox || holdConflictCorridor) && !wasHoldingYB) {
             this.yellowBoxHoldCount += 1;
+            this.archetypeStats[vTraits.archetype].yellowBoxHolds += 1;
           }
         }
       }
@@ -1288,9 +1684,10 @@ export class TrafficSimulation {
         weather,
         this.envState.ambientDarkness
       );
+      // Ide #7: Archetype-specific turn signal onset horizon
       if (!v.laneChangeDir && !v.pendingLaneChangeDir && (!v.overtakeState || v.overtakeState === 'none')) {
         v.turnSignalActive =
-          v.distanceAlongPath < v.exitLineDist && v.distanceAlongPath > v.stopLineDist - 35
+          v.distanceAlongPath < v.exitLineDist && v.distanceAlongPath > v.stopLineDist - vTraits.signalOnsetDist
             ? v.turn === 'uturn'
               ? 'right'
               : v.turn === 'left' || v.turn === 'right'
@@ -1329,6 +1726,7 @@ export class TrafficSimulation {
       );
       if (yieldDecision.shouldYield) {
         v.isYielding = true;
+        v.yieldTargetId = yieldDecision.targetId;
         desiredV = Math.min(desiredV, yieldDecision.speedCap * weather.speedMult[v.vClass]);
         if (yieldDecision.yieldGap < nearestGap) {
           nearestGap = Math.max(0.1, yieldDecision.yieldGap);
@@ -1350,6 +1748,7 @@ export class TrafficSimulation {
         );
         if (svoYield.shouldYield) {
           v.isYielding = true;
+          v.yieldTargetId = svoYield.targetId;
           desiredV = Math.min(desiredV, svoYield.speedCap);
           if (svoYield.yieldGap < nearestGap) {
             nearestGap = Math.max(0.1, svoYield.yieldGap);
@@ -1428,7 +1827,6 @@ export class TrafficSimulation {
         desiredV = Math.min(desiredV, 4.8 * weather.speedMult.motor);
       }
 
-      const hasPhysicalMedian = this.config.hasMedian || (armGeom?.def.medianWidth ?? 0) > 0.05;
       if (v.vClass === 'heavy' && !v.isReversing) {
         const wasWide = v.wideSwingState === 'pre_swing' || v.wideSwingState === 'turning';
         const nearbyHeavy = this.spatialHash.queryRadius(v.x, v.y, 18, this.queryBufB);
@@ -1438,18 +1836,41 @@ export class TrafficSimulation {
           v.targetLateralOffset = wide.wideOffset;
         }
       }
+
+      // Ide #11 Defensive Flanking Cushion + Ide #13 Undivided-road curb/peek lateral offset
+      if (
+        v.vClass !== 'motor' &&
+        !v.isReversing &&
+        !v.isSlipLane &&
+        !v.isUTurn &&
+        !v.laneChangeDir &&
+        (!v.overtakeState || v.overtakeState === 'none') &&
+        (v.wideSwingState === undefined || v.wideSwingState === 'none') &&
+        v.distanceAlongPath < v.stopLineDist
+      ) {
+        const availHalf = Math.max(0, (lw - v.width) * 0.5 - 0.18);
+        const flankShift =
+          maxFlankingHazard > 0
+            ? flankingAwaySign * Math.min(0.18, 0.14 * maxFlankingHazard * vTraits.flankingCushionMult)
+            : 0;
+        const desiredSubtleLat =
+          distToStop > 5.0
+            ? Math.max(-availHalf, Math.min(availHalf, mapMod.undividedLateralShift + flankShift))
+            : 0;
+        if (Math.abs(desiredSubtleLat) > 1e-3 || Math.abs(v.targetLateralOffset) <= availHalf + 0.05) {
+          v.targetLateralOffset = desiredSubtleLat;
+        }
+      }
+
+      let isRhkPacking = false;
       if (v.vClass === 'motor') {
-        updateMotorcycleSeepage(
+        isRhkPacking = this.applyMotorcycleSeepage(
           v,
-          this.vehicles,
-          this.config,
-          this.compiledTopology,
           lw,
           roadW,
           desiredV,
           nearestGap,
           blockingLeader,
-          weather,
           hasPhysicalMedian,
           discipline,
           light
@@ -1457,6 +1878,10 @@ export class TrafficSimulation {
       }
 
       let didMobilChange = false;
+      let didTailgateYield = false;
+      const creditOvertakeArch = () => {
+        this.archetypeStats[vTraits.archetype].overtakes += 1;
+      };
       if (this.config.smartOvertaking !== false) {
         didMobilChange = evaluateMobilLaneChange(
           v,
@@ -1471,8 +1896,12 @@ export class TrafficSimulation {
           discipline,
           () => {
             this.carOvertakeCount += 1;
+            creditOvertakeArch();
           },
-          dt
+          dt,
+          () => {
+            this.archetypeStats[vTraits.archetype].handshakes += 1;
+          }
         );
       }
 
@@ -1489,8 +1918,14 @@ export class TrafficSimulation {
           v.vClass === 'car'
             ? () => {
               this.carOvertakeCount += 1;
+              creditOvertakeArch();
             }
-            : undefined
+            : undefined,
+          () => {
+            didTailgateYield = true;
+            this.archetypeStats[vTraits.archetype].tailgateYields += 1;
+          },
+          mapMod.busCurbPull
         );
       }
 
@@ -1512,6 +1947,8 @@ export class TrafficSimulation {
           this.queryBufB,
           () => {
             this.oncomingOvertakeCount += 1;
+            creditOvertakeArch();
+            this.frictionGrid.recordEvent(v.x, v.y, vTraits.archetype, 1.1);
           }
         );
         desiredV *= oncomingRes.speedBoost;
@@ -1550,6 +1987,7 @@ export class TrafficSimulation {
       // 6b. GLOSA Green-End Anticipation, Platoon Start-up Discharge, Multi-Leader Shockwave & Zipper Give-Way
       let glosaHeadwayMult = 1.0;
       let glosaLaunchBoostScale = 1.0;
+      let isGlosaCoasting = false;
       if (!v.isReversing && (!v.overtakeState || v.overtakeState === 'none')) {
         const glosa = evaluateGlosaAndPlatoonDischarge(
           v,
@@ -1568,6 +2006,7 @@ export class TrafficSimulation {
         }
         glosaHeadwayMult = glosa.headwayMult;
         glosaLaunchBoostScale = glosa.launchBoostScale;
+        isGlosaCoasting = glosa.isGlosaCoasting;
 
         // Cooperative Zipper Merge & Blinker Intent Pocket Opening
         const nearbyZip = this.spatialHash.queryRadius(v.x, v.y, 16, this.queryBufB);
@@ -1576,13 +2015,33 @@ export class TrafficSimulation {
           nearestGap = zipper.yieldGap;
           leadSpeed = Math.min(leadSpeed, zipper.speedCap);
           desiredV = Math.min(desiredV, zipper.speedCap);
+          v.isYielding = true;
+          if (zipper.requester && !zipper.requester.handshakeCounted && zipper.requester.laneChangeDir) {
+            zipper.requester.handshakeCounted = true;
+            this.archetypeStats[getDriverTraits(zipper.requester).archetype].handshakes += 1;
+          }
         }
         const blinkerPocket = evaluateBlinkerIntentPocket(v, nearbyZip, lw, weather);
         if (blinkerPocket.yieldGap < nearestGap) {
           nearestGap = blinkerPocket.yieldGap;
           leadSpeed = Math.min(leadSpeed, blinkerPocket.speedCap);
           desiredV = Math.min(desiredV, blinkerPocket.speedCap);
+          v.isYielding = true;
+          if (
+            blinkerPocket.requester &&
+            !blinkerPocket.requester.handshakeCounted &&
+            blinkerPocket.requester.laneChangeDir
+          ) {
+            blinkerPocket.requester.handshakeCounted = true;
+            this.archetypeStats[getDriverTraits(blinkerPocket.requester).archetype].handshakes += 1;
+          }
         }
+      }
+
+      // Edge-triggered yield telemetry & geospatial friction recording
+      if (v.isYielding && !wasYielding) {
+        this.archetypeStats[vTraits.archetype].yieldsGiven += 1;
+        this.frictionGrid.recordEvent(v.x, v.y, vTraits.archetype, 0.55);
       }
 
       const multiLead = !v.isReversing
@@ -1594,7 +2053,8 @@ export class TrafficSimulation {
           secondGap,
           secondLeadSpeed,
           secondLeader,
-          weather
+          weather,
+          perception
         )
         : { effectiveLeadSpeed: leadSpeed, anticipatedBrakeIntensity: 0, shockwaveCap: Infinity };
       if (multiLead.shockwaveCap < desiredV) {
@@ -1765,11 +2225,52 @@ export class TrafficSimulation {
         v.brakingHard = false;
       } else {
         if (v.speed < 0.15) v.prevAccel = Math.max(0, v.prevAccel ?? 0);
+        const traits = vTraits;
+        // Local herd effect: steady commuters adapt headway slightly to leader archetype
+        let herdHeadwayMult = 1.0;
+        if (
+          traits.archetype === 'commuter' &&
+          blockingLeader !== null &&
+          blockingLeader.originArm === v.originArm &&
+          Number.isFinite(nearestGap) &&
+          nearestGap < 18.0
+        ) {
+          const leadArch = getDriverTraits(blockingLeader).archetype;
+          if ((leadArch === 'hurried' || leadArch === 'courier') && blockingLeader.speed > 2.5) {
+            herdHeadwayMult = 0.94;
+          } else if (leadArch === 'defensive' || leadArch === 'transit') {
+            herdHeadwayMult = 1.07;
+          }
+        }
         const effAccel = v.maxAccel * v.accelFactor * weather.accelMult;
-        const effComfortDecel = Math.max(0.8, v.comfortDecel * weather.comfortDecelMult);
-        const minGap = (v.vClass === 'motor' && v.speed < 4.5 ? 0.65 : v.minGap) * weather.minGapMult;
+        const effComfortDecel = Math.max(
+          0.8,
+          v.comfortDecel * traits.comfortDecelMult * weather.comfortDecelMult
+        );
+        const minGap =
+          (v.vClass === 'motor' && v.speed < 4.5 ? 0.65 : v.minGap) *
+          traits.minGapMult *
+          weather.minGapMult;
+        const cautionHeadwayMult =
+          (v.cautionTimer ?? 0) > 0 &&
+          (traits.archetype === 'defensive' ||
+            traits.archetype === 'transit' ||
+            traits.archetype === 'logistics' ||
+            traits.archetype === 'commuter')
+            ? 1.15
+            : 1.0;
+        const frustNow = v.frustration ?? 0;
+        const frustHeadwayMult =
+          frustNow > 0.2 && traits.frustrationMobilSensitivity >= 0.5
+            ? Math.max(0.88, 1 - 0.12 * frustNow * traits.frustrationMobilSensitivity)
+            : 1.0;
         const headway =
           (v.vClass === 'motor' && v.speed < 4.5 ? 0.5 : v.timeHeadway) *
+          traits.headwayMult *
+          ctxBehavior.headwayCautionBoost *
+          herdHeadwayMult *
+          cautionHeadwayMult *
+          frustHeadwayMult *
           widthHeadwayFactor *
           weather.headwayMult *
           glosaHeadwayMult *
@@ -1783,6 +2284,7 @@ export class TrafficSimulation {
           comfortDecel: effComfortDecel,
           minGap,
           timeHeadway: headway,
+          delta: traits.iidmDelta,
         });
 
         const canLaunch =
@@ -1810,7 +2312,8 @@ export class TrafficSimulation {
           nearestGap,
           minGap,
           stoppingForSignal,
-          dt
+          dt,
+          traits.jerkMult
         );
         v.prevAccel = smoothedAccel;
         v.brakingHard = smoothedAccel < -effComfortDecel * 0.65;
@@ -1840,13 +2343,71 @@ export class TrafficSimulation {
         nextSpeed = 1.05;
       }
 
-      // Dynamic driver frustration escalation & mid-road stuck tracking
-      if (!v.isReversing && v.speed < 0.9 && !vInsideBox) {
-        const rate = stoppingForSignal || v.isYielding || v.holdingYellowBox ? 0.035 : 0.14;
-        v.frustration = Math.min(1, (v.frustration ?? 0) + dt * rate);
-      } else if (v.speed >= 3.0) {
-        v.frustration = Math.max(0, (v.frustration ?? 0) - dt * 0.18);
+      // Post-incident cognitive memory (Ide #3): hard braking, abort overtake, or fresh reverse
+      const freshHardBrake = Boolean(v.brakingHard) && !wasBrakingHard && v.speed > 2.5;
+      const freshAbort = v.overtakeState === 'abort' && !wasAbortOvertake;
+      const freshReverse = Boolean(v.isReversing) && !wasReversing;
+      if (freshHardBrake || freshAbort || freshReverse) {
+        v.cautionTimer = Math.max(v.cautionTimer ?? 0, vTraits.postIncidentCautionSec);
+        v.frustration = Math.min(1, (v.frustration ?? 0) + vTraits.postIncidentFrustSpike);
       }
+      if (v.brakingHard && !v.hardBrakeCounted && v.speed > 2.0) {
+        this.archetypeStats[vTraits.archetype].hardBrakes += 1;
+        this.frictionGrid.recordEvent(v.x, v.y, vTraits.archetype, 0.9);
+        v.hardBrakeCounted = true;
+      } else if (!v.brakingHard) {
+        v.hardBrakeCounted = false;
+      }
+
+      // Dynamic driver frustration escalation & mid-road stuck tracking (archetype-calibrated)
+      const frustTraits = vTraits;
+      if (!v.isReversing && v.speed < 0.9 && !vInsideBox) {
+        const baseRate = stoppingForSignal || v.isYielding || v.holdingYellowBox ? 0.035 : 0.14;
+        const heavyPenaltyMult =
+          blockingLeader?.vClass === 'heavy' && v.vClass !== 'heavy' && frustTraits.archetype !== 'defensive'
+            ? 1.25
+            : 1.0;
+        v.frustration = Math.min(1, (v.frustration ?? 0) + dt * baseRate * frustTraits.frustrationGrowMult * heavyPenaltyMult);
+      } else if (v.speed >= 3.0) {
+        v.frustration = Math.max(0, (v.frustration ?? 0) - dt * 0.18 * frustTraits.frustrationDecayMult);
+      }
+
+      // Ide #8: Tactical telemetry intentTag classification
+      let intentTag: VehicleIntentTag = 'cruise';
+      if (v.isReversing) {
+        intentTag = 'reverse';
+      } else if (v.overtakeState && v.overtakeState !== 'none') {
+        intentTag = 'overtake';
+      } else if (v.holdingYellowBox) {
+        intentTag = 'yellow_box';
+      } else if (v.handshakePartnerId !== undefined && (v.pendingLaneChangeDir || v.laneChangeDir)) {
+        intentTag = 'handshake';
+      } else if (
+        didTailgateYield ||
+        (v.laneChangeDir === 'left' && (v.tailgatePressure ?? 0) > 0.45 && vTraits.tailgateYieldSens >= 0.75)
+      ) {
+        intentTag = 'tailgate_yield';
+      } else if (v.isYielding) {
+        intentTag = 'yield';
+      } else if (v.occlusionPeekActive) {
+        intentTag = 'peek';
+      } else if (light === 'yellow' && v.yellowCommitted && v.distanceAlongPath < v.stopLineDist) {
+        intentTag = 'dilemma_commit';
+      } else if (isGlosaCoasting) {
+        intentTag = 'glosa';
+      } else if (isRhkPacking || v.rhkAnticipating) {
+        intentTag = 'rhk_pack';
+      } else if ((v.cautionTimer ?? 0) > 0) {
+        intentTag = 'caution';
+      }
+      v.intentTag = intentTag;
+
+      // Ide #15: Running per-archetype frustration & speed telemetry accumulators
+      const archStat = this.archetypeStats[vTraits.archetype];
+      archStat.frustrationSum += v.frustration ?? 0;
+      archStat.frustrationSamples += 1;
+      archStat.speedSum += nextSpeed;
+      archStat.speedSamples += 1;
 
       if (!v.isReversing && v.speed < 0.5 && !stoppingForSignal && !isQueuedBehindRed && !v.isYielding && !v.holdingYellowBox && !vInsideBox) {
         v.stuckTimer = (v.stuckTimer ?? 0) + dt;
@@ -1896,6 +2457,9 @@ export class TrafficSimulation {
       const nextCrossingMarking = inOncomingPass || isCrossCenterAnywhere || isOnShoulderApproach;
       if (nextCrossingMarking && !v.markedCrossCounted) {
         this.markingCrossCount += 1;
+        const crossArch = getDriverTraits(v).archetype;
+        this.archetypeStats[crossArch].markingCrosses += 1;
+        this.frictionGrid.recordEvent(v.x, v.y, crossArch, 0.65);
         v.markedCrossCounted = true;
       } else if (!nextCrossingMarking) {
         v.markedCrossCounted = false;
@@ -1946,6 +2510,9 @@ export class TrafficSimulation {
         this.totalExitedAllTime += 1;
         this.totalExitedWaitTime += v.waitingTime;
         this.exitedWaitCount += 1;
+        const exitArch = getDriverTraits(v).archetype;
+        this.archetypeStats[exitArch].exited += 1;
+        this.archetypeStats[exitArch].totalWait += v.waitingTime;
         this.rollingExits.push({ t: this.simTime, wait: v.waitingTime });
         if (v.waitingTime > this.maxWaitTimeObserved) this.maxWaitTimeObserved = v.waitingTime;
         this.currentPhaseExited[v.vClass] += 1;
@@ -1996,9 +2563,18 @@ export class TrafficSimulation {
     const queueByArmId: Record<string, number> = {};
     for (const id of this.compiledTopology.armOrder) queueByArmId[id] = 0;
 
+    const activeByArch: Record<DriverArchetype, number> = {
+      defensive: 0,
+      commuter: 0,
+      hurried: 0,
+      courier: 0,
+      transit: 0,
+      logistics: 0,
+    };
     let activeQueueCount = 0;
     let boxStuckCount = 0;
     for (const v of this.vehicles) {
+      activeByArch[getDriverTraits(v).archetype] += 1;
       if (v.distanceAlongPath < v.stopLineDist && v.speed < QUEUE_SPEED_THRESHOLD) {
         queueByArmId[v.originArm] = (queueByArmId[v.originArm] ?? 0) + 1;
         if (v.originArm === 'north' || v.originArm === 'east' || v.originArm === 'south' || v.originArm === 'west') {
@@ -2073,7 +2649,6 @@ export class TrafficSimulation {
           steerAngle: _sa,
           speedFactor: _sf,
           accelFactor: _af,
-          profile: _pr,
           reactionTimer: _rt,
           prevAccel: _pa,
           boxWaitTime: _bw,
@@ -2082,25 +2657,44 @@ export class TrafficSimulation {
           respectsYellowBox: _ryb,
           stopCreepMeters: _scm,
           laneChangeCooldown: _lcc,
-          overtakeTargetId: _oti,
           overtakeTimer: _ot,
           stuckTimer: _st,
           reverseTimer: _rtm,
           reverseCooldown: _rcd,
           reverseSteerDir: _rsd,
-          frustration: _fr,
           markedCrossCounted: _mcc,
-          svoAngle: _svo,
           turnSignalActive: _tsa,
           signalLeadTimer: _slt,
-          pendingLaneChangeDir: _pld,
-          wideSwingState: _wss,
-          occlusionPeekActive: _opa,
+          redWaitTime: _rwt,
+          hardBrakeCounted: _hbc,
+          yieldCounted: _ycnt,
+          yellowBoxCounted: _ybc,
+          tailgateYieldCounted: _tyc,
+          handshakeCounted: _hsc,
+          speedAccum: _sacc,
+          speedSamples: _ssmp,
+          frustrationAccum: _facc,
+          frustrationSamples: _fsmp,
           ...rest
         } = v;
         return {
           ...rest,
+          archetype: getDriverTraits(v).archetype,
+          frustration: +(v.frustration ?? 0).toFixed(2),
           turnSignal: getEffectiveBlinkerDir(v),
+          occlusionPeekActive: Boolean(v.occlusionPeekActive),
+          wideSwingState: v.wideSwingState ?? 'none',
+          tailgatePressure: +(v.tailgatePressure ?? 0).toFixed(2),
+          cautionTimer: +(v.cautionTimer ?? 0).toFixed(2),
+          pendingLaneChangeDir: v.pendingLaneChangeDir ?? null,
+          overtakeTargetId: v.overtakeTargetId,
+          yieldTargetId: v.yieldTargetId,
+          leaderId: v.leaderId,
+          handshakePartnerId: v.handshakePartnerId,
+          flankingHazard: +(v.flankingHazard ?? 0).toFixed(2),
+          rhkAnticipating: Boolean(v.rhkAnticipating),
+          svoAngle: v.svoAngle !== undefined ? +v.svoAngle.toFixed(3) : undefined,
+          intentTag: v.intentTag ?? 'cruise',
         };
       }),
       stats: {
@@ -2123,6 +2717,26 @@ export class TrafficSimulation {
         yellowBoxHoldCount: this.yellowBoxHoldCount,
         reverseRecoveryCount: this.reverseRecoveryCount,
         markingCrossCount: this.markingCrossCount,
+        driverStats: ARCHETYPE_ORDER.reduce((acc, arch) => {
+          const st = this.archetypeStats[arch];
+          acc[arch] = {
+            exited: st.exited,
+            totalWait: +st.totalWait.toFixed(1),
+            avgWait: st.exited > 0 ? +(st.totalWait / st.exited).toFixed(1) : 0,
+            overtakes: st.overtakes,
+            markingCrosses: st.markingCrosses,
+            activeCount: activeByArch[arch],
+            hardBrakes: st.hardBrakes,
+            yieldsGiven: st.yieldsGiven,
+            yellowBoxHolds: st.yellowBoxHolds,
+            tailgateYields: st.tailgateYields,
+            handshakes: st.handshakes,
+            avgFrustration:
+              st.frustrationSamples > 0 ? +(st.frustrationSum / st.frustrationSamples).toFixed(2) : 0,
+            avgSpeed: st.speedSamples > 0 ? +(st.speedSum / st.speedSamples).toFixed(2) : 0,
+          };
+          return acc;
+        }, {} as Record<DriverArchetype, ArchetypeStat>),
         environment: {
           timeMode: this.envState.timeMode,
           clockHour: this.envState.clockHour,
@@ -2138,6 +2752,7 @@ export class TrafficSimulation {
         phaseHistory: [...this.phaseHistory],
         cycleHistory: [...this.cycleHistory],
       },
+      frictionGrid: this.frictionGrid.toSnapshot(),
     };
   }
 }

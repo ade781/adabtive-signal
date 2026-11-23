@@ -12,6 +12,58 @@ export type ArmId = 'north' | 'east' | 'south' | 'west';
 export type TurnIntent = 'left' | 'straight' | 'right';
 export type VehicleClass = 'motor' | 'car' | 'heavy';
 export type SignalColor = 'green' | 'yellow' | 'red';
+export type DriverArchetype =
+  | 'defensive'
+  | 'commuter'
+  | 'hurried'
+  | 'courier'
+  | 'transit'
+  | 'logistics';
+
+export type VehicleIntentTag =
+  | 'cruise'
+  | 'glosa'
+  | 'rhk_pack'
+  | 'peek'
+  | 'yield'
+  | 'yellow_box'
+  | 'overtake'
+  | 'handshake'
+  | 'tailgate_yield'
+  | 'caution'
+  | 'dilemma_commit'
+  | 'reverse';
+
+export interface MapOverlayLayers {
+  /** Under-chassis archetype accent + zoom-adaptive screen-space badge pills */
+  identity: boolean;
+  /** Event-driven overtake arcs, yield chevrons, yellow-box hold ticks, peek cones, wide-swing arcs, V2V radar */
+  tacticalCues: boolean;
+  /** Pairwise social interaction vectors: tailgate pressure, cooperative handshake, flanking cushion */
+  socialVectors: boolean;
+  /** Salient-only frustration (>0.5) & post-incident caution recovery bars */
+  emotionBars: boolean;
+  /** Geospatial driver-behavior friction heatmap overlay on asphalt */
+  frictionHeatmap: boolean;
+}
+
+export interface FrictionHeatmapSnapshot {
+  gridSize: number;
+  extentMeters: number;
+  maxVal: number;
+  /** Total intensity across all archetypes (length = gridSize * gridSize) */
+  total: number[];
+  /** Per-archetype intensity grids (length = gridSize * gridSize each) */
+  byArchetype: Record<DriverArchetype, number[]>;
+}
+
+export interface DriverProfileMix {
+  cautiousPct: number;
+  normalPct: number;
+  aggressivePct: number;
+  courierShare?: number;
+  preset?: 'balanced' | 'orderly' | 'rush-hour' | 'courier-dense' | 'night-logistics' | 'custom';
+}
 
 export interface SimConfig {
   // Road Geometry (unified: roadWidthPerDirection = lanesPerDirection * laneWidth)
@@ -50,6 +102,7 @@ export interface SimConfig {
   // v2 Smart AI, Yellow Box, Environment & Custom Draw Topology
   yellowBoxEnabled?: boolean;    // Yellow Box Junction anti-gridlock enforcement & visual
   driverDiscipline?: number;     // 0.0 (chaotic) .. 1.0 (strictly disciplined), default 0.72
+  driverProfileMix?: DriverProfileMix; // Rider/driver type distribution mix & preset
   smartOvertaking?: boolean;     // MOBIL active car/motor overtaking (default true)
   oncomingOvertaking?: boolean;  // Allow overtaking via oncoming lane when no physical median (default true)
   connectedVehicleRatio?: number; // 0.0 .. 1.0 share of V2V/CAV-equipped vehicles (default 0.0)
@@ -96,6 +149,9 @@ export interface Vehicle {
   waitingTime: number;           // seconds spent v < QUEUE_SPEED_THRESHOLD (1.2 m/s)
   laneChangeDir?: 'left' | 'right' | null;
   turnSignal?: 'left' | 'right' | null;
+  profile?: 'cautious' | 'normal' | 'aggressive';
+  archetype?: DriverArchetype;
+  frustration?: number;
   isConnected?: boolean;
   isSlipLane?: boolean;
   isUTurn?: boolean;
@@ -105,6 +161,20 @@ export interface Vehicle {
   brakingHard?: boolean;
   isReversing?: boolean;
   crossingMarking?: boolean;
+  // Driver Intelligence v2 tactical & social telemetry (primitives only)
+  occlusionPeekActive?: boolean;
+  wideSwingState?: 'none' | 'pre_swing' | 'turning';
+  tailgatePressure?: number;
+  cautionTimer?: number;
+  pendingLaneChangeDir?: 'left' | 'right' | null;
+  overtakeTargetId?: number;
+  yieldTargetId?: number;
+  leaderId?: number;
+  handshakePartnerId?: number;
+  flankingHazard?: number;
+  rhkAnticipating?: boolean;
+  svoAngle?: number;
+  intentTag?: VehicleIntentTag;
 }
 
 export interface PhaseRecord {
@@ -157,6 +227,23 @@ export interface EnvironmentTelemetry {
   ambientDarkness: number;
 }
 
+export interface ArchetypeStat {
+  exited: number;
+  totalWait: number;
+  avgWait: number;
+  overtakes: number;
+  markingCrosses: number;
+  activeCount: number;
+  // Driver Intelligence v2 extended per-archetype counters
+  hardBrakes?: number;
+  yieldsGiven?: number;
+  yellowBoxHolds?: number;
+  tailgateYields?: number;
+  handshakes?: number;
+  avgFrustration?: number;
+  avgSpeed?: number;
+}
+
 export interface SimStats {
   simTime: number;               // total elapsed sim seconds
   currentPhaseExited: { motor: number; car: number; heavy: number; total: number };
@@ -177,6 +264,7 @@ export interface SimStats {
   yellowBoxHoldCount?: number;
   reverseRecoveryCount?: number;
   markingCrossCount?: number;
+  driverStats?: Record<DriverArchetype, ArchetypeStat>;
   environment?: EnvironmentTelemetry;
   phaseHistory: PhaseRecord[];   // newest first
   cycleHistory: CycleRecord[];   // newest first
@@ -187,4 +275,5 @@ export interface SimSnapshot {
   signal: SignalState;
   vehicles: Vehicle[];
   stats: SimStats;
+  frictionGrid?: FrictionHeatmapSnapshot;
 }

@@ -1,12 +1,13 @@
 import type { SimVehicle } from './behaviors';
 import type { DisciplineParams } from './conflictResolver';
+import { getDriverTraits } from './driverIntelligence';
 import type { WeatherPhysicsProfile } from './environmentDynamics';
 import { wrapAngleRad } from './topologyBuilder';
 import type { SignalColor } from './types';
 
 /**
  * Heterogeneous perception and reaction parameters distinguishing V2V/CAV
- * vehicles from human drivers under varying weather and ambient darkness.
+ * vehicles and specific human driver archetypes under varying weather and ambient darkness.
  */
 export interface PerceptionProfile {
   isConnected: boolean;
@@ -14,12 +15,14 @@ export interface PerceptionProfile {
   gapCautiousMult: number;
   caccHeadwayMult: number;
   canSeeThroughTrucks: boolean;
+  multiLookaheadTau: number;
+  secondLeaderWeight: number;
 }
 
 /**
  * Evaluates a vehicle's perception & car-following profile.
  * Connected vehicles gain V2V X-ray awareness through heavy trucks, faster actuation,
- * and tighter CACC platooning headways behind connected leaders on shared corridors.
+ * and tighter CACC platooning headways; human drivers differ by archetype traits.
  */
 export function evaluateVehiclePerceptionProfile(
   v: SimVehicle,
@@ -39,26 +42,29 @@ export function evaluateVehiclePerceptionProfile(
       gapCautiousMult: 1.0,
       caccHeadwayMult: cooperativePlatoon ? 0.78 : 0.92,
       canSeeThroughTrucks: true,
+      multiLookaheadTau: 0.35,
+      secondLeaderWeight: 1.38,
     };
   }
 
+  const traits = getDriverTraits(v);
   const rainFactor = Number.isFinite(weather.rainIntensity) ? Math.max(0, weather.rainIntensity) : 0;
   const darknessRaw = Number.isFinite(ambientDarkness) ? Math.max(0, ambientDarkness) : 0;
   const darknessFactor = Math.min(1, darknessRaw / 0.3);
 
-  let gapCautiousMult = 0.95;
-  if (v.profile === 'cautious') {
-    gapCautiousMult = 1 + 0.1 * rainFactor + 0.1 * darknessFactor;
-  } else if (v.profile === 'normal') {
-    gapCautiousMult = 1 + 0.05 * rainFactor + 0.05 * darknessFactor;
-  }
+  const risk = traits.riskTolerance;
+  const cautionSlope = Math.max(0.02, 0.135 - 0.13 * risk);
+  const baseCaution = 1.07 - 0.155 * risk;
+  const gapCautiousMult = baseCaution + cautionSlope * (rainFactor + darknessFactor);
 
   return {
     isConnected: false,
-    reactionScale: 1.0,
+    reactionScale: traits.reactionScale,
     gapCautiousMult,
     caccHeadwayMult: 1.0,
     canSeeThroughTrucks: false,
+    multiLookaheadTau: traits.multiLookaheadTau,
+    secondLeaderWeight: traits.secondLeaderWeight,
   };
 }
 
@@ -123,32 +129,30 @@ export function evaluateOcclusionPeekingCap(
     return { isPeeking: false, speedCap: Infinity };
   }
 
+  const traits = getDriverTraits(v);
   const approachingConflict =
     Boolean(v.isSlipLane) ||
     Boolean(v.isUTurn) ||
     (light === 'green' && v.turn === 'right') ||
     v.overtakeState === 'pull_out';
 
-  if (!approachingConflict) {
-    return { isPeeking: false, speedCap: Infinity };
-  }
-
   const distToStop = v.stopLineDist - v.distanceAlongPath;
   const inConflictWindow = v.isSlipLane
     ? v.distanceAlongPath >= v.exitLineDist - 14 && v.distanceAlongPath <= v.exitLineDist
-    : distToStop >= -2.0 && distToStop <= 12.0;
+    : distToStop >= -2.0 && distToStop <= 14.0;
 
-  if (!inConflictWindow) {
+  if (!inConflictWindow && !approachingConflict) {
     return { isPeeking: false, speedCap: Infinity };
   }
 
-  if (v.profile === 'aggressive' && discipline.discipline < 0.45) {
+  if (traits.riskTolerance > 0.78 && discipline.discipline < 0.45 && !inConflictWindow) {
     return { isPeeking: false, speedCap: Infinity };
   }
 
   const cosH = Math.cos(v.heading);
   const sinH = Math.sin(v.heading);
   let hasHeavyOccluder = false;
+  let hasWideTurningHeavy = false;
 
   for (let i = 0; i < nearby.length; i++) {
     const other = nearby[i];
@@ -161,18 +165,32 @@ export function evaluateOcclusionPeekingCap(
 
     if (fwd >= -2.0 && fwd <= 14.0 && lat < 5.5) {
       hasHeavyOccluder = true;
-      break;
+      const turningOrSwinging =
+        other.wideSwingState === 'pre_swing' ||
+        other.wideSwingState === 'turning' ||
+        (other.turn !== 'straight' && other.distanceAlongPath > other.stopLineDist - 18.0);
+      if (turningOrSwinging && other.originArm === v.originArm && lat < 4.4 && fwd > -2.5 && fwd < 11.5) {
+        hasWideTurningHeavy = true;
+        break;
+      }
     }
   }
 
-  if (!hasHeavyOccluder) {
+  if (!hasWideTurningHeavy && (!approachingConflict || !inConflictWindow || !hasHeavyOccluder)) {
     return { isPeeking: false, speedCap: Infinity };
   }
 
-  const basePeek = v.profile === 'cautious' ? 4.2 : 5.2;
+  if (hasWideTurningHeavy && traits.riskTolerance > 0.8 && discipline.discipline < 0.4) {
+    return { isPeeking: false, speedCap: Infinity };
+  }
+
+  const basePeek = hasWideTurningHeavy ? 4.4 : 4.05 + 1.35 * traits.riskTolerance;
   const speedCap = Math.max(
-    3.6,
-    basePeek * weather.speedMult[v.vClass] * (0.9 + 0.2 * (1 - discipline.discipline))
+    3.4,
+    basePeek *
+    traits.occlusionPeekMult *
+    weather.speedMult[v.vClass] *
+    (0.9 + 0.18 * (1 - discipline.discipline))
   );
 
   return { isPeeking: true, speedCap };
@@ -183,14 +201,15 @@ export function evaluateOcclusionPeekingCap(
  * active lateral lane shifts, or upcoming intersection turn intent.
  */
 export function getEffectiveBlinkerDir(v: SimVehicle): 'left' | 'right' | null {
+  const signalOnset = getDriverTraits(v).signalOnsetDist;
   return (
     v.turnSignalActive ??
     v.laneChangeDir ??
     (v.turn === 'uturn'
       ? 'right'
       : v.turn !== 'straight' &&
-          v.distanceAlongPath < v.exitLineDist &&
-          v.distanceAlongPath > v.stopLineDist - 35
+        v.distanceAlongPath < v.exitLineDist &&
+        v.distanceAlongPath > v.stopLineDist - signalOnset
         ? v.turn
         : null)
   );

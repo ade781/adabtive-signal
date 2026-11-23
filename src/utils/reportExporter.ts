@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
 import { getArmGreenDuration } from '../engine/constants';
+import { ARCHETYPE_ORDER, ARCHETYPE_TRAITS, normalizeDriverProfileMix } from '../engine/driverIntelligence';
 import { ArmId, SimSnapshot } from '../engine/types';
 import { evaluateLos } from './trafficMetrics';
 
@@ -80,6 +81,16 @@ export function exportSimulationReportXlsx(snapshot: SimSnapshot): boolean {
     ['Mode Swarm Motor (3-4 Kolom)', config.motorSwarmMode ? 'AKTIF' : 'NONAKTIF', 'Boolean', 'Penyelipan & penumpukan motor 3-4 kolom di antara mobil', 'motorSwarmMode'],
     ['Kotak Khusus Motor (RHK)', config.motorBoxEnabled ? 'AKTIF' : 'NONAKTIF', 'Boolean', 'Ruang Henti Khusus sepeda motor di depan garis henti', 'motorBoxEnabled'],
     ['Median Tengah Fisik', config.hasMedian ? 'ADA' : 'TIDAK ADA', 'Boolean', 'Pemisah fisik di tengah lengan pendekat', 'hasMedian'],
+    [
+      'Komposisi Tipe Pengendara',
+      (() => {
+        const mix = normalizeDriverProfileMix(config.driverProfileMix);
+        return `Defensif ${mix.cautiousPct}% / Normal ${mix.normalPct}% / Agresif ${mix.aggressivePct}% (Kurir ${Math.round((mix.courierShare ?? 0.42) * 100)}%)`;
+      })(),
+      'Persentase',
+      'Distribusi karakter & arketipe pengendara pada spawn kendaraan',
+      'driverProfileMix',
+    ],
     [
       'Nama Ruas Jalan (U / T / S / B)',
       config.armNames
@@ -254,6 +265,48 @@ export function exportSimulationReportXlsx(snapshot: SimSnapshot): boolean {
       a.avgRemQueue,
       a.currentQueue,
     ]),
+    ...(stats.driverStats
+      ? [
+          [null, null, null],
+          ['RINGKASAN PER TIPE PENGENDARA (6 ARKETIPE)', null, null],
+          [
+            'Arketipe',
+            'Aktif',
+            'Keluar',
+            'Tunggu Rata2 (s)',
+            'Kecepatan Rata2 (km/h)',
+            'Salip',
+            'Lintas Marka',
+            'Rem Keras',
+            'Yield',
+            'Tahan Yellow Box',
+            'Handshake',
+            'Frustrasi Rata2 (%)',
+          ],
+          ...ARCHETYPE_ORDER.map((arch) => {
+            const st = stats.driverStats![arch];
+            const avgWait = Number.isFinite(st?.avgWait) ? +(st!.avgWait).toFixed(1) : 0;
+            const avgSpeedKmh = Number.isFinite(st?.avgSpeed) ? +((st!.avgSpeed ?? 0) * 3.6).toFixed(1) : 0;
+            const avgFrustPct = Number.isFinite(st?.avgFrustration)
+              ? Math.round((st!.avgFrustration ?? 0) * 100)
+              : 0;
+            return [
+              `${ARCHETYPE_TRAITS[arch].label} (${ARCHETYPE_TRAITS[arch].shortBadge})`,
+              st?.activeCount ?? 0,
+              st?.exited ?? 0,
+              avgWait,
+              avgSpeedKmh,
+              st?.overtakes ?? 0,
+              st?.markingCrosses ?? 0,
+              st?.hardBrakes ?? 0,
+              st?.yieldsGiven ?? 0,
+              st?.yellowBoxHolds ?? 0,
+              st?.handshakes ?? 0,
+              avgFrustPct,
+            ];
+          }),
+        ]
+      : []),
   ];
 
   const wb = XLSX.utils.book_new();
@@ -283,7 +336,20 @@ export function exportSimulationReportXlsx(snapshot: SimSnapshot): boolean {
   XLSX.utils.book_append_sheet(wb, ws3, '3_Rekap_Per_Siklus');
 
   const ws4 = XLSX.utils.aoa_to_sheet(sheet4Rows);
-  ws4['!cols'] = [{ wch: 32 }, { wch: 26 }, { wch: 22 }, { wch: 22 }, { wch: 22 }, { wch: 20 }, { wch: 22 }];
+  ws4['!cols'] = [
+    { wch: 32 },
+    { wch: 26 },
+    { wch: 22 },
+    { wch: 22 },
+    { wch: 24 },
+    { wch: 20 },
+    { wch: 22 },
+    { wch: 14 },
+    { wch: 12 },
+    { wch: 18 },
+    { wch: 14 },
+    { wch: 20 },
+  ];
   XLSX.utils.book_append_sheet(wb, ws4, '4_Evaluasi_Performa');
 
   const filename = `laporan-adaptive-signal-${slugify(locationName)}-${formatTimestampForFilename(now)}.xlsx`;

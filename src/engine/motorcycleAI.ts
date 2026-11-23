@@ -1,6 +1,7 @@
 import { canFilterSideBySide, effClearanceWidth, getGlobalLat, type SimVehicle } from './behaviors';
 import { type DisciplineParams } from './conflictResolver';
-import { type WeatherPhysicsProfile } from './environmentDynamics';
+import { computeContextualBehaviorMod, getDriverTraits } from './driverIntelligence';
+import { WEATHER_PROFILES, type WeatherPhysicsProfile } from './environmentDynamics';
 import { type CompiledArmGeometry, type CompiledTopology } from './topologyTypes';
 import { type SignalColor, type SimConfig } from './types';
 
@@ -24,6 +25,7 @@ export interface EvaluateMotorcycleCorridorParams {
   nearestGap: number;
   blockingLeader: SimVehicle | null;
   weather?: WeatherPhysicsProfile;
+  ambientDarkness?: number;
   hasPhysicalMedian: boolean;
   discipline?: DisciplineParams;
 }
@@ -41,6 +43,7 @@ interface SameArmNeighbor {
   comfortDecel: number;
   minGap: number;
   isHeavy: boolean;
+  isCourierMotor: boolean;
   turn: SimVehicle['turn'];
   wideSwingState: SimVehicle['wideSwingState'];
   stopLineDist: number;
@@ -89,6 +92,7 @@ function borrowSameArmRecord(idx: number): SameArmNeighbor {
     comfortDecel: 0,
     minGap: 0,
     isHeavy: false,
+    isCourierMotor: false,
     turn: 'straight',
     wideSwingState: undefined,
     stopLineDist: 0,
@@ -157,6 +161,7 @@ export function evaluateMotorcycleCorridorTarget(
     nearestGap,
     blockingLeader,
     weather,
+    ambientDarkness = 0,
     hasPhysicalMedian,
     discipline,
   } = params;
@@ -190,15 +195,18 @@ export function evaluateMotorcycleCorridorTarget(
     return null;
   }
 
-  const seepageScale = weather?.seepageScale ?? 1.0;
+  const traits = getDriverTraits(v);
+  const ctxMod = computeContextualBehaviorMod(traits, weather ?? WEATHER_PROFILES.clear, ambientDarkness);
+  const seepageScale = (weather?.seepageScale ?? 1.0) * ctxMod.seepageWeatherScale;
   const weatherPadExtra = (1 - seepageScale) * 0.25;
   const armHasMedian = hasPhysicalMedian || armGeom.def.medianWidth > 0.05;
   const frustration = v.frustration ?? 0;
   const discVal = discipline?.discipline ?? 0.72;
-  const markingPropensity = Math.max(
+  const baseMarkingProp = Math.max(
     discipline?.markingCrossPropensity ?? 0.25,
     frustration * (1 - 0.72 * discVal)
   );
+  const markingPropensity = Math.min(1, baseMarkingProp * traits.markingIgnoreWeight);
 
   // Single pass over vehicles to measure oncoming risk, queues, RHK state, and cache arm neighbors.
   let nearestOncomingDist = Infinity;
@@ -307,6 +315,7 @@ export function evaluateMotorcycleCorridorTarget(
     rec.comfortDecel = other.comfortDecel;
     rec.minGap = other.minGap;
     rec.isHeavy = other.vClass === 'heavy';
+    rec.isCourierMotor = other.vClass === 'motor' && getDriverTraits(other).archetype === 'courier';
     rec.turn = other.turn;
     rec.wideSwingState = other.wideSwingState;
     rec.stopLineDist = other.stopLineDist;
@@ -579,6 +588,7 @@ export function evaluateMotorcycleCorridorTarget(
     let wideTurnPenalty = 0;
     let heavyInnerPinch = false;
     let heavyOuterPinch = false;
+    let courierDraftMatch = false;
 
     if (clear) {
       for (let i = 0; i < sameArmCount; i++) {
@@ -646,6 +656,19 @@ export function evaluateMotorcycleCorridorTarget(
           }
         }
 
+        if (
+          traits.archetype === 'courier' &&
+          !courierDraftMatch &&
+          other.isCourierMotor &&
+          other.speed > 1.2 &&
+          other.longDiff > other.halfSumLen + 0.3 &&
+          other.longDiff < 16.0 &&
+          Math.abs(cand - other.lat) < 0.45 &&
+          (blockingLeader !== null || hasSlowLeaderAhead || Math.abs(other.lat - myLaneCenter) > 0.35)
+        ) {
+          courierDraftMatch = true;
+        }
+
         if (other.isHeavy) {
           const edgeLatGap = Math.abs(cand - other.lat) - (myEffW + other.effW) * 0.5;
           const bumperLongGap = Math.abs(other.longDiff) - other.halfSumLen;
@@ -707,9 +730,9 @@ export function evaluateMotorcycleCorridorTarget(
     if (rhkActive) {
       const reachesRhk = forwardClear >= distToRhkRear - 0.3;
       if (reachesRhk) {
-        if (!frontRowBusy && !secondRowBusy) score += 5.0;
-        else if (!frontRowBusy) score += 3.5;
-        else if (!secondRowBusy) score += 1.8;
+        if (!frontRowBusy && !secondRowBusy) score += 5.0 * traits.rhkFrontBias;
+        else if (!frontRowBusy) score += 3.5 * traits.rhkFrontBias;
+        else if (!secondRowBusy) score += 1.8 * traits.rhkFrontBias;
       }
       if (v.turn === 'straight') {
         let minGutterDist = Infinity;
@@ -717,11 +740,11 @@ export function evaluateMotorcycleCorridorTarget(
           const d = Math.abs(cand - gutterBuf[g]);
           if (d < minGutterDist) minGutterDist = d;
         }
-        score += 0.65 * Math.exp(-(minGutterDist * minGutterDist) / 0.14);
+        score += 0.65 * traits.rhkFrontBias * Math.exp(-(minGutterDist * minGutterDist) / 0.14);
       }
     }
 
-    score -= pinchPenalty + wideTurnPenalty;
+    score -= pinchPenalty * traits.corridorPinchMult + wideTurnPenalty * traits.wideTurnAvoidMult;
     score -= crossLaneWeight * stopProximity * Math.abs(cand - preferredTurnGlobalLat);
 
     // Discourage gratuitous marking crossing when inside-lane corridors remain viable.
@@ -729,6 +752,10 @@ export function evaluateMotorcycleCorridorTarget(
       score -= 1.8 * (1.15 - 0.45 * markingPropensity);
     } else if (cand > halfMedian + armInWidth - 0.18) {
       score -= 1.0 * (1.15 - 0.45 * markingPropensity);
+    }
+
+    if (courierDraftMatch) {
+      score += 0.8;
     }
 
     if (Math.abs(cand - myGlobalLat) < 0.35) {
@@ -802,6 +829,8 @@ export function hasMotorSwarmPlatoonShield(
   if (v.vClass !== 'motor' || v.isReversing) return false;
   if (conflictOriginArm && conflictOriginArm === v.originArm) return false;
 
+  const traits = getDriverTraits(v);
+  const maxShieldLat = 1.35 + 0.62 * traits.riskTolerance;
   const cosH = Math.cos(v.heading);
   const sinH = Math.sin(v.heading);
 
@@ -825,7 +854,7 @@ export function hasMotorSwarmPlatoonShield(
     const dx = other.x - v.x;
     const dy = other.y - v.y;
     const latDist = Math.abs(-dx * sinH + dy * cosH);
-    if (latDist >= 1.7) continue;
+    if (latDist >= maxShieldLat) continue;
 
     if (other.turn === v.turn) return true;
     const headingDiff = Math.abs(

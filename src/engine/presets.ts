@@ -1,5 +1,7 @@
+import { DRIVER_MIX_PRESETS } from './driverIntelligence';
 import { GIWANGAN_TOPOLOGY } from './giwanganBlueprint';
-import { SimConfig } from './types';
+import { MAP_CONTEXTS } from './mapContextAI';
+import { DriverProfileMix, SimConfig } from './types';
 
 export interface ScenarioPreset {
   id: string;
@@ -9,6 +11,7 @@ export interface ScenarioPreset {
   source?: string;
   city?: string;
   landmarks?: string;
+  recommendedDriverMix?: DriverProfileMix;
   patch: Partial<SimConfig>;
 }
 
@@ -19,6 +22,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
     category: 'synthetic',
     label: 'Seimbang',
     description: 'Arus merata di semua lengan',
+    recommendedDriverMix: { ...DRIVER_MIX_PRESETS.balanced.mix },
     patch: {
       lanesPerDirection: 2,
       laneWidth: 3.5,
@@ -49,6 +53,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
     category: 'synthetic',
     label: 'Jam Sibuk U-S',
     description: 'Koridor Utara-Selatan padat',
+    recommendedDriverMix: { ...DRIVER_MIX_PRESETS['rush-hour'].mix },
     patch: {
       motorRate: 56,
       carRate: 40,
@@ -70,6 +75,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
     category: 'synthetic',
     label: 'Arus Timpang',
     description: 'Beban dominan Utara & Timur',
+    recommendedDriverMix: { ...DRIVER_MIX_PRESETS['rush-hour'].mix },
     patch: {
       motorRate: 44,
       carRate: 32,
@@ -91,6 +97,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
     category: 'synthetic',
     label: 'Koridor Berat',
     description: 'Proporsi truk & bus tinggi',
+    recommendedDriverMix: { ...DRIVER_MIX_PRESETS['night-logistics'].mix },
     patch: {
       motorRate: 24,
       carRate: 26,
@@ -117,6 +124,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
     source: 'Referensi Geometri Nyata Ringroad Selatan Yogyakarta',
     city: 'Yogyakarta',
     landmarks: 'Terminal Giwangan, SPBU Pertamina Ringroad, Pos Brimob, Ruko Giwangan',
+    recommendedDriverMix: { ...MAP_CONTEXTS['giwangan-yogya'].recommendedMix },
     patch: {
       lanesPerDirection: 3,
       laneWidth: 3.5,
@@ -160,6 +168,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
     source: 'Yulianyahya (2022) — Survei 06:45-07:45 WIB',
     city: 'Yogyakarta',
     landmarks: 'Mako Brimob Baciro, Taru Martani, Ruko, Dekat Stadion Mandala Krida',
+    recommendedDriverMix: { ...MAP_CONTEXTS['brimob-yogya'].recommendedMix },
     patch: {
       lanesPerDirection: 1,
       laneWidth: 3.5,
@@ -193,6 +202,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
     source: 'Pramudiana dkk. (2026) — PKJI 2023',
     city: 'Semarang',
     landmarks: 'Kawasan Ruko Jl. Majapahit, Eks Lotte Mart, Dekat RS Bhayangkara',
+    recommendedDriverMix: { ...MAP_CONTEXTS['lamper-semarang'].recommendedMix },
     patch: {
       lanesPerDirection: 2,
       laneWidth: 3.8,
@@ -226,6 +236,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
     source: 'Mulyadi & Adawiyah (2024) — VISSIM',
     city: 'Banjarmasin',
     landmarks: 'Pasar Lama, Kampung Bugis, Dekat Jembatan Sulawesi & Masjid Jami',
+    recommendedDriverMix: { ...MAP_CONTEXTS['sulawesi-banjarmasin'].recommendedMix },
     patch: {
       lanesPerDirection: 2,
       laneWidth: 3.5,
@@ -259,6 +270,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
     source: 'Ulfah & Purwanti (2019) — VISSIM 9.0',
     city: 'Bandung',
     landmarks: 'Koridor Flyover Laswi, SPBU, Halte Bus TMB, Dekat Trans Studio Mall',
+    recommendedDriverMix: { ...MAP_CONTEXTS['laswi-bandung'].recommendedMix },
     patch: {
       lanesPerDirection: 2,
       laneWidth: 3.5,
@@ -292,6 +304,7 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
     source: 'Leoni dkk. (2026) — Survei Pagi',
     city: 'Malang',
     landmarks: 'Pasar Buku Wilis, Kampus Widya Karya, Sentra Kuliner & Kafe',
+    recommendedDriverMix: { ...MAP_CONTEXTS['bondowoso-malang'].recommendedMix },
     patch: {
       lanesPerDirection: 1,
       laneWidth: 3.0,
@@ -318,3 +331,35 @@ export const SCENARIO_PRESETS: ScenarioPreset[] = [
     },
   },
 ];
+
+export function getRecommendedDriverMixForPreset(presetIdOrEnvId?: string): DriverProfileMix {
+  if (!presetIdOrEnvId) {
+    return { ...MAP_CONTEXTS.default.recommendedMix };
+  }
+  const key = presetIdOrEnvId.trim().toLowerCase();
+  if (!key || key === 'default') {
+    return { ...MAP_CONTEXTS.default.recommendedMix };
+  }
+  const byId = SCENARIO_PRESETS.find((p) => p.id.toLowerCase() === key);
+  if (byId?.recommendedDriverMix) {
+    return { ...byId.recommendedDriverMix };
+  }
+  if (MAP_CONTEXTS[key]) {
+    return { ...MAP_CONTEXTS[key].recommendedMix };
+  }
+  const byEnv = SCENARIO_PRESETS.find(
+    (p) => p.patch.environmentId && p.patch.environmentId.toLowerCase() === key
+  );
+  if (byEnv?.recommendedDriverMix) {
+    return { ...byEnv.recommendedDriverMix };
+  }
+  if (key.includes('giwangan')) return { ...MAP_CONTEXTS['giwangan-yogya'].recommendedMix };
+  if (key.includes('brimob')) return { ...MAP_CONTEXTS['brimob-yogya'].recommendedMix };
+  if (key.includes('lamper') || key.includes('semarang')) return { ...MAP_CONTEXTS['lamper-semarang'].recommendedMix };
+  if (key.includes('sulawesi') || key.includes('banjarmasin')) return { ...MAP_CONTEXTS['sulawesi-banjarmasin'].recommendedMix };
+  if (key.includes('laswi') || key.includes('bandung')) return { ...MAP_CONTEXTS['laswi-bandung'].recommendedMix };
+  if (key.includes('bondowoso') || key.includes('malang') || key.includes('retawu')) {
+    return { ...MAP_CONTEXTS['bondowoso-malang'].recommendedMix };
+  }
+  return { ...MAP_CONTEXTS.default.recommendedMix };
+}

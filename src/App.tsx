@@ -5,11 +5,13 @@ import { TelemetryStrip } from './components/TelemetryStrip';
 import { TopBar } from './components/TopBar';
 import { DrawWorkspace } from './draw/DrawWorkspace';
 import { getArmGreenDuration } from './engine/constants';
+import { MAP_OVERLAY_PRESETS } from './engine/driverIntelligence';
+import { MAP_CONTEXTS } from './engine/mapContextAI';
 import { cloneTopology, GIWANGAN_TOPOLOGY } from './engine/samplingBlueprints';
 import { DEFAULT_CONFIG, TrafficSimulation } from './engine/simulation';
 import { simConfigToTopology } from './engine/topologyBuilder';
 import { IntersectionTopology } from './engine/topologyTypes';
-import { SimConfig, SimSnapshot } from './engine/types';
+import { DriverArchetype, MapOverlayLayers, SimConfig, SimSnapshot } from './engine/types';
 
 export type AppView = 'simulator' | 'draw';
 
@@ -80,6 +82,11 @@ function AppContent() {
   const [speed, setSpeed] = useState(1);
   const [zoom, setZoom] = useState(1);
   const [showGrid, setShowGrid] = useState(true);
+  const [overlayLayers, setOverlayLayers] = useState<MapOverlayLayers>(() => ({
+    ...MAP_OVERLAY_PRESETS.compact,
+  }));
+  const [focusedArchetype, setFocusedArchetype] = useState<DriverArchetype | null>(null);
+  const [selectedVehicleId, setSelectedVehicleId] = useState<number | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [exportStatus, setExportStatus] = useState<ExportStatus | null>(null);
   const exportTimerRef = useRef<number | null>(null);
@@ -123,6 +130,9 @@ function AppContent() {
   const handleConfigChange = useCallback(
     (partial: Partial<SimConfig>) => {
       sim.updateConfig(partial);
+      if ('customTopology' in partial || 'environmentId' in partial) {
+        setSelectedVehicleId(null);
+      }
       snapshotRef.current = sim.getSnapshot();
       setUiSnapshot(snapshotRef.current);
       setInspectorConfig(snapshotRef.current.config);
@@ -143,10 +153,13 @@ function AppContent() {
       signalPhasePreset: '4-phase-split',
       yellowBoxEnabled: false,
       driverDiscipline: 0.72,
+      driverProfileMix: DEFAULT_CONFIG.driverProfileMix,
       smartOvertaking: true,
       oncomingOvertaking: true,
+      connectedVehicleRatio: 0,
       environment: { weather: 'clear', dynamicWeather: false, timeMode: 'static' },
     });
+    setSelectedVehicleId(null);
     snapshotRef.current = sim.getSnapshot();
     setUiSnapshot(snapshotRef.current);
     setInspectorConfig(snapshotRef.current.config);
@@ -155,6 +168,7 @@ function AppContent() {
 
   const handleReset = useCallback(() => {
     sim.reset();
+    setSelectedVehicleId(null);
     snapshotRef.current = sim.getSnapshot();
     setUiSnapshot(snapshotRef.current);
     setDrawTick((t) => t + 1);
@@ -164,11 +178,12 @@ function AppContent() {
     (topology: IntersectionTopology) => {
       const cloned = cloneTopology(topology);
       const dt = cloned.defaultTraffic;
+      const matchedEnvId = cloned.id && MAP_CONTEXTS[cloned.id] ? cloned.id : 'default';
       sim.updateConfig({
         customTopology: cloned,
         scenarioName: cloned.name,
         scenarioNotes: cloned.description || `Peta custom Draw (${cloned.arms.length} lengan)`,
-        environmentId: 'default',
+        environmentId: matchedEnvId,
         signalPhasePreset: cloned.phasePreset,
         yellowBoxEnabled: cloned.yellowBoxEnabled,
         ...(dt
@@ -186,6 +201,7 @@ function AppContent() {
             }
           : {}),
       });
+      setSelectedVehicleId(null);
       setDrawSeedTopology(cloned);
       snapshotRef.current = sim.getSnapshot();
       setUiSnapshot(snapshotRef.current);
@@ -208,9 +224,22 @@ function AppContent() {
 
   const handleToggleRun = useCallback(() => setRunning((r) => !r), []);
   const handleToggleGrid = useCallback(() => setShowGrid((g) => !g), []);
+  const handleChangeOverlayLayers = useCallback((next: MapOverlayLayers) => {
+    setOverlayLayers(next);
+  }, []);
+  const handleSelectArchetype = useCallback((arch: DriverArchetype | null) => {
+    setFocusedArchetype(arch);
+  }, []);
+  const handleSelectVehicle = useCallback((id: number | null) => {
+    setSelectedVehicleId(id);
+  }, []);
   const handleZoomIn = useCallback(() => setZoom((z) => Math.min(2.2, +(z + 0.1).toFixed(1))), []);
   const handleZoomOut = useCallback(() => setZoom((z) => Math.max(0.6, +(z - 0.1).toFixed(1))), []);
   const handleZoomReset = useCallback(() => setZoom(1), []);
+  const handleZoomChange = useCallback((nextZoom: number) => {
+    if (!Number.isFinite(nextZoom)) return;
+    setZoom(Math.max(0.5, Math.min(2.6, +nextZoom.toFixed(2))));
+  }, []);
   const showExportToast = useCallback((status: ExportStatus) => {
     setExportStatus(status);
     if (exportTimerRef.current !== null) {
@@ -316,6 +345,10 @@ function AppContent() {
         zoom={zoom}
         showGrid={showGrid}
         onToggleGrid={handleToggleGrid}
+        overlayLayers={overlayLayers}
+        onChangeOverlayLayers={handleChangeOverlayLayers}
+        focusedArchetype={focusedArchetype}
+        onSelectArchetype={handleSelectArchetype}
         onZoomIn={handleZoomIn}
         onZoomOut={handleZoomOut}
         onZoomReset={handleZoomReset}
@@ -334,12 +367,19 @@ function AppContent() {
             <div className="flex-1 min-h-[340px] min-w-0">
               <IntersectionCanvas
                 snapshotRef={snapshotRef}
+                uiSnapshot={uiSnapshot}
                 config={inspectorConfig}
                 compiledTopology={compiledTopology}
                 running={running}
                 drawTick={drawTick}
                 zoom={zoom}
+                onZoomChange={handleZoomChange}
                 showGrid={showGrid}
+                overlayLayers={overlayLayers}
+                focusedArchetype={focusedArchetype}
+                onSelectArchetype={handleSelectArchetype}
+                selectedVehicleId={selectedVehicleId}
+                onSelectVehicle={handleSelectVehicle}
               />
             </div>
             <MemoParameterInspector
@@ -347,6 +387,7 @@ function AppContent() {
               onChange={handleConfigChange}
               onResetDefaults={handleResetDefaults}
               onOpenInDraw={handleOpenCurrentInDraw}
+              driverStats={uiSnapshot.stats.driverStats}
             />
           </div>
 
@@ -355,6 +396,8 @@ function AppContent() {
             signal={uiSnapshot.signal}
             armNames={inspectorConfig.armNames}
             compiledTopology={compiledTopology}
+            focusedArchetype={focusedArchetype}
+            onSelectArchetype={handleSelectArchetype}
           />
         </main>
       )}

@@ -1,5 +1,6 @@
 import { DisciplineParams } from './conflictResolver';
 import { DriverProfile, QUEUE_SPEED_THRESHOLD } from './constants';
+import { DriverArchetype, getDriverTraits } from './driverIntelligence';
 import { WeatherPhysicsProfile } from './environmentDynamics';
 import { PathCache } from './geometry';
 import { evaluateMotorcycleCorridorTarget } from './motorcycleAI';
@@ -18,6 +19,8 @@ export interface SimVehicle extends Vehicle {
   speedFactor: number;
   accelFactor: number;
   profile: DriverProfile;
+  archetype?: DriverArchetype;
+  tailgatePressure?: number;
   reactionTimer: number;
   prevAccel?: number;
   boxWaitTime?: number;
@@ -41,6 +44,24 @@ export interface SimVehicle extends Vehicle {
   pendingLaneChangeDir?: 'left' | 'right' | null;
   wideSwingState?: 'none' | 'pre_swing' | 'turning';
   occlusionPeekActive?: boolean;
+  // Driver Intelligence v2 zero-GC cognitive & social state fields
+  cautionTimer?: number;
+  redWaitTime?: number;
+  flankingHazard?: number;
+  yieldTargetId?: number;
+  leaderId?: number;
+  handshakePartnerId?: number;
+  rhkAnticipating?: boolean;
+  intentTag?: Vehicle['intentTag'];
+  hardBrakeCounted?: boolean;
+  yieldCounted?: boolean;
+  yellowBoxCounted?: boolean;
+  tailgateYieldCounted?: boolean;
+  handshakeCounted?: boolean;
+  speedAccum?: number;
+  speedSamples?: number;
+  frustrationAccum?: number;
+  frustrationSamples?: number;
 }
 
 export function getGlobalLat(laneIndex: number, lateralOffset: number, lw: number, laneCenters?: readonly number[]): number {
@@ -62,7 +83,8 @@ export function assignReactionWave(
   vehicles: SimVehicle[],
   arm: string,
   lanes: number,
-  reactionMult = 1.0
+  reactionMult = 1.0,
+  rng?: () => number
 ): void {
   for (let lane = 0; lane < lanes; lane++) {
     const queued = vehicles
@@ -88,10 +110,41 @@ export function assignReactionWave(
       if (i > 0 && !sameRowSideBySide) {
         rowIdx++;
       }
-      const base = v.vClass === 'motor' ? 0.04 : v.vClass === 'car' ? 0.1 : 0.18;
-      const scale = v.profile === 'aggressive' ? 0.7 : v.profile === 'cautious' ? 1.2 : 1.0;
-      const own = (base * scale + Math.min(5, rowIdx) * 0.04) * reactionMult;
-      v.reactionTimer = rowIdx === 0 ? own : Math.max(prev + (sameRowSideBySide ? 0 : 0.04 * reactionMult), own);
+      const traits = getDriverTraits(v);
+      const base =
+        v.vClass === 'motor'
+          ? rowIdx <= 1 && (traits.archetype === 'courier' || traits.archetype === 'hurried')
+            ? 0.025
+            : 0.04
+          : v.vClass === 'car'
+            ? 0.1
+            : 0.18;
+
+      // Ide #6: Red-Light Attention Drift vs Cross-Yellow RHK Launch Anticipation
+      let driftExtra = 0;
+      const redWait = v.redWaitTime ?? 0;
+      if (!v.isConnected && !v.rhkAnticipating && redWait >= 15.0 && traits.attentionDriftProb > 0.01) {
+        const driftRoll = rng ? rng() : ((v.id * 2654435761) >>> 0) / 4294967296;
+        if (driftRoll < traits.attentionDriftProb) {
+          const waitFactor = Math.min(1.0, (redWait - 15.0) / 30.0);
+          driftExtra = 0.18 + 0.17 * waitFactor;
+        }
+      }
+
+      const antScale =
+        v.rhkAnticipating && rowIdx <= 1 && traits.crossYellowAnticipation > 0.5
+          ? 0.35
+          : 1.0;
+
+      const own =
+        ((base * traits.reactionScale * antScale + Math.min(5, rowIdx) * 0.04) * reactionMult) +
+        driftExtra;
+      v.reactionTimer =
+        rowIdx === 0
+          ? own
+          : Math.max(prev + (sameRowSideBySide ? 0 : 0.04 * reactionMult), own);
+      v.redWaitTime = 0;
+      v.rhkAnticipating = false;
       if (!sameRowSideBySide) {
         prev = v.reactionTimer;
         prevDist = v.distanceAlongPath;

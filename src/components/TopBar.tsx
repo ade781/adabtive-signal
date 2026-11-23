@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Play,
   Pause,
@@ -13,8 +13,17 @@ import {
   CloudRain,
   Sun,
   Clock,
+  Layers,
+  X,
 } from 'lucide-react';
-import { EnvironmentTelemetry, SignalState, SimConfig } from '../engine/types';
+import { ARCHETYPE_TRAITS, MAP_OVERLAY_PRESETS } from '../engine/driverIntelligence';
+import {
+  DriverArchetype,
+  EnvironmentTelemetry,
+  MapOverlayLayers,
+  SignalState,
+  SimConfig,
+} from '../engine/types';
 import { AppView } from '../App';
 
 interface TopBarProps {
@@ -35,9 +44,64 @@ interface TopBarProps {
   zoom: number;
   showGrid: boolean;
   onToggleGrid: () => void;
+  overlayLayers: MapOverlayLayers;
+  onChangeOverlayLayers: (layers: MapOverlayLayers) => void;
+  focusedArchetype?: DriverArchetype | null;
+  onSelectArchetype?: (arch: DriverArchetype | null) => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onZoomReset: () => void;
+}
+
+const OVERLAY_LAYER_ITEMS: ReadonlyArray<{
+  key: keyof MapOverlayLayers;
+  label: string;
+  desc: string;
+}> = [
+  {
+    key: 'identity',
+    label: 'Identitas & Badge LOD',
+    desc: 'Warna sasis & lencana tipe pengendara',
+  },
+  {
+    key: 'tacticalCues',
+    label: 'Keputusan Taktis AI',
+    desc: 'Salip, Yield, Yellow Box, Peek, Wide-Swing, V2V',
+  },
+  {
+    key: 'socialVectors',
+    label: 'Vektor Interaksi Sosial',
+    desc: 'Buntutan, Handshake, Cushion',
+  },
+  {
+    key: 'emotionBars',
+    label: 'Emosi & Pemulihan Stres',
+    desc: 'Bar frustrasi >50% & pemulihan kehati-hatian',
+  },
+  {
+    key: 'frictionHeatmap',
+    label: 'Heatmap Gesekan Peta',
+    desc: 'Titik panas rem keras, konflik & marka',
+  },
+];
+
+const OVERLAY_PRESET_ITEMS: ReadonlyArray<{
+  id: 'compact' | 'full' | 'off';
+  label: string;
+}> = [
+  { id: 'compact', label: 'Ringkas' },
+  { id: 'full', label: 'Penuh' },
+  { id: 'off', label: 'Mati' },
+];
+
+function matchesOverlayPreset(a: MapOverlayLayers, b: MapOverlayLayers): boolean {
+  return (
+    a.identity === b.identity &&
+    a.tacticalCues === b.tacticalCues &&
+    a.socialVectors === b.socialVectors &&
+    a.emotionBars === b.emotionBars &&
+    a.frictionHeatmap === b.frictionHeatmap
+  );
 }
 
 const ARM_LABELS: Record<string, string> = {
@@ -77,10 +141,50 @@ export const TopBar: React.FC<TopBarProps> = ({
   zoom,
   showGrid,
   onToggleGrid,
+  overlayLayers,
+  onChangeOverlayLayers,
+  focusedArchetype,
+  onSelectArchetype,
   onZoomIn,
   onZoomOut,
   onZoomReset,
 }) => {
+  const [layerMenuOpen, setLayerMenuOpen] = useState(false);
+  const layerMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!layerMenuOpen) return;
+    const handlePointerDown = (e: MouseEvent) => {
+      if (layerMenuRef.current && !layerMenuRef.current.contains(e.target as Node)) {
+        setLayerMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setLayerMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [layerMenuOpen]);
+
+  useEffect(() => {
+    if (activeView !== 'simulator' && layerMenuOpen) {
+      setLayerMenuOpen(false);
+    }
+  }, [activeView, layerMenuOpen]);
+
+  const activeLayerCount =
+    (overlayLayers.identity ? 1 : 0) +
+    (overlayLayers.tacticalCues ? 1 : 0) +
+    (overlayLayers.socialVectors ? 1 : 0) +
+    (overlayLayers.emotionBars ? 1 : 0) +
+    (overlayLayers.frictionHeatmap ? 1 : 0);
+
   const displayRemaining = Math.max(0, signal.phaseRemaining);
   const pct = phaseDuration > 0 ? Math.max(0, Math.min(100, (displayRemaining / phaseDuration) * 100)) : 0;
   const activePhaseDisplay =
@@ -95,7 +199,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   const armCount = config.customTopology?.arms.length ?? 4;
 
   return (
-    <header className="min-h-[52px] py-2 px-4 bg-white border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
+    <header className="relative z-30 min-h-[52px] py-2 px-4 bg-white border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
       {/* Brand + View Switcher */}
       <div className="flex items-center gap-3">
         <div className="flex items-center gap-2.5">
@@ -272,6 +376,146 @@ export const TopBar: React.FC<TopBarProps> = ({
               >
                 <Grid className="w-3.5 h-3.5" />
               </button>
+              <div ref={layerMenuRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setLayerMenuOpen((o) => !o)}
+                  aria-label="Pengaturan Layer AI Peta"
+                  aria-expanded={layerMenuOpen}
+                  aria-haspopup="dialog"
+                  className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-[11px] font-medium border transition-colors duration-100 ${
+                    layerMenuOpen || activeLayerCount > 0
+                      ? 'bg-indigo-50 text-indigo-800 border-indigo-200 hover:bg-indigo-100'
+                      : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                  }`}
+                  title="Atur Layer Overlay AI Peta"
+                >
+                  <Layers className="w-3.5 h-3.5 shrink-0" />
+                  <span>Layer AI</span>
+                  <span className="inline-flex items-center gap-1 font-mono text-[10px] tabular-nums">
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full ${
+                        activeLayerCount > 0 ? 'bg-indigo-600' : 'bg-slate-300'
+                      }`}
+                    />
+                    {activeLayerCount}
+                  </span>
+                </button>
+
+                {layerMenuOpen && (
+                  <div
+                    role="dialog"
+                    aria-label="Pengaturan Layer AI Peta"
+                    className="absolute right-0 top-full mt-1.5 z-40 w-[290px] bg-white border border-slate-200 rounded-lg shadow-md p-3 space-y-2.5"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-700">
+                        Layer AI Peta
+                      </span>
+                      <span className="text-[10px] font-mono tabular-nums text-slate-500">
+                        {activeLayerCount}/5 aktif
+                      </span>
+                    </div>
+
+                    <div
+                      role="group"
+                      aria-label="Preset Layer AI"
+                      className="grid grid-cols-3 gap-1"
+                    >
+                      {OVERLAY_PRESET_ITEMS.map((preset) => {
+                        const isActive = matchesOverlayPreset(
+                          overlayLayers,
+                          MAP_OVERLAY_PRESETS[preset.id]
+                        );
+                        return (
+                          <button
+                            key={preset.id}
+                            type="button"
+                            aria-pressed={isActive}
+                            onClick={() =>
+                              onChangeOverlayLayers({ ...MAP_OVERLAY_PRESETS[preset.id] })
+                            }
+                            className={`px-2 py-1 rounded text-[11px] font-medium border transition-colors duration-100 ${
+                              isActive
+                                ? 'bg-slate-900 text-white border-slate-900'
+                                : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                            }`}
+                          >
+                            {preset.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="space-y-1.5 pt-1 border-t border-slate-100">
+                      {OVERLAY_LAYER_ITEMS.map((item) => {
+                        const checked = overlayLayers[item.key];
+                        return (
+                          <button
+                            key={item.key}
+                            type="button"
+                            role="switch"
+                            aria-checked={checked}
+                            onClick={() =>
+                              onChangeOverlayLayers({
+                                ...overlayLayers,
+                                [item.key]: !checked,
+                              })
+                            }
+                            className="w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded-md border border-slate-200 bg-slate-50/70 hover:bg-slate-100/80 text-left transition-colors duration-100"
+                          >
+                            <div className="min-w-0">
+                              <div className="text-[11px] font-medium text-slate-800 leading-tight">
+                                {item.label}
+                              </div>
+                              <div className="text-[9px] text-slate-500 leading-tight mt-0.5">
+                                {item.desc}
+                              </div>
+                            </div>
+                            <span
+                              className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full border transition-colors duration-100 ${
+                                checked
+                                  ? 'bg-indigo-700 border-indigo-700'
+                                  : 'bg-slate-200 border-slate-300'
+                              }`}
+                            >
+                              <span
+                                className={`inline-block h-3 w-3 rounded-full bg-white transform transition-transform duration-100 ${
+                                  checked ? 'translate-x-3.5' : 'translate-x-0.5'
+                                }`}
+                              />
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {focusedArchetype && onSelectArchetype && (
+                      <div className="flex items-center justify-between gap-2 px-2 py-1 rounded bg-slate-50 border border-slate-200 text-[10px]">
+                        <span className="text-slate-600 truncate">
+                          Sorotan:{' '}
+                          <strong className="font-mono text-slate-900">
+                            {ARCHETYPE_TRAITS[focusedArchetype].shortBadge}
+                          </strong>{' '}
+                          ({ARCHETYPE_TRAITS[focusedArchetype].label})
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => onSelectArchetype(null)}
+                          className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-white text-slate-700 border border-slate-200 hover:bg-slate-100 shrink-0 transition-colors duration-100"
+                        >
+                          <X className="w-2.5 h-2.5" />
+                          Reset
+                        </button>
+                      </div>
+                    )}
+
+                    <p className="pt-2 border-t border-slate-100 text-[10px] text-slate-500 leading-snug">
+                      Klik kendaraan di peta untuk AI Brain · Scroll zoom &amp; drag pan
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
 
             <button

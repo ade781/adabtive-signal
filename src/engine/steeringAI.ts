@@ -1,4 +1,5 @@
 import { effClearanceWidth, getGlobalLat, SimVehicle } from './behaviors';
+import { getDriverTraits } from './driverIntelligence';
 import { WeatherPhysicsProfile } from './environmentDynamics';
 import { sampleWithLateralOffset } from './geometry';
 import { SpatialHashGrid } from './spatialHash';
@@ -37,7 +38,8 @@ export function computeCurvatureTargetSpeed(
   const maxKappa = compiledPath.maxCurvatureInRange(sNow, sNow + brakingHorizon);
   if (maxKappa < 1e-3) return baseDesiredV;
 
-  const aLatMax = BASE_LATERAL_ACCEL[v.vClass] * weather.lateralGripMult;
+  const traits = getDriverTraits(v);
+  const aLatMax = BASE_LATERAL_ACCEL[v.vClass] * traits.lateralGripComfortMult * weather.lateralGripMult;
   const minCornerV = v.vClass === 'heavy' ? 3.4 : 4.0;
   const cornerV = Math.max(minCornerV, Math.sqrt(aLatMax / maxKappa));
 
@@ -76,13 +78,15 @@ export function computePurePursuitLateralStep(
     return { nextLatVel: Math.abs(damped) < 0.01 ? 0 : damped, stepLat: 0, steerAngle: 0 };
   }
 
+  const traits = getDriverTraits(v);
   // If forced to slow/stop while returning from the oncoming lane / crossing marking / reversing, allow low-speed evasive slide
   const effSpeed = returningFromOncoming || v.isReversing ? Math.max(v.speed, 2.4) : v.speed;
   const wheelbase = WHEELBASE_BY_CLASS[v.vClass];
-  // Dynamic lookahead scales with speed (Pure Pursuit law: Ld = k * v + L_base)
+  // Dynamic lookahead scales with speed and driver archetype comfort
+  const rawLookahead = effSpeed * (v.vClass === 'heavy' ? 0.68 : 0.52) + wheelbase * 1.1;
   const lookahead = Math.max(
-    v.vClass === 'motor' ? 2.2 : 3.2,
-    Math.min(13.5, effSpeed * (v.vClass === 'heavy' ? 0.68 : 0.52) + wheelbase * 1.1)
+    v.vClass === 'motor' ? 2.0 : 3.0,
+    Math.min(15.0, rawLookahead * traits.lookaheadMult)
   );
 
   // Target point relative to vehicle frame: (lookahead forward, latDiff leftward)
@@ -93,7 +97,7 @@ export function computePurePursuitLateralStep(
 
   // Steering rate limiter (realistic steering wheel turn speed)
   const prevSteer = v.steerAngle ?? 0;
-  const maxSteerRate = (v.vClass === 'motor' ? 3.2 : v.vClass === 'car' ? 2.4 : 1.5) * weather.friction;
+  const maxSteerRate = (v.vClass === 'motor' ? 3.2 : v.vClass === 'car' ? 2.4 : 1.5) * traits.steerRateMult * weather.friction;
   const steerDelta = Math.max(-maxSteerRate * dt, Math.min(maxSteerRate * dt, desiredSteer - prevSteer));
   const steerAngle = prevSteer + steerDelta;
 
@@ -102,7 +106,9 @@ export function computePurePursuitLateralStep(
     Math.min(
       v.vClass === 'motor' ? 2.6 : v.vClass === 'car' ? 2.35 : 1.55,
       effSpeed * 0.58
-    ) * Math.sqrt(weather.friction);
+    ) *
+    (0.9 + 0.1 * traits.steerRateMult) *
+    Math.sqrt(weather.friction);
   const rawLatVel = -Math.sin(steerAngle) * Math.max(effSpeed, 1.5) * 1.35;
   // Blend with proportional damping near target so we never overshoot targetLateralOffset
   const propCap = Math.max(-maxLatSpeed, Math.min(maxLatSpeed, latDiff * 3.4));
@@ -111,7 +117,7 @@ export function computePurePursuitLateralStep(
       ? propCap
       : Math.max(-maxLatSpeed, Math.min(maxLatSpeed, rawLatVel * 0.55 + propCap * 0.45));
 
-  const maxLatAccel = (v.vClass === 'motor' ? 5.2 : 4.2) * weather.friction;
+  const maxLatAccel = (v.vClass === 'motor' ? 5.2 : 4.2) * (0.85 + 0.15 * traits.steerRateMult) * weather.friction;
   const dvLat = desiredLatVel - v.lateralVelocity;
   const nextLatVel = v.lateralVelocity + Math.sign(dvLat) * Math.min(Math.abs(dvLat), maxLatAccel * dt);
   const stepLat = nextLatVel * dt;
@@ -283,6 +289,7 @@ export function evaluatePredictiveConflict2D(
     return { brakeGap, speedCap, evasiveLatDelta: 0, evasiveUrgency: 0 };
   }
 
+  const traits = getDriverTraits(v);
   const cosV = Math.cos(v.heading);
   const sinV = Math.sin(v.heading);
   const baseHorizon = Math.min(1.35, 0.75 + v.speed * 0.04) * weather.reactionMult;
@@ -435,7 +442,10 @@ export function evaluatePredictiveConflict2D(
     }
 
     const overlapSeverity = Math.max(0.15, activePred.safeR + 0.4 - activePred.minDist);
-    const mag = Math.min(0.85, EVASIVE_CLASS_SHARE[v.vClass] * priorityWeight * u * overlapSeverity);
+    const mag = Math.min(
+      0.85,
+      EVASIVE_CLASS_SHARE[v.vClass] * traits.evasiveShareMult * priorityWeight * u * overlapSeverity
+    );
 
     if (u > maxUrgency) maxUrgency = u;
     if (escapeSign > 0) {
@@ -936,9 +946,10 @@ export function computeHeavyWideTurnTargetOffset(
     return { wideOffset: 0, state: 'none' };
   }
 
+  const traits = getDriverTraits(v);
   // Left turn (curb-hugging in LHT) swings slightly inward (-); Right turn swings slightly outward (+)
   const swingDir = v.turn === 'left' ? -1 : 1;
-  const desiredSwingMag = armGeom.def.inLanes >= 2 ? 0.52 : 0.36;
+  const desiredSwingMag = (armGeom.def.inLanes >= 2 ? 0.52 : 0.36) * traits.wideSwingScale;
   const ramp =
     distToStop > 4.0
       ? Math.max(0, Math.min(1, (16.0 - distToStop) / 10.0))
