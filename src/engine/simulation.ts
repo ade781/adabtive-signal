@@ -17,6 +17,7 @@ import {
   evaluatePriorityConflictYield,
   evaluateZipperMergeGiveWay,
   negotiateDeadlockPriority,
+  shouldHoldForConflictCorridor,
   shouldHoldForYellowBox,
 } from './conflictResolver';
 import {
@@ -32,15 +33,25 @@ import {
 import { DEFAULT_ENVIRONMENT, EnvironmentState, evaluateEnvironment } from './environmentDynamics';
 import { getEffectiveRoadWidth, getLaneWidth, sampleWithLateralOffset } from './geometry';
 import {
+  computeIidmAcceleration,
+  computeMultiAnticipativeLeader,
+  evaluateGlosaAndPlatoonDischarge,
+  smoothLongitudinalAccel,
+} from './longitudinalAI';
+import {
   evaluateDefensiveYieldForOncomingOvertaker,
   evaluateMobilLaneChange,
   updateOncomingOvertakeFSM,
 } from './overtakingAI';
 import { SpatialHashGrid } from './spatialHash';
 import {
+  clampCandidateLateralStep,
   computeCurvatureTargetSpeed,
   computePurePursuitLateralStep,
+  computeSafeLateralTarget,
+  enforceParallelLateralSeparation,
   evaluatePredictiveConflict2D,
+  resolvePairwiseLateralGuard,
 } from './steeringAI';
 import { compileTopology, simConfigToTopology } from './topologyBuilder';
 import {
@@ -469,6 +480,13 @@ export class TrafficSimulation {
           }
         }
         if (exitDropIds.size > 0) this.vehicles = this.vehicles.filter((v) => !exitDropIds.has(v.id));
+        enforceParallelLateralSeparation(
+          this.vehicles,
+          lw,
+          this.compiledTopology.armsById,
+          this.spatialHash,
+          this.queryBufB
+        );
       }
     }
 
@@ -1131,7 +1149,9 @@ export class TrafficSimulation {
           ? rhkStopDist
           : v.stopLineDist + creepBonus;
       const distToStop = effectiveStopDist - frontBumper;
-      const alreadyInBox = frontBumper > v.stopLineDist + 0.25;
+      const alreadyInBox =
+        v.distanceAlongPath >= v.stopLineDist ||
+        (v.speed >= 0.8 && frontBumper > v.stopLineDist + 0.35);
 
       let stopForYellowFlag = false;
       if (!v.isSlipLane && !v.isUTurn && v.distanceAlongPath < v.stopLineDist && !alreadyInBox) {
@@ -1169,20 +1189,39 @@ export class TrafficSimulation {
           distToStop >= minBoxHoldDist &&
           this.isBoxOccupiedByConflictingArm(v.originArm);
 
-        // Yellow Box Junction Awareness (No. 8)
+        // Yellow Box Junction Awareness (No. 8) + Preventive Space-Time Box Conflict Corridor Check (Phase 2)
         const holdYellowBox =
           light === 'green' &&
           distToStop >= Math.max(0.15, minBoxHoldDist * 0.65) &&
           shouldHoldForYellowBox(v, yellowBoxEnabled, this.vehicles, this.compiledTopology);
-        if (holdYellowBox) {
+        const holdConflictCorridor =
+          !holdYellowBox &&
+          light === 'green' &&
+          distToStop >= Math.max(0.15, minBoxHoldDist * 0.65) &&
+          shouldHoldForConflictCorridor(
+            v,
+            this.vehicles,
+            this.compiledTopology,
+            this.spatialHash,
+            discipline,
+            this.queryBufB
+          );
+        if (holdYellowBox || holdConflictCorridor) {
           v.holdingYellowBox = true;
         }
 
-        if (((light === 'red' && !canRunEarlyRed && !canLTOR) || stopForYellow || holdForOccupiedBox || holdYellowBox) && distToStop < nearestGap) {
+        if (
+          ((light === 'red' && !canRunEarlyRed && !canLTOR) ||
+            stopForYellow ||
+            holdForOccupiedBox ||
+            holdYellowBox ||
+            holdConflictCorridor) &&
+          distToStop < nearestGap
+        ) {
           nearestGap = Math.max(0.1, distToStop);
           leadSpeed = 0;
           stoppingForSignal = true;
-          if (holdYellowBox && !wasHoldingYB) {
+          if ((holdYellowBox || holdConflictCorridor) && !wasHoldingYB) {
             this.yellowBoxHoldCount += 1;
           }
         }
@@ -1211,20 +1250,57 @@ export class TrafficSimulation {
         }
       }
 
-      // 5. Defensive yielding, predictive 2D collision avoidance & box-clearing urgency
+      // 5. Defensive yielding, Hybrid ORCA predictive 2D collision avoidance & box-clearing urgency
       const vBoxCheck = v.distanceAlongPath + v.length * 0.5 > v.stopLineDist + 0.05 && !v.hasExitedIntersection;
       if (vBoxCheck && (light === 'yellow' || light === 'red') && !v.isYielding) {
         desiredV *= 1.24;
       }
 
+      let orcaEvasiveLatDelta = 0;
+      const activeArmGeom =
+        v.distanceAlongPath < v.stopLineDist
+          ? armGeom
+          : this.compiledTopology.armsById[v.destArm];
+      const activeLaneIdx =
+        v.distanceAlongPath < v.stopLineDist ? v.laneIndex : (v.destLaneIndex ?? 0);
+      const myCenterLat =
+        v.distanceAlongPath < v.stopLineDist
+          ? (armGeom?.inLaneCenters[activeLaneIdx] ?? getGlobalLat(activeLaneIdx, 0, lw))
+          : (activeArmGeom?.outLaneCenters[activeLaneIdx] ?? getGlobalLat(activeLaneIdx, 0, lw));
+      const roadWidthActive =
+        v.distanceAlongPath < v.stopLineDist
+          ? (activeArmGeom?.inWidth ?? roadW)
+          : (activeArmGeom?.outWidth ?? roadW);
+      const activeHalfMed = activeArmGeom?.halfMedian ?? (this.config.hasMedian ? 0.5 : 0);
+      const effHalfW = effClearanceWidth(v) * 0.5 + 0.15;
+      const inBoxNow = v.distanceAlongPath > v.stopLineDist - 1.0 && !v.hasExitedIntersection;
+      const inOncomingNow = Boolean(v.overtakeState && v.overtakeState !== 'none');
+      const curGlobalEst = myCenterLat + v.lateralOffset;
+      const minGlobalBound = Math.min(
+        curGlobalEst,
+        inBoxNow || inOncomingNow
+          ? Math.min(curGlobalEst - 1.25, activeHalfMed + effHalfW)
+          : activeHalfMed > 0.05 || v.vClass === 'heavy'
+            ? activeHalfMed + effHalfW
+            : 0.25 + effHalfW
+      );
+      const maxGlobalBound = Math.max(
+        curGlobalEst,
+        inBoxNow ? curGlobalEst + 1.25 : activeHalfMed + roadWidthActive - effHalfW
+      );
+
       if (!v.isReversing) {
         const nearby2D = this.spatialHash.queryRadius(v.x, v.y, Math.min(24, weather.sightDistance), this.queryBufB);
-        const pred2D = evaluatePredictiveConflict2D(v, nearby2D, weather);
+        const pred2D = evaluatePredictiveConflict2D(v, nearby2D, weather, {
+          minOffsetDelta: minGlobalBound - curGlobalEst,
+          maxOffsetDelta: maxGlobalBound - curGlobalEst,
+        });
         if (pred2D.brakeGap < nearestGap) {
           nearestGap = Math.max(0.15, pred2D.brakeGap);
           leadSpeed = Math.min(leadSpeed, pred2D.speedCap);
           desiredV = Math.min(desiredV, pred2D.speedCap);
         }
+        orcaEvasiveLatDelta = pred2D.evasiveLatDelta;
       }
 
       if (anyActiveOncomingOvertaker) {
@@ -1330,41 +1406,27 @@ export class TrafficSimulation {
         v.laneChangeDir = null;
       }
 
-      // 6b. Multi-Leader Shockwave Lookahead (2 vehicles ahead) & Eco-Approach Gliding
+      // 6b. GLOSA Green-End Anticipation, Platoon Start-up Discharge, Multi-Leader Shockwave & Zipper Give-Way
+      let glosaHeadwayMult = 1.0;
+      let glosaLaunchBoostScale = 1.0;
       if (!v.isReversing && (!v.overtakeState || v.overtakeState === 'none')) {
-        const effDecel = Math.max(0.8, v.comfortDecel * weather.comfortDecelMult);
-        if (
-          secondLeader !== null &&
-          secondGap < 38.0 &&
-          secondLeadSpeed < 3.5 &&
-          (blockingLeader?.speed ?? desiredV) > secondLeadSpeed + 1.8
-        ) {
-          const shockwaveCap = Math.max(
-            secondLeadSpeed + 2.4,
-            Math.sqrt(Math.max(0, 2 * effDecel * 0.72 * Math.max(1.0, secondGap - 1.5)))
-          );
-          desiredV = Math.min(desiredV, shockwaveCap);
+        const glosa = evaluateGlosaAndPlatoonDischarge(
+          v,
+          light,
+          this.phaseRemaining,
+          distToStop,
+          blockingLeader,
+          physicalGap,
+          canLTOR,
+          stopForYellowFlag,
+          weather,
+          desiredV
+        );
+        if (glosa.desiredSpeedCap < desiredV) {
+          desiredV = glosa.desiredSpeedCap;
         }
-
-        const shouldEcoGlide =
-          !v.isSlipLane &&
-          !v.isUTurn &&
-          distToStop > 16.0 &&
-          distToStop < 72.0 &&
-          !canLTOR &&
-          !v.willRunRed &&
-          ((light === 'red') ||
-            stopForYellowFlag ||
-            (blockingLeader !== null &&
-              blockingLeader.originArm === v.originArm &&
-              blockingLeader.distanceAlongPath < v.stopLineDist &&
-              blockingLeader.speed < 1.0 &&
-              physicalGap < 42.0));
-        if (shouldEcoGlide) {
-          const glideAnchorDist = Math.max(0, Math.min(distToStop, physicalGap) - 3.5);
-          const glideCap = Math.max(4.6, Math.sqrt(Math.max(0, 2 * effDecel * 0.48 * glideAnchorDist)));
-          desiredV = Math.min(desiredV, glideCap);
-        }
+        glosaHeadwayMult = glosa.headwayMult;
+        glosaLaunchBoostScale = glosa.launchBoostScale;
 
         // Cooperative Zipper Merge & Give-Way
         const nearbyZip = this.spatialHash.queryRadius(v.x, v.y, 16, this.queryBufB);
@@ -1376,7 +1438,38 @@ export class TrafficSimulation {
         }
       }
 
-      // 7. Pure Pursuit / Stanley Smooth Lateral Controller (No. 2)
+      const multiLead = !v.isReversing
+        ? computeMultiAnticipativeLeader(
+            v,
+            nearestGap,
+            leadSpeed,
+            blockingLeader,
+            secondGap,
+            secondLeadSpeed,
+            secondLeader,
+            weather
+          )
+        : { effectiveLeadSpeed: leadSpeed, anticipatedBrakeIntensity: 0, shockwaveCap: Infinity };
+      if (multiLead.shockwaveCap < desiredV) {
+        desiredV = Math.min(desiredV, multiLead.shockwaveCap);
+      }
+      const effectiveLeadSpeed = Math.min(leadSpeed, multiLead.effectiveLeadSpeed);
+
+      // 7. Pure Pursuit / Stanley Smooth Lateral Controller + Hybrid ORCA Evasion & Pairwise Guard
+      const savedBaseTarget = v.targetLateralOffset;
+      const hasOrcaDelta = !v.isReversing && Math.abs(orcaEvasiveLatDelta) > 1e-4;
+      if (hasOrcaDelta) {
+        const minLocalLat = Math.min(savedBaseTarget, minGlobalBound - myCenterLat);
+        const maxLocalLat = Math.max(savedBaseTarget, maxGlobalBound - myCenterLat);
+        v.targetLateralOffset = computeSafeLateralTarget(
+          v,
+          savedBaseTarget,
+          orcaEvasiveLatDelta,
+          minLocalLat,
+          maxLocalLat
+        );
+      }
+
       let nextLat = v.lateralOffset;
       const steerStep = computePurePursuitLateralStep(v, dt, weather);
       let nextLatVel = steerStep.nextLatVel;
@@ -1388,73 +1481,19 @@ export class TrafficSimulation {
           Math.abs(steerStep.stepLat) >= Math.abs(latDiff)
             ? v.targetLateralOffset
             : nextLat + steerStep.stepLat;
-        const myEffW = effClearanceWidth(v);
-        const laneCenters = armGeom?.inLaneCenters;
-        const candG = getGlobalLat(v.laneIndex, candLat, lw, laneCenters);
-        const curG = getGlobalLat(v.laneIndex, v.lateralOffset, lw, laneCenters);
-
-        let blocked = false;
         const nearbyLat = this.spatialHash.queryRadius(v.x, v.y, 16, this.queryBufB);
-        const cosH = Math.cos(v.heading);
-        const sinH = Math.sin(v.heading);
-        const stepSigned = candLat - v.lateralOffset;
-        for (const other of nearbyLat) {
-          if (other.id === v.id) continue;
-          if (other.originArm === v.originArm && v.distanceAlongPath < v.stopLineDist - 0.5 && other.distanceAlongPath < other.stopLineDist - 0.5) {
-            const speedBuf = other.distanceAlongPath > v.distanceAlongPath ? Math.max(0, v.speed - other.speed) * 0.6 : 0;
-            const returningAcrossCenter =
-              curG < (armGeom?.halfMedian ?? 0) + 0.25 && stepSigned > 0;
-            const longBuf = returningAcrossCenter ? 0.45 : 2.2;
-            if (Math.abs(other.distanceAlongPath - v.distanceAlongPath) < (v.length + other.length) * 0.5 + longBuf + speedBuf) {
-              const otherG = getGlobalLat(other.laneIndex, other.lateralOffset + other.lateralVelocity * dt, lw, laneCenters);
-              const swingPad = returningAcrossCenter ? 0.04 : v.vClass === 'motor' ? 0.18 : 0.42;
-              const tightParallelMotorPivot =
-                v.vClass === 'motor' &&
-                v.speed < 2.2 &&
-                !returningAcrossCenter &&
-                (!v.overtakeState || v.overtakeState === 'none') &&
-                !v.crossingMarking &&
-                Math.abs(other.distanceAlongPath - v.distanceAlongPath) < (v.length + other.length) * 0.5 + 0.35 &&
-                Math.abs(curG - otherG) < (myEffW + effClearanceWidth(other)) * 0.5 + 0.24;
-              if (
-                tightParallelMotorPivot ||
-                (Math.abs(candG - otherG) < (myEffW + effClearanceWidth(other)) * 0.5 + swingPad &&
-                  Math.abs(candG - otherG) < Math.abs(curG - otherG))
-              ) {
-                blocked = true;
-                break;
-              }
-            }
-          } else {
-            // Universal 2D world-space lateral guard across stop-line boundary, intersection box, and exit leg!
-            const cosO = Math.cos(other.heading);
-            const sinO = Math.sin(other.heading);
-            const dotHeading = cosH * cosO + sinH * sinO;
-            if (dotHeading < 0.35 && !(dotHeading < -0.45 && stepSigned < 0)) continue;
-            const dx = other.x - v.x;
-            const dy = other.y - v.y;
-            const fwd = dx * cosH + dy * sinH;
-            const speedBuf = fwd > 0 ? Math.max(0, v.speed - other.speed) * 0.55 : 0;
-            const oppExtra = dotHeading < -0.45 ? 1.4 : 0;
-            if (Math.abs(fwd) < (v.length + other.length) * 0.5 + 1.8 + speedBuf + oppExtra) {
-              // In LHT sampleWithLateralOffset, +lateralOffset shifts along left normal (+sinH, -cosH)
-              const curOtherLat = dx * sinH - dy * cosH;
-              const candOtherLat = curOtherLat - stepSigned;
-              const otherHalfLat =
-                other.isSlipLane || v.isSlipLane
-                  ? Math.abs(-cosO * sinH + sinO * cosH) * (other.length * 0.5) +
-                  Math.abs(sinO * sinH + cosO * cosH) * (effClearanceWidth(other) * 0.5)
-                  : effClearanceWidth(other) * 0.5;
-              const minClear = myEffW * 0.5 + otherHalfLat + 0.22 + (dotHeading < -0.45 ? 0.25 : 0);
-              if (Math.abs(candOtherLat) < minClear && Math.abs(candOtherLat) < Math.abs(curOtherLat)) {
-                blocked = true;
-                break;
-              }
-            }
-          }
-        }
-        if (blocked) {
-          nextLatVel = 0;
+        const guarded = clampCandidateLateralStep(
+          v,
+          candLat,
+          v.lateralOffset,
+          lw,
+          armGeom?.inLaneCenters,
+          nearbyLat,
+          dt
+        );
+        if (guarded.blocked) {
+          nextLat = guarded.safeLat;
+          nextLatVel = Math.abs(guarded.safeLat - v.lateralOffset) > 1e-5 ? (guarded.safeLat - v.lateralOffset) / dt : 0;
         } else if (Math.abs(steerStep.stepLat) >= Math.abs(latDiff)) {
           nextLat = v.targetLateralOffset;
           nextLatVel = 0;
@@ -1463,7 +1502,11 @@ export class TrafficSimulation {
         }
       }
 
-      // 8. Reverse Gear Clearance Scan, Anti-Stuck Reverse Trigger & Smooth Urban IDM
+      if (hasOrcaDelta) {
+        v.targetLateralOffset = savedBaseTarget;
+      }
+
+      // 8. Reverse Gear Clearance Scan, Anti-Stuck Reverse Trigger & Improved IDM (IIDM)
       let nearestRearGap = Infinity;
       const checkReverseCandidate =
         Boolean(v.isReversing) ||
@@ -1578,36 +1621,49 @@ export class TrafficSimulation {
         const effAccel = v.maxAccel * v.accelFactor * weather.accelMult;
         const effComfortDecel = Math.max(0.8, v.comfortDecel * weather.comfortDecelMult);
         const minGap = (v.vClass === 'motor' && v.speed < 4.5 ? 0.65 : v.minGap) * weather.minGapMult;
-        const headway = (v.vClass === 'motor' && v.speed < 4.5 ? 0.5 : v.timeHeadway) * widthHeadwayFactor * weather.headwayMult;
-        const dv = v.speed - leadSpeed;
-        const sStar = minGap + Math.max(0, v.speed * headway + (v.speed * dv) / (2 * Math.sqrt(effAccel * effComfortDecel)));
-        const freeRatioPow4 = Math.min(8, Math.pow(v.speed / Math.max(1, desiredV), 4));
-        const rawAccel = effAccel * (1 - freeRatioPow4 - (Number.isFinite(nearestGap) ? Math.pow(sStar / Math.max(0.05, nearestGap), 2) : 0));
+        const headway =
+          (v.vClass === 'motor' && v.speed < 4.5 ? 0.5 : v.timeHeadway) *
+          widthHeadwayFactor *
+          weather.headwayMult *
+          glosaHeadwayMult;
+        const rawAccel = computeIidmAcceleration({
+          speed: v.speed,
+          desiredSpeed: desiredV,
+          gap: nearestGap,
+          leadSpeed: effectiveLeadSpeed,
+          maxAccel: effAccel,
+          comfortDecel: effComfortDecel,
+          minGap,
+          timeHeadway: headway,
+        });
 
         const canLaunch =
           v.speed < 2.5 &&
           nearestGap >= minGap * 0.9 &&
-          (light === 'green' || v.distanceAlongPath >= v.stopLineDist || canLTOR || v.isSlipLane) &&
-          (leadSpeed > 0.05 || nearestGap > minGap * 1.2) &&
+          (light === 'green' || alreadyInBox || canLTOR || v.isSlipLane) &&
+          (effectiveLeadSpeed > 0.05 || nearestGap > minGap * 1.2) &&
           (rawAccel > 0 || nearestGap > minGap * 2.5);
-        const launchBoost = canLaunch ? effAccel * (0.78 * (1 - v.speed / 2.8)) : -Infinity;
+        const launchBoost = canLaunch
+          ? effAccel * (0.78 * glosaLaunchBoostScale * (1 - v.speed / 2.8))
+          : -Infinity;
         const closeT = Number.isFinite(nearestGap) ? Math.max(0, Math.min(1, (20 - nearestGap) / 16)) : 0;
         const maxEmergencyDecel = (v.vClass === 'motor' ? 6.8 : 5.2) * weather.emergencyDecelMult;
         const brakeLimit = -(effComfortDecel + (maxEmergencyDecel - effComfortDecel) * closeT);
         const hardBrakeLimit =
-          nearestGap < minGap * 0.65 && leadSpeed < v.speed - 0.5
+          nearestGap < minGap * 0.65 && effectiveLeadSpeed < v.speed - 0.5
             ? -Math.max(maxEmergencyDecel * 1.4, 8.8 * weather.emergencyDecelMult)
             : brakeLimit;
         const targetAccel = Math.max(launchBoost, Math.max(hardBrakeLimit, Math.min(effAccel, rawAccel)));
 
         const prevA = v.prevAccel ?? 0;
-        const criticalStop = nearestGap < minGap * 0.9;
-        const imminentStop = nearestGap < minGap * 1.2 || (stoppingForSignal && nearestGap < minGap * 1.5);
-        const maxBrakeJerk = imminentStop ? -55.0 * dt : -14.0 * dt;
-        const smoothedAccel =
-          targetAccel < prevA && criticalStop
-            ? targetAccel
-            : prevA + Math.max(maxBrakeJerk, Math.min(18.0 * dt, targetAccel - prevA));
+        const smoothedAccel = smoothLongitudinalAccel(
+          prevA,
+          targetAccel,
+          nearestGap,
+          minGap,
+          stoppingForSignal,
+          dt
+        );
         v.prevAccel = smoothedAccel;
         v.brakingHard = smoothedAccel < -effComfortDecel * 0.65;
 
@@ -1648,7 +1704,39 @@ export class TrafficSimulation {
         v.stuckTimer = 0;
       }
 
-      // Track whether vehicle is currently crossing centerline/shoulder road markings
+      decisions.push({
+        v,
+        nextSpeed,
+        nextLat,
+        nextLatVel,
+        nextSteerAngle,
+        physicalGap,
+        physicalLeadSpeed,
+        hasBlockingLeader,
+        sameArmBlocked: blockingLeader?.originArm === v.originArm,
+        nearestRearGap,
+        nextCrossingMarking: false,
+      });
+    }
+
+    // Post-decision pairwise lateral guard prevents simultaneous converging steps into OBB overlap
+    resolvePairwiseLateralGuard(decisions, lwDefault, this.compiledTopology.armsById, dt, 0.14);
+
+    const toRemove = new Set<number>();
+    for (const {
+      v,
+      nextSpeed,
+      nextLat,
+      nextLatVel,
+      nextSteerAngle,
+      physicalGap,
+      physicalLeadSpeed,
+      hasBlockingLeader,
+      sameArmBlocked,
+      nearestRearGap,
+    } of decisions) {
+      const armGeom = this.compiledTopology.armsById[v.originArm];
+      const lw = armGeom?.def.inLaneWidths[v.laneIndex] ?? lwDefault;
       const nextGlobalLat = getGlobalLat(v.laneIndex, nextLat, lw, armGeom?.inLaneCenters);
       const inOncomingPass = Boolean(v.overtakeState && v.overtakeState !== 'none');
       const isCrossCenterAnywhere = armGeom ? nextGlobalLat < armGeom.halfMedian + 0.16 : nextGlobalLat < 0.16;
@@ -1663,35 +1751,6 @@ export class TrafficSimulation {
         v.markedCrossCounted = false;
       }
 
-      decisions.push({
-        v,
-        nextSpeed,
-        nextLat,
-        nextLatVel,
-        nextSteerAngle,
-        physicalGap,
-        physicalLeadSpeed,
-        hasBlockingLeader,
-        sameArmBlocked: blockingLeader?.originArm === v.originArm,
-        nearestRearGap,
-        nextCrossingMarking,
-      });
-    }
-
-    const toRemove = new Set<number>();
-    for (const {
-      v,
-      nextSpeed,
-      nextLat,
-      nextLatVel,
-      nextSteerAngle,
-      physicalGap,
-      physicalLeadSpeed,
-      hasBlockingLeader,
-      sameArmBlocked,
-      nearestRearGap,
-      nextCrossingMarking,
-    } of decisions) {
       v.speed = nextSpeed;
       v.lateralOffset = nextLat;
       v.lateralVelocity = nextLatVel;
@@ -1763,6 +1822,13 @@ export class TrafficSimulation {
     if (toRemove.size > 0) {
       this.vehicles = this.vehicles.filter((v) => !toRemove.has(v.id));
     }
+    enforceParallelLateralSeparation(
+      this.vehicles,
+      lwDefault,
+      this.compiledTopology.armsById,
+      this.spatialHash,
+      this.queryBufB
+    );
   }
 
   private countQueue(): number {

@@ -1,6 +1,7 @@
 import { effClearanceWidth, getGlobalLat, SimVehicle } from './behaviors';
 import { DisciplineParams } from './conflictResolver';
 import { WeatherPhysicsProfile } from './environmentDynamics';
+import { computeIidmAcceleration } from './longitudinalAI';
 import { SpatialHashGrid } from './spatialHash';
 import { CompiledMovementPath, CompiledTopology } from './topologyTypes';
 import { SignalColor } from './types';
@@ -11,20 +12,19 @@ export interface OvertakeMetricsDelta {
 }
 
 /**
- * Pure IDM longitudinal acceleration helper used by MOBIL lane-change evaluation.
+ * Pure IIDM longitudinal acceleration helper used by MOBIL lane-change evaluation.
  */
 function idmAccel(v: SimVehicle, desiredV: number, gap: number, leadSpeed: number, weather: WeatherPhysicsProfile): number {
-  const aEff = v.maxAccel * v.accelFactor * weather.accelMult;
-  const bEff = Math.max(0.8, v.comfortDecel * weather.comfortDecelMult);
-  const s0 = v.minGap * weather.minGapMult;
-  const T = v.timeHeadway * weather.headwayMult;
-  const freeTerm = Math.min(6, Math.pow(v.speed / Math.max(1, desiredV), 4));
-  if (!Number.isFinite(gap)) {
-    return aEff * (1 - freeTerm);
-  }
-  const dv = v.speed - leadSpeed;
-  const sStar = s0 + Math.max(0, v.speed * T + (v.speed * dv) / (2 * Math.sqrt(aEff * bEff)));
-  return aEff * (1 - freeTerm - Math.pow(sStar / Math.max(0.15, gap), 2));
+  return computeIidmAcceleration({
+    speed: v.speed,
+    desiredSpeed: desiredV,
+    gap,
+    leadSpeed,
+    maxAccel: v.maxAccel * v.accelFactor * weather.accelMult,
+    comfortDecel: Math.max(0.8, v.comfortDecel * weather.comfortDecelMult),
+    minGap: v.minGap * weather.minGapMult,
+    timeHeadway: v.timeHeadway * weather.headwayMult,
+  });
 }
 
 function getPoliteness(v: SimVehicle, discipline: DisciplineParams): number {
