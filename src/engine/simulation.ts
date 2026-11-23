@@ -14,7 +14,9 @@ import {
 } from './behaviors';
 import {
   computeDisciplineParams,
+  evaluateBlinkerIntentPocket,
   evaluatePriorityConflictYield,
+  evaluateSvoCourtesyYield,
   evaluateZipperMergeGiveWay,
   negotiateDeadlockPriority,
   shouldHoldForConflictCorridor,
@@ -38,15 +40,23 @@ import {
   evaluateGlosaAndPlatoonDischarge,
   smoothLongitudinalAccel,
 } from './longitudinalAI';
+import { hasMotorSwarmPlatoonShield } from './motorcycleAI';
 import {
+  evaluateCourtesyLaneShift,
   evaluateDefensiveYieldForOncomingOvertaker,
   evaluateMobilLaneChange,
   updateOncomingOvertakeFSM,
 } from './overtakingAI';
+import {
+  evaluateOcclusionPeekingCap,
+  evaluateVehiclePerceptionProfile,
+  getEffectiveBlinkerDir,
+} from './perceptionAI';
 import { SpatialHashGrid } from './spatialHash';
 import {
   clampCandidateLateralStep,
   computeCurvatureTargetSpeed,
+  computeHeavyWideTurnTargetOffset,
   computePurePursuitLateralStep,
   computeSafeLateralTarget,
   enforceParallelLateralSeparation,
@@ -140,6 +150,7 @@ function normalizeConfig(raw: SimConfig): SimConfig {
     driverDiscipline: Math.max(0, Math.min(1, Number.isFinite(raw.driverDiscipline) ? raw.driverDiscipline! : 0.72)),
     smartOvertaking: raw.smartOvertaking !== false,
     oncomingOvertaking: raw.oncomingOvertaking !== false,
+    connectedVehicleRatio: Math.max(0, Math.min(1, Number.isFinite(raw.connectedVehicleRatio) ? raw.connectedVehicleRatio! : 0)),
     environment: raw.environment ? { ...DEFAULT_ENVIRONMENT, ...raw.environment } : { ...DEFAULT_ENVIRONMENT },
   };
 }
@@ -343,9 +354,9 @@ export class TrafficSimulation {
           const maxLat = Math.max(0, lw * 0.5 - 0.42);
           const minInnerClear =
             !this.config.hasMedian &&
-            this.config.lanesPerDirection === 1 &&
-            lw <= 3.3 &&
-            v.distanceAlongPath >= v.stopLineDist - 14.0
+              this.config.lanesPerDirection === 1 &&
+              lw <= 3.3 &&
+              v.distanceAlongPath >= v.stopLineDist - 14.0
               ? 1.02
               : 0.42;
           const minLat = Math.min(maxLat, -(lw * 0.5 - minInnerClear));
@@ -708,6 +719,7 @@ export class TrafficSimulation {
       if (v.originArm !== armId || v.isSlipLane || v.distanceAlongPath >= v.stopLineDist) continue;
       if (v.laneIndex < 0 || v.laneIndex >= L) continue;
       let cost = v.vClass === 'heavy' ? 2.8 : v.vClass === 'car' ? 1.2 : 0.45;
+      if (v.turn === 'right' || v.turn === 'uturn') cost += 1.6;
       if (v.speed < 1.5) cost += 1.4;
       else if (v.speed < 4.5) cost += 0.5;
       if (v.vClass === 'heavy' && v.speed < 5.5) cost += 2.2;
@@ -875,6 +887,15 @@ export class TrafficSimulation {
           ? discipline.stopLineCreepMeters * (0.5 + 0.5 * this.rng())
           : 0;
 
+      const svoDeg =
+        profile === 'cautious'
+          ? 25 + this.rng() * 20
+          : profile === 'normal'
+            ? 12 + this.rng() * 20
+            : this.rng() * 16;
+      const svoAngle = (svoDeg * Math.PI) / 180;
+      const isConnected = this.rng() < (this.config.connectedVehicleRatio ?? 0);
+
       this.vehicles.push({
         id: this.nextVehicleId++,
         vClass,
@@ -901,6 +922,13 @@ export class TrafficSimulation {
         isReversing: false,
         crossingMarking: false,
         markedCrossCounted: false,
+        svoAngle,
+        isConnected,
+        turnSignalActive: null,
+        signalLeadTimer: 0,
+        pendingLaneChangeDir: null,
+        wideSwingState: 'none',
+        occlusionPeekActive: false,
         willRunRed: this.rng() < Math.min(0.95, baseRunRedProb * discipline.redLightRunMult),
         yellowCommitted: false,
         respectsYellowBox,
@@ -1017,7 +1045,9 @@ export class TrafficSimulation {
       const otherSig = this.getMovementSignal(other.originArm, other.turn, other.isSlipLane);
       if (otherSig !== 'red' && other.distanceAlongPath < other.stopLineDist) {
         const otherDistToStop = other.stopLineDist - (other.distanceAlongPath + other.length * 0.5);
-        if (otherDistToStop < Math.max(8.0, other.speed * 1.8)) return true;
+        const gapHorizonSec = v.speed < 2.2 ? 3.2 : 1.8;
+        const minMergeDist = v.speed < 2.2 ? 14.0 : 8.0;
+        if (otherDistToStop < Math.max(minMergeDist, other.speed * gapHorizonSec)) return true;
       }
     }
     return false;
@@ -1080,7 +1110,7 @@ export class TrafficSimulation {
     }[] = [];
 
     for (const v of this.vehicles) {
-      if (v.reactionTimer > 0) v.reactionTimer = Math.max(0, v.reactionTimer - dt);
+      if (v.reactionTimer > 0) v.reactionTimer = Math.max(0, v.reactionTimer - (v.isConnected ? dt * 4.0 : dt));
       if (v.laneChangeCooldown && v.laneChangeCooldown > 0) {
         v.laneChangeCooldown = Math.max(0, v.laneChangeCooldown - dt);
       }
@@ -1101,7 +1131,29 @@ export class TrafficSimulation {
           : movSig === 'yellow'
             ? 'yellow'
             : 'red';
-      if (light === 'green') v.yellowCommitted = false;
+      const frontBumper = v.distanceAlongPath + v.length * 0.5;
+      const armMotorBox = armGeom ? armGeom.def.motorBoxEnabled : this.config.motorBoxEnabled;
+      const armLTOR = armGeom ? armGeom.def.leftTurnOnRed : this.config.leftTurnOnRed;
+      const rhkStopDist = v.stopLineDist - 3.5;
+      const creepBonus = !armMotorBox && v.stopCreepMeters ? v.stopCreepMeters : 0;
+      const stopSetback = creepBonus > 0 ? 0 : 0.25;
+      const effectiveStopDist =
+        armMotorBox && v.vClass !== 'motor' && !v.isSlipLane && frontBumper <= rhkStopDist + 0.5
+          ? rhkStopDist
+          : v.stopLineDist + creepBonus - stopSetback;
+      const distToStop = effectiveStopDist - frontBumper;
+      if (light === 'green' && frontBumper <= v.stopLineDist + 0.3 + creepBonus) {
+        v.yellowCommitted = false;
+      }
+      if (
+        !v.isSlipLane &&
+        !v.isUTurn &&
+        (light === 'green' || light === 'yellow') &&
+        frontBumper > v.stopLineDist + 0.3 + creepBonus &&
+        v.speed >= 0.25
+      ) {
+        v.yellowCommitted = true;
+      }
 
       // 1. Base Desired Speed scaled by driver profile, lane width, & empirical weather reduction
       let desiredV = v.maxSpeed * v.speedFactor * widthSpeedFactor * weather.speedMult[v.vClass];
@@ -1129,7 +1181,6 @@ export class TrafficSimulation {
       );
       const physicalGap = nearestGap;
       const physicalLeadSpeed = leadSpeed;
-      const frontBumper = v.distanceAlongPath + v.length * 0.5;
       const vInsideBox = frontBumper > v.stopLineDist + 0.05 && !v.hasExitedIntersection;
       const hasBlockingLeader =
         !isSqueezingPast &&
@@ -1149,18 +1200,9 @@ export class TrafficSimulation {
       v.isYielding = false;
       v.holdingYellowBox = false;
 
-      const armMotorBox = armGeom ? armGeom.def.motorBoxEnabled : this.config.motorBoxEnabled;
-      const armLTOR = armGeom ? armGeom.def.leftTurnOnRed : this.config.leftTurnOnRed;
-      const rhkStopDist = v.stopLineDist - 3.5;
-      const creepBonus = !armMotorBox && v.stopCreepMeters ? v.stopCreepMeters : 0;
-      const effectiveStopDist =
-        armMotorBox && v.vClass !== 'motor' && !v.isSlipLane && frontBumper <= rhkStopDist + 0.5
-          ? rhkStopDist
-          : v.stopLineDist + creepBonus;
-      const distToStop = effectiveStopDist - frontBumper;
       const alreadyInBox =
         v.distanceAlongPath >= v.stopLineDist ||
-        (v.speed >= 0.8 && frontBumper > v.stopLineDist + 0.35);
+        (frontBumper > v.stopLineDist + 0.25 && (v.speed >= 0.6 || Boolean(v.yellowCommitted)));
 
       let stopForYellowFlag = false;
       if (!v.isSlipLane && !v.isUTurn && v.distanceAlongPath < v.stopLineDist && !alreadyInBox) {
@@ -1175,6 +1217,9 @@ export class TrafficSimulation {
           light === 'red' &&
           !this.isBoxOccupiedByConflictingArm(v.originArm) &&
           !this.hasLeftTurnMergeConflict(v);
+        if (canLTOR && frontBumper > v.stopLineDist + 0.25 && v.speed >= 0.35) {
+          v.yellowCommitted = true;
+        }
         if (canLTOR && distToStop < 12) {
           desiredV = Math.min(desiredV, 6.0 * weather.speedMult[v.vClass]);
         }
@@ -1236,7 +1281,39 @@ export class TrafficSimulation {
         }
       }
 
-      // 4. Right-of-Way Conflict Resolution (No. 2: permissive cross-turns yield to oncoming straight, slip-lane merge, U-turn)
+      // 4. Perception Profile, Occlusion Peeking, SVO Courtesy & Right-of-Way Priority Yielding
+      const perception = evaluateVehiclePerceptionProfile(
+        v,
+        blockingLeader,
+        weather,
+        this.envState.ambientDarkness
+      );
+      if (!v.laneChangeDir && !v.pendingLaneChangeDir && (!v.overtakeState || v.overtakeState === 'none')) {
+        v.turnSignalActive =
+          v.distanceAlongPath < v.exitLineDist && v.distanceAlongPath > v.stopLineDist - 35
+            ? v.turn === 'uturn'
+              ? 'right'
+              : v.turn === 'left' || v.turn === 'right'
+                ? v.turn
+                : null
+            : null;
+      }
+
+      const nearbyConflict = this.spatialHash.queryRadius(
+        v.x,
+        v.y,
+        Math.min(26, weather.sightDistance),
+        this.queryBufB
+      );
+      const hasSwarmShield =
+        v.vClass === 'motor' ? hasMotorSwarmPlatoonShield(v, '', nearbyConflict) : false;
+
+      const peek = evaluateOcclusionPeekingCap(v, nearbyConflict, light, weather, discipline);
+      v.occlusionPeekActive = peek.isPeeking;
+      if (peek.isPeeking) {
+        desiredV = Math.min(desiredV, peek.speedCap);
+      }
+
       const yieldDecision = evaluatePriorityConflictYield(
         v,
         movSig,
@@ -1244,7 +1321,11 @@ export class TrafficSimulation {
         this.spatialHash,
         weather,
         discipline,
-        this.queryBufB
+        this.queryBufB,
+        {
+          hasSwarmShield,
+          gapCautiousMult: perception.gapCautiousMult,
+        }
       );
       if (yieldDecision.shouldYield) {
         v.isYielding = true;
@@ -1255,6 +1336,25 @@ export class TrafficSimulation {
           stoppingForSignal = true;
           if (!wasYielding) {
             this.yieldConflictCount += 1;
+          }
+        }
+      } else {
+        const nearbySvo = this.spatialHash.queryRadius(v.x, v.y, Math.min(28, weather.sightDistance), this.queryBufB);
+        const svoYield = evaluateSvoCourtesyYield(
+          v,
+          movSig,
+          nearbySvo,
+          this.compiledTopology,
+          weather,
+          discipline
+        );
+        if (svoYield.shouldYield) {
+          v.isYielding = true;
+          desiredV = Math.min(desiredV, svoYield.speedCap);
+          if (svoYield.yieldGap < nearestGap) {
+            nearestGap = Math.max(0.1, svoYield.yieldGap);
+            leadSpeed = 0;
+            stoppingForSignal = true;
           }
         }
       }
@@ -1329,6 +1429,15 @@ export class TrafficSimulation {
       }
 
       const hasPhysicalMedian = this.config.hasMedian || (armGeom?.def.medianWidth ?? 0) > 0.05;
+      if (v.vClass === 'heavy' && !v.isReversing) {
+        const wasWide = v.wideSwingState === 'pre_swing' || v.wideSwingState === 'turning';
+        const nearbyHeavy = this.spatialHash.queryRadius(v.x, v.y, 18, this.queryBufB);
+        const wide = computeHeavyWideTurnTargetOffset(v, armGeom, nearbyHeavy, lw);
+        v.wideSwingState = wide.state;
+        if (wide.state !== 'none' || wasWide) {
+          v.targetLateralOffset = wide.wideOffset;
+        }
+      }
       if (v.vClass === 'motor') {
         updateMotorcycleSeepage(
           v,
@@ -1342,7 +1451,8 @@ export class TrafficSimulation {
           blockingLeader,
           weather,
           hasPhysicalMedian,
-          discipline
+          discipline,
+          light
         );
       }
 
@@ -1361,7 +1471,26 @@ export class TrafficSimulation {
           discipline,
           () => {
             this.carOvertakeCount += 1;
-          }
+          },
+          dt
+        );
+      }
+
+      if (!didMobilChange && (!v.overtakeState || v.overtakeState === 'none')) {
+        didMobilChange = evaluateCourtesyLaneShift(
+          v,
+          this.vehicles,
+          this.compiledTopology,
+          lw,
+          light,
+          desiredV,
+          weather,
+          discipline,
+          v.vClass === 'car'
+            ? () => {
+              this.carOvertakeCount += 1;
+            }
+            : undefined
         );
       }
 
@@ -1413,6 +1542,9 @@ export class TrafficSimulation {
 
       if (v.laneChangeDir && (!v.overtakeState || v.overtakeState === 'none') && Math.abs(v.lateralOffset - v.targetLateralOffset) < 0.2) {
         v.laneChangeDir = null;
+        if (!v.pendingLaneChangeDir && v.turn === 'straight') {
+          v.turnSignalActive = null;
+        }
       }
 
       // 6b. GLOSA Green-End Anticipation, Platoon Start-up Discharge, Multi-Leader Shockwave & Zipper Give-Way
@@ -1437,7 +1569,7 @@ export class TrafficSimulation {
         glosaHeadwayMult = glosa.headwayMult;
         glosaLaunchBoostScale = glosa.launchBoostScale;
 
-        // Cooperative Zipper Merge & Give-Way
+        // Cooperative Zipper Merge & Blinker Intent Pocket Opening
         const nearbyZip = this.spatialHash.queryRadius(v.x, v.y, 16, this.queryBufB);
         const zipper = evaluateZipperMergeGiveWay(v, nearbyZip, lw, weather, discipline);
         if (zipper.yieldGap < nearestGap) {
@@ -1445,19 +1577,25 @@ export class TrafficSimulation {
           leadSpeed = Math.min(leadSpeed, zipper.speedCap);
           desiredV = Math.min(desiredV, zipper.speedCap);
         }
+        const blinkerPocket = evaluateBlinkerIntentPocket(v, nearbyZip, lw, weather);
+        if (blinkerPocket.yieldGap < nearestGap) {
+          nearestGap = blinkerPocket.yieldGap;
+          leadSpeed = Math.min(leadSpeed, blinkerPocket.speedCap);
+          desiredV = Math.min(desiredV, blinkerPocket.speedCap);
+        }
       }
 
       const multiLead = !v.isReversing
         ? computeMultiAnticipativeLeader(
-            v,
-            nearestGap,
-            leadSpeed,
-            blockingLeader,
-            secondGap,
-            secondLeadSpeed,
-            secondLeader,
-            weather
-          )
+          v,
+          nearestGap,
+          leadSpeed,
+          blockingLeader,
+          secondGap,
+          secondLeadSpeed,
+          secondLeader,
+          weather
+        )
         : { effectiveLeadSpeed: leadSpeed, anticipatedBrakeIntensity: 0, shockwaveCap: Infinity };
       if (multiLead.shockwaveCap < desiredV) {
         desiredV = Math.min(desiredV, multiLead.shockwaveCap);
@@ -1634,7 +1772,8 @@ export class TrafficSimulation {
           (v.vClass === 'motor' && v.speed < 4.5 ? 0.5 : v.timeHeadway) *
           widthHeadwayFactor *
           weather.headwayMult *
-          glosaHeadwayMult;
+          glosaHeadwayMult *
+          perception.caccHeadwayMult;
         const rawAccel = computeIidmAcceleration({
           speed: v.speed,
           desiredSpeed: desiredV,
@@ -1681,8 +1820,8 @@ export class TrafficSimulation {
           candidateSpeed > desiredV * 1.05
             ? Math.min(candidateSpeed, Math.max(desiredV * 1.05, v.speed - effComfortDecel * dt))
             : candidateSpeed;
-        if (nearestGap <= 0.1 && nextSpeed > leadSpeed) {
-          nextSpeed = Math.max(0, leadSpeed);
+        if (physicalGap <= 0.1 && nextSpeed > physicalLeadSpeed) {
+          nextSpeed = Math.max(0, physicalLeadSpeed);
         }
       }
 
@@ -1691,7 +1830,7 @@ export class TrafficSimulation {
       if (
         !v.isReversing &&
         !stoppingForSignal &&
-        v.distanceAlongPath >= v.stopLineDist &&
+        alreadyInBox &&
         vInsideBox &&
         (v.boxWaitTime ?? 0) >= 3.2 &&
         nextSpeed < 0.6 &&
@@ -1924,8 +2063,8 @@ export class TrafficSimulation {
           armRightArrowColors,
         },
       },
-      vehicles: this.vehicles.map(
-        ({
+      vehicles: this.vehicles.map((v) => {
+        const {
           path: _p,
           compiledPath: _cp,
           pathKey: _pk,
@@ -1951,9 +2090,19 @@ export class TrafficSimulation {
           reverseSteerDir: _rsd,
           frustration: _fr,
           markedCrossCounted: _mcc,
+          svoAngle: _svo,
+          turnSignalActive: _tsa,
+          signalLeadTimer: _slt,
+          pendingLaneChangeDir: _pld,
+          wideSwingState: _wss,
+          occlusionPeekActive: _opa,
           ...rest
-        }) => rest
-      ),
+        } = v;
+        return {
+          ...rest,
+          turnSignal: getEffectiveBlinkerDir(v),
+        };
+      }),
       stats: {
         simTime: this.simTime,
         currentPhaseExited: { ...this.currentPhaseExited },

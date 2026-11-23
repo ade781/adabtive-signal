@@ -384,11 +384,19 @@ export function evaluatePredictiveConflict2D(
     const vRem = v.exitLineDist - v.distanceAlongPath;
     const oRem = other.exitLineDist - other.distanceAlongPath;
 
+    const otherAlreadyOccupyingBox =
+      !sameArm &&
+      other.distanceAlongPath > other.stopLineDist + 1.5 &&
+      v.distanceAlongPath < v.stopLineDist + 5.0 &&
+      fwd > 1.0;
+
     let yieldForBrake = true;
-    if (vPriorityBoost > oPriorityBoost && other.speed < v.speed * 1.1) {
-      yieldForBrake = false;
-    } else if (vPriorityBoost === oPriorityBoost && vRem < oRem - 1.0) {
-      yieldForBrake = false;
+    if (!otherAlreadyOccupyingBox) {
+      if (vPriorityBoost > oPriorityBoost && other.speed < v.speed * 1.1) {
+        yieldForBrake = false;
+      } else if (vPriorityBoost === oPriorityBoost && vRem < oRem - 1.0) {
+        yieldForBrake = false;
+      }
     }
 
     if (allowBraking && other.speed >= 0.7 && pred.willCollide && pred.ttc <= ttcBrakeCap && yieldForBrake) {
@@ -844,7 +852,11 @@ export function enforceParallelLateralSeparation(
         const latA = getGlobalLat(a.laneIndex, a.lateralOffset, lwA, laneCenters);
         const latB = getGlobalLat(b.laneIndex, b.lateralOffset, lwB, laneCenters);
         const latSep = Math.abs(latA - latB);
-        const reqSep = (effWA + effClearanceWidth(b)) * 0.5 + 0.05;
+        const centerSlack =
+          a.laneIndex !== b.laneIndex && laneCenters[a.laneIndex] !== undefined && laneCenters[b.laneIndex] !== undefined
+            ? Math.abs((laneCenters[a.laneIndex] - laneCenters[b.laneIndex]) - (a.laneIndex - b.laneIndex) * lw)
+            : 0;
+        const reqSep = (effWA + effClearanceWidth(b)) * 0.5 + 0.06 + centerSlack;
         if (latSep >= reqSep) continue;
 
         const deficit = reqSep - latSep;

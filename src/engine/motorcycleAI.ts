@@ -289,8 +289,8 @@ export function evaluateMotorcycleCorridorTarget(
     const otherLw = armGeom.def.inLaneWidths[other.laneIndex] ?? armLw;
     const heavyTailPad =
       other.vClass === 'heavy' &&
-      other.turn !== 'straight' &&
-      other.distanceAlongPath > other.stopLineDist - 12.0
+        other.turn !== 'straight' &&
+        other.distanceAlongPath > other.stopLineDist - 12.0
         ? 0.75
         : 0;
     const otherEffW = effClearanceWidth(other);
@@ -314,14 +314,14 @@ export function evaluateMotorcycleCorridorTarget(
       rec.isHeavy &&
       (other.wideSwingState === 'turning' ||
         other.wideSwingState === 'pre_swing' ||
-        (other.turn !== 'straight' && other.distanceAlongPath > other.stopLineDist - 14.0));
+        (other.turn !== 'straight' && other.distanceAlongPath > other.stopLineDist - 26.0));
   }
 
   // Safety Guard 1: Tuck back from centerline on oncoming threat, red queue, or narrow 1-lane stop approach.
   const reqClearDist = oncomingIsHeavy ? 48.0 : 34.0;
   const narrowUndividedInnerPad =
-    !armHasMedian && inLanes === 1 && armInWidth <= 3.3 && v.distanceAlongPath >= v.stopLineDist - 14.0
-      ? 1.02
+    !armHasMedian && inLanes === 1 && v.distanceAlongPath >= v.stopLineDist - 22.0
+      ? Math.max(1.02, Math.min(1.15, armInWidth * 0.3))
       : 0.42;
 
   if (
@@ -403,8 +403,10 @@ export function evaluateMotorcycleCorridorTarget(
   // Heavy rain suppresses tight fast weaving.
   if (seepageScale < 0.45 && v.speed > 3.5) return null;
 
-  const minLane = v.turn === 'straight' ? Math.max(0, v.laneIndex - 1) : v.laneIndex;
-  const maxLane = v.turn === 'straight' ? Math.min(inLanes - 1, v.laneIndex + 1) : v.laneIndex;
+  // Do not cascade into a second adjacent lane until physically settled inside the current lane
+  const settlingLaneShift = Math.abs(v.lateralOffset) > armLw * 0.55;
+  const minLane = v.turn === 'straight' && !settlingLaneShift ? Math.max(0, v.laneIndex - 1) : v.laneIndex;
+  const maxLane = v.turn === 'straight' && !settlingLaneShift ? Math.min(inLanes - 1, v.laneIndex + 1) : v.laneIndex;
 
   let minLaneEdge = halfMedian;
   for (let l = 0; l < minLane; l++) {
@@ -665,21 +667,24 @@ export function evaluateMotorcycleCorridorTarget(
 
           if (
             other.isWideTurningHeavy &&
-            other.longDiff >= -(other.halfSumLen + 2.5) &&
+            other.longDiff >= -(other.halfSumLen + 14.0) &&
             other.longDiff <= other.halfSumLen + 14.0
           ) {
             const isInnerTurnSide =
               (other.turn === 'left' && cand >= other.lat - 0.2) ||
               ((other.turn === 'right' || other.turn === 'uturn') && cand <= other.lat + 0.2);
-            if (isInnerTurnSide) {
-              const latZone = Math.max(0, 1.0 - Math.max(0, edgeLatGap) / 3.0);
+            const isTailSweepSide = !isInnerTurnSide && edgeLatGap < 1.15;
+            if (isInnerTurnSide || isTailSweepSide) {
+              const zoneRange = isInnerTurnSide ? 3.0 : 1.15;
+              const latZone = Math.max(0, 1.0 - Math.max(0, edgeLatGap) / zoneRange);
               const stateMult =
                 other.wideSwingState === 'turning'
                   ? 1.35
                   : other.wideSwingState === 'pre_swing'
                     ? 1.15
                     : 1.0;
-              wideTurnPenalty += (18.0 + 10.0 * latZone) * stateMult;
+              wideTurnPenalty +=
+                (isInnerTurnSide ? 18.0 + 10.0 * latZone : 12.0 + 8.0 * latZone) * stateMult;
             }
           }
         }

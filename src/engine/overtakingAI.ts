@@ -2,6 +2,7 @@ import { effClearanceWidth, getGlobalLat, SimVehicle } from './behaviors';
 import { DisciplineParams } from './conflictResolver';
 import { WeatherPhysicsProfile } from './environmentDynamics';
 import { computeIidmAcceleration } from './longitudinalAI';
+import { isOccludedByHeavyVehicle } from './perceptionAI';
 import { SpatialHashGrid } from './spatialHash';
 import { CompiledMovementPath, CompiledTopology } from './topologyTypes';
 import { SignalColor } from './types';
@@ -590,7 +591,7 @@ export function updateOncomingOvertakeFSM(
         other.distanceAlongPath >= other.exitLineDist;
 
   // Helper: scan oncoming vehicles along the same physical corridor via Spatial Hash
-  const findNearestOncoming = (): { dist: number; closingSpeed: number; opp: SimVehicle | null } => {
+  const findNearestOncoming = (applyOcclusion = false): { dist: number; closingSpeed: number; opp: SimVehicle | null } => {
     const sight = Math.min(62, weather.sightDistance);
     const nearby = spatialHash.queryRadius(v.x, v.y, sight, queryBuf);
     const cosH = Math.cos(v.heading);
@@ -605,6 +606,10 @@ export function updateOncomingOvertakeFSM(
       // Check if heading is roughly opposite (dot < -0.5)
       const dot = cosH * Math.cos(other.heading) + sinH * Math.sin(other.heading);
       if (dot > -0.45) continue;
+
+      if (applyOcclusion && Math.hypot(other.x - v.x, other.y - v.y) > 12.0 && isOccludedByHeavyVehicle(v, other, nearby)) {
+        continue;
+      }
 
       const dx = other.x - v.x;
       const dy = other.y - v.y;
@@ -733,7 +738,7 @@ export function updateOncomingOvertakeFSM(
       weather.gapAcceptanceMult *
       (0.82 + 0.36 * discipline.discipline);
 
-    const oncoming = findNearestOncoming();
+    const oncoming = findNearestOncoming(true);
     const requiredClearDist = (passSpeed + 11.5) * (tPass + safetyMargin);
     const actualTTC = oncoming.dist / oncoming.closingSpeed;
     if (

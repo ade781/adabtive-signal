@@ -2,7 +2,11 @@ import { DEFAULT_CONFIG, TrafficSimulation } from './simulation';
 import { GIWANGAN_TOPOLOGY, STATIC_SAMPLING_BLUEPRINTS, cloneTopology } from './samplingBlueprints';
 import { compileTopology } from './topologyBuilder';
 import { evaluateEnvironment, WEATHER_PROFILES } from './environmentDynamics';
-import { computeDisciplineParams } from './conflictResolver';
+import { computeDisciplineParams, evaluateBlinkerIntentPocket } from './conflictResolver';
+import { computeIidmAcceleration } from './longitudinalAI';
+import { evaluateVehiclePerceptionProfile, isOccludedByHeavyVehicle } from './perceptionAI';
+import { computeHeavyWideTurnTargetOffset } from './steeringAI';
+import { type SimVehicle } from './behaviors';
 import { validateTopology, addArmToTopology, applyModuleToArm } from '../draw/drawStore';
 import { SimConfig } from './types';
 
@@ -497,6 +501,205 @@ function testIndonesianMarkingCrossAndReverseRecovery() {
   );
 }
 
+// 9. Vehicle AI Phases 1-5: IIDM, Wide-Turn Off-Tracking, Blinker Pocket, Heavy Occlusion & CAV Ratio
+function testVehicleAiPhases1To5() {
+  const clearWeather = WEATHER_PROFILES.clear;
+  const heavyRain = WEATHER_PROFILES['heavy-rain'];
+
+  // Phase 1: IIDM zero free-flow drift & smooth braking response
+  const cruiseAccel = computeIidmAcceleration({
+    speed: 12.0,
+    desiredSpeed: 12.0,
+    gap: 100.0,
+    leadSpeed: 12.0,
+    maxAccel: 2.2,
+    comfortDecel: 2.8,
+    minGap: 2.0,
+    timeHeadway: 1.4,
+  });
+  assert(Math.abs(cruiseAccel) < 0.05, `Expected near-zero IIDM cruise accel at desiredV, got ${cruiseAccel}`);
+
+  const brakeAccel = computeIidmAcceleration({
+    speed: 10.0,
+    desiredSpeed: 12.0,
+    gap: 6.0,
+    leadSpeed: 0.0,
+    maxAccel: 2.2,
+    comfortDecel: 2.8,
+    minGap: 2.0,
+    timeHeadway: 1.4,
+  });
+  assert(brakeAccel < -2.0, `Expected firm IIDM braking ahead of stopped obstacle, got ${brakeAccel}`);
+
+  // Phase 3 & 4: Blinker pocket + Heavy wide-turn pre-swing helpers
+  const mkStub = (id: number, overrides: Partial<SimVehicle>): SimVehicle =>
+    ({
+      id,
+      vClass: 'car',
+      spriteKey: 'car-1',
+      originArm: 'north',
+      destArm: 'south',
+      turn: 'straight',
+      laneIndex: 0,
+      lateralOffset: 0,
+      targetLateralOffset: 0,
+      lateralVelocity: 0,
+      length: 4.4,
+      width: 1.85,
+      maxSpeed: 12,
+      maxAccel: 2.2,
+      comfortDecel: 2.8,
+      minGap: 2.0,
+      timeHeadway: 1.4,
+      speed: 8.0,
+      distanceAlongPath: 50,
+      totalPathLength: 140,
+      stopLineDist: 70,
+      exitLineDist: 90,
+      x: 0,
+      y: 0,
+      heading: Math.PI / 2,
+      hasExitedIntersection: false,
+      waitingTime: 0,
+      speedFactor: 1,
+      accelFactor: 1,
+      profile: 'normal',
+      reactionTimer: 0,
+      svoAngle: 0.5,
+      path: {
+        turn: 'straight',
+        stopLineDist: 70,
+        exitLineDist: 90,
+        totalPathLength: 140,
+        sample: () => ({ x: 0, y: 0, heading: Math.PI / 2 }),
+      },
+      ...overrides,
+    }) as SimVehicle;
+
+  const selfCar = mkStub(1, { x: 0, y: 0, heading: 0, distanceAlongPath: 45 });
+  const adjSignalingCar = mkStub(2, {
+    x: 9.0,
+    y: 3.2,
+    heading: 0,
+    laneIndex: 1,
+    distanceAlongPath: 54,
+    turnSignalActive: 'right',
+    pendingLaneChangeDir: 'right',
+  });
+  // With heading=0 in Y-down LHT, outward-left normal is (0, -1), so latSigned > 0 when y < 0; check y = -3.2
+  adjSignalingCar.y = -3.2;
+  const pocket = evaluateBlinkerIntentPocket(selfCar, [selfCar, adjSignalingCar], 3.2, clearWeather);
+  assert(Number.isFinite(pocket.yieldGap) && pocket.speedCap < Infinity, 'Expected blinker pocket yield for adjacent signaling vehicle');
+
+  const baseTopo = compileTopology(cloneTopology(GIWANGAN_TOPOLOGY));
+  const westInLane = Math.max(0, (baseTopo.armsById['west']?.def.inLanes ?? 2) - 1);
+  const westStopDist = baseTopo.pathLookup['west']?.left?.[westInLane]?.stopLineDist ?? 70;
+  const busTurn = mkStub(3, {
+    vClass: 'heavy',
+    length: 10.5,
+    width: 2.45,
+    turn: 'left',
+    originArm: 'west',
+    laneIndex: westInLane,
+    distanceAlongPath: westStopDist - 8.0,
+    stopLineDist: westStopDist,
+  });
+  const wideSwing = computeHeavyWideTurnTargetOffset(busTurn, baseTopo.armsById['west'], [busTurn], 3.4);
+  assert(
+    wideSwing.state === 'pre_swing' && wideSwing.wideOffset < -0.05,
+    `Expected heavy left-turn pre_swing negative offset, got state=${wideSwing.state}, offset=${wideSwing.wideOffset}`
+  );
+
+  // Phase 5: Heavy-vehicle occlusion vs V2V X-ray + CACC platooning profile
+  const observerHuman = mkStub(10, { x: 0, y: 0, heading: 0, isConnected: false, profile: 'cautious' });
+  const truckOccluder = mkStub(11, {
+    vClass: 'heavy',
+    x: 10,
+    y: 0,
+    heading: 0,
+    length: 10.5,
+    width: 2.5,
+  });
+  const hiddenTarget = mkStub(12, { x: 22, y: 0.4, heading: Math.PI });
+  assert(
+    isOccludedByHeavyVehicle(observerHuman, hiddenTarget, [observerHuman, truckOccluder, hiddenTarget]) === true,
+    'Expected human driver sightline to be occluded by heavy vehicle'
+  );
+  const observerCav = mkStub(13, { x: 0, y: 0, heading: 0, isConnected: true });
+  assert(
+    isOccludedByHeavyVehicle(observerCav, hiddenTarget, [observerCav, truckOccluder, hiddenTarget]) === false,
+    'Expected V2V connected vehicle to bypass heavy-vehicle occlusion'
+  );
+  const cavLeader = mkStub(14, { isConnected: true, originArm: 'north', destArm: 'south' });
+  const cavProfile = evaluateVehiclePerceptionProfile(observerCav, cavLeader, heavyRain, 0.3);
+  assert(
+    cavProfile.caccHeadwayMult === 0.78 && cavProfile.reactionScale === 0.25 && cavProfile.canSeeThroughTrucks,
+    `Unexpected CAV perception profile: ${JSON.stringify(cavProfile)}`
+  );
+
+  // Full simulation integration with 0% vs 100% CAV, wide-turning heavy buses, turning signals, & wet night visibility
+  const baseCfg: SimConfig = {
+    ...DEFAULT_CONFIG,
+    lanesPerDirection: 2,
+    laneWidth: 3.3,
+    roadWidthPerDirection: 6.6,
+    roadLength: 90,
+    motorRate: 40,
+    carRate: 30,
+    heavyRate: 10,
+    turnLeftPct: 18,
+    turnStraightPct: 64,
+    turnRightPct: 18,
+    signalPhasePreset: '2-phase-simultaneous',
+    environment: {
+      weather: 'light-rain',
+      dynamicWeather: false,
+      timeMode: 'static',
+      startHour: 20,
+      timeCompression: 0.75,
+    },
+  };
+
+  let sawBlinkerInHuman = false;
+  const humanSim = new TrafficSimulation({ ...baseCfg, connectedVehicleRatio: 0 });
+  const humanStuck = new Map<number, number>();
+  for (let s = 0; s < 2000; s++) {
+    humanSim.step(0.05);
+    if (s % 5 === 0) {
+      const snap = humanSim.getSnapshot();
+      if (snap.vehicles.some((v) => v.turnSignal === 'left' || v.turnSignal === 'right')) {
+        sawBlinkerInHuman = true;
+      }
+      checkV2Integrity(humanSim, 'Phase 5 Human Baseline', humanStuck, 0.25);
+    }
+  }
+  const humanSnap = humanSim.getSnapshot();
+
+  const cavSim = new TrafficSimulation({ ...baseCfg, connectedVehicleRatio: 1.0 });
+  const cavStuck = new Map<number, number>();
+  let sawCavVehicle = false;
+  for (let s = 0; s < 2000; s++) {
+    cavSim.step(0.05);
+    if (s % 5 === 0) {
+      const snap = cavSim.getSnapshot();
+      for (const v of snap.vehicles) {
+        assert(v.isConnected === true, `Expected all vehicles connected at ratio=1.0, got ${v.isConnected} on v#${v.id}`);
+        sawCavVehicle = true;
+      }
+      checkV2Integrity(cavSim, 'Phase 5 Full CAV', cavStuck, 0.25);
+    }
+  }
+  const cavSnap = cavSim.getSnapshot();
+
+  assert(sawBlinkerInHuman && sawCavVehicle, 'Expected active turnSignal telemetry and connected CAV vehicles');
+  assert(humanSnap.stats.totalExitedAllTime >= 25 && cavSnap.stats.totalExitedAllTime >= 25,
+    `Expected strong throughput in both modes (human=${humanSnap.stats.totalExitedAllTime}, cav=${cavSnap.stats.totalExitedAllTime})`);
+
+  console.log(
+    `[PASS] Test 9: Vehicle AI Phases 1-5 (humanExited=${humanSnap.stats.totalExitedAllTime}, cavExited=${cavSnap.stats.totalExitedAllTime}, blinkerTelemetry=${sawBlinkerInHuman}, 0 collisions)`
+  );
+}
+
 testBlueprintsAndValidation();
 testAsymmetricAndNArmTopologies();
 testTwoPhasePriorityYielding();
@@ -505,5 +708,6 @@ testOncomingLaneOvertaking();
 testYellowBoxAndDiscipline();
 testTimeOfDayAndWeatherPhysics();
 testIndonesianMarkingCrossAndReverseRecovery();
+testVehicleAiPhases1To5();
 
 console.log('\nALL V2 FEATURE TESTS PASSED SUCCESSFULLY!');

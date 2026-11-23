@@ -95,6 +95,8 @@ export interface Vehicle {
   hasExitedIntersection: boolean;
   waitingTime: number;           // seconds spent v < QUEUE_SPEED_THRESHOLD (1.2 m/s)
   laneChangeDir?: 'left' | 'right' | null;
+  turnSignal?: 'left' | 'right' | null;
+  isConnected?: boolean;
   isSlipLane?: boolean;
   isUTurn?: boolean;
   overtakeState?: 'none' | 'pull_out' | 'passing' | 'merge_back' | 'abort';

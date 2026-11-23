@@ -528,7 +528,7 @@ function drawVehicle(ctx: CanvasRenderingContext2D, v: Vehicle, blinkOn: boolean
   }
 
   const rawTurnDir = v.turn === 'uturn' ? 'right' : v.turn !== 'straight' && v.distanceAlongPath < v.exitLineDist ? v.turn : null;
-  const signalDir = v.laneChangeDir ?? rawTurnDir;
+  const signalDir = v.turnSignal ?? v.laneChangeDir ?? rawTurnDir;
   if (blinkOn && signalDir) {
     ctx.fillStyle = '#F59E0B';
     const r = v.vClass === 'motor' ? Math.max(0.055, v.width * 0.075) : Math.min(0.13, v.width * 0.075);

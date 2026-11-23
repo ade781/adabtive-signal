@@ -1,5 +1,6 @@
 import { SimVehicle } from './behaviors';
 import { WeatherPhysicsProfile } from './environmentDynamics';
+import { isOccludedByHeavyVehicle } from './perceptionAI';
 import { SpatialHashGrid } from './spatialHash';
 import { CompiledTopology, MovementSignalState } from './topologyTypes';
 
@@ -179,6 +180,7 @@ export function evaluatePriorityConflictYield(
         if (other.distanceAlongPath < other.exitLineDist - 4) continue;
         // Only yield to vehicles in the innermost lane (where U-turn merges) unless 1-lane road
         if (!oneLaneOpp && other.destLaneIndex !== undefined && other.destLaneIndex > 0) continue;
+        if (isOccludedByHeavyVehicle(v, other, nearby)) continue;
         const dx = v.x - other.x;
         const dy = v.y - other.y;
         const forwardToMe = dx * Math.cos(other.heading) + dy * Math.sin(other.heading);
@@ -203,8 +205,8 @@ export function evaluatePriorityConflictYield(
     const armDef = topology.armsById[v.originArm]?.def;
     if (armDef?.slipLane?.yieldControl === 'yield') {
       const frontBumper = v.distanceAlongPath + v.length * 0.5;
-      const distToMerge = v.exitLineDist - 4.5 - frontBumper;
-      if (distToMerge > -0.4 && distToMerge < 22) {
+      const distToMerge = v.exitLineDist - 5.2 - frontBumper;
+      if (distToMerge > -3.8 && distToMerge < 22) {
         const mergePt = v.compiledPath?.sample(v.exitLineDist);
         if (mergePt) {
           const nearby = spatialHash.queryRadius(mergePt.x, mergePt.y, Math.min(42, weather.sightDistance), queryBuf);
@@ -222,6 +224,7 @@ export function evaluatePriorityConflictYield(
             if (destOuterLane > 0 && other.destLaneIndex !== undefined && other.destLaneIndex < destOuterLane - 0) {
               continue;
             }
+            if (isOccludedByHeavyVehicle(v, other, nearby)) continue;
             // Exact world-space distance along other's heading to reach our slip-lane merge point
             const mdx = mergePt.x - other.x;
             const mdy = mergePt.y - other.y;
@@ -232,8 +235,8 @@ export function evaluatePriorityConflictYield(
             if (tOppArrive < critGap && (other.speed > 0.8 || Math.abs(otherDistToMerge) < 8.0)) {
               return {
                 shouldYield: true,
-                yieldGap: Math.max(0.15, distToMerge),
-                speedCap: 5.2,
+                yieldGap: Math.max(0.05, distToMerge),
+                speedCap: distToMerge <= 0 ? 0.5 : 5.2,
                 reason: 'slip-merge',
               };
             }
@@ -366,6 +369,7 @@ export function evaluatePriorityConflictYield(
       const otherRear = other.distanceAlongPath - other.length * 0.5;
       // Already cleared the conflict zone
       if (otherRear > otherConflictS + 1.8) continue;
+      if (isOccludedByHeavyVehicle(v, other, nearby)) continue;
 
       // Ignore stopped opposing vehicle far behind stop line on red (or deadlocked)
       const distOtherToConflict = otherConflictS - otherFront;
