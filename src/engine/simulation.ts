@@ -341,8 +341,16 @@ export class TrafficSimulation {
           v.laneChangeDir = null;
         } else {
           const maxLat = Math.max(0, lw * 0.5 - 0.42);
-          v.lateralOffset = Math.max(-maxLat, Math.min(maxLat, v.lateralOffset));
-          v.targetLateralOffset = Math.max(-maxLat, Math.min(maxLat, v.targetLateralOffset));
+          const minInnerClear =
+            !this.config.hasMedian &&
+            this.config.lanesPerDirection === 1 &&
+            lw <= 3.3 &&
+            v.distanceAlongPath >= v.stopLineDist - 14.0
+              ? 1.02
+              : 0.42;
+          const minLat = Math.min(maxLat, -(lw * 0.5 - minInnerClear));
+          v.lateralOffset = Math.max(minLat, Math.min(maxLat, v.lateralOffset));
+          v.targetLateralOffset = Math.max(minLat, Math.min(maxLat, v.targetLateralOffset));
         }
         const oldStop = v.stopLineDist;
         const oldExit = v.exitLineDist;
@@ -352,7 +360,8 @@ export class TrafficSimulation {
         let scaledDist: number;
         if (v.distanceAlongPath < oldStop) {
           const segRel = oldStop > 0 ? v.distanceAlongPath / oldStop : 0;
-          scaledDist = Math.min(Math.max(0, newCompiled.stopLineDist - 0.5), segRel * newCompiled.stopLineDist);
+          const safeApproachCap = Math.max(0, newCompiled.stopLineDist - (v.length * 0.5 + 0.45));
+          scaledDist = Math.min(safeApproachCap, segRel * newCompiled.stopLineDist);
         } else if (v.distanceAlongPath <= oldExit) {
           const oldBoxLen = Math.max(1e-3, oldExit - oldStop);
           const segRel = (v.distanceAlongPath - oldStop) / oldBoxLen;
@@ -1678,9 +1687,11 @@ export class TrafficSimulation {
       }
 
       // Tier 3b In-Box Cooperative Creep: prevent permanent 0 m/s freeze inside the intersection box
-      // Only creep when physically clear (physicalGap > 0.15) and blocked by a cross-arm vehicle
+      // Only creep when already genuinely committed inside the box (never creep across a red signal!)
       if (
         !v.isReversing &&
+        !stoppingForSignal &&
+        v.distanceAlongPath >= v.stopLineDist &&
         vInsideBox &&
         (v.boxWaitTime ?? 0) >= 3.2 &&
         nextSpeed < 0.6 &&

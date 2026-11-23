@@ -315,7 +315,11 @@ export function evaluatePredictiveConflict2D(
       otherHasIntentShift ||
       Boolean(other.overtakeState && other.overtakeState !== 'none') ||
       Boolean(other.crossingMarking);
-    if (sameArm && !vManeuvering && !otherManeuvering && v.turn === other.turn) continue;
+    const inBoxMultiLane =
+      v.distanceAlongPath > v.stopLineDist - 4.0 &&
+      !v.hasExitedIntersection &&
+      v.laneIndex !== other.laneIndex;
+    if (sameArm && !vManeuvering && !otherManeuvering && v.turn === other.turn && !inBoxMultiLane) continue;
 
     // Skip diverging turners on approach already separating smoothly away toward their turn side
     if (
@@ -396,6 +400,14 @@ export function evaluatePredictiveConflict2D(
     }
 
     // Hybrid ORCA lateral evasion vector in LHT (+lateralOffset = outward-left normal (sinV, -cosV))
+    // Restrict same-arm approach evasion to genuine box entry (> stopLineDist - 2m) or active lane/overtake maneuvers
+    const allowOrcaAgainstOther =
+      !sameArm ||
+      v.distanceAlongPath > v.stopLineDist - 2.0 ||
+      v.hasExitedIntersection ||
+      vManeuvering;
+    if (!allowOrcaAgainstOther) continue;
+
     const activePred = hasSweptConflict ? pred : shearPred;
     const activeHorizon = hasSweptConflict ? scanHorizon : Math.max(scanHorizon, 1.35);
     const u = Math.max(0, Math.min(1, 1 - activePred.ttc / Math.max(0.1, activeHorizon)));
@@ -482,6 +494,17 @@ export function computeSafeLateralTarget(
 }
 
 /**
+ * Computes half-width projected along the lateral axis taking into account steerYaw from lateral velocity.
+ */
+function effYawedHalfWidth(v: SimVehicle, latVel: number): number {
+  const halfW = effClearanceWidth(v) * 0.5;
+  if (Math.abs(latVel) <= 0.05 || v.speed <= 0.1) return halfW;
+  const speedScale = Math.min(1, v.speed / 1.5);
+  const yaw = Math.max(-0.32, Math.min(0.32, Math.atan2(-latVel, Math.max(2.2, v.speed)))) * speedScale;
+  return halfW * Math.cos(yaw) + v.length * 0.5 * Math.abs(Math.sin(yaw));
+}
+
+/**
  * Fast per-vehicle lateral safety check against nearby traffic (both same-arm approach and 2D world space).
  */
 export function isLateralMoveSafeAgainstNeighbors(
@@ -494,10 +517,11 @@ export function isLateralMoveSafeAgainstNeighbors(
   dt: number,
   minClearPad?: number
 ): boolean {
-  const myEffW = effClearanceWidth(v);
   const cosH = Math.cos(v.heading);
   const sinH = Math.sin(v.heading);
   const stepSigned = candGlobalLat - curGlobalLat;
+  const candLatVel = dt > 1e-4 ? stepSigned / dt : v.lateralVelocity;
+  const myYawHalfW = Math.max(effYawedHalfWidth(v, v.lateralVelocity), effYawedHalfWidth(v, candLatVel));
   const estHalfMedian = laneCenters && laneCenters.length > 0 ? Math.max(0, laneCenters[0] - lw * 0.5) : 0;
 
   for (let i = 0; i < nearby.length; i++) {
@@ -523,7 +547,7 @@ export function isLateralMoveSafeAgainstNeighbors(
         const swingPad = returningAcrossCenter
           ? Math.min(0.04, minClearPad ?? 0.04)
           : minClearPad ?? defaultPad;
-        const sumHalfW = (myEffW + effClearanceWidth(other)) * 0.5;
+        const sumHalfW = myYawHalfW + effYawedHalfWidth(other, other.lateralVelocity);
         const tightParallelMotorPivot =
           v.vClass === 'motor' &&
           v.speed < 2.2 &&
@@ -560,8 +584,8 @@ export function isLateralMoveSafeAgainstNeighbors(
           other.isSlipLane || v.isSlipLane || dotHeading < 0.92
             ? Math.abs(-cosO * sinH + sinO * cosH) * (other.length * 0.5) +
               Math.abs(sinO * sinH + cosO * cosH) * oHalfW
-            : oHalfW;
-        const minClear = myEffW * 0.5 + otherHalfLat + (minClearPad ?? 0.22) + (dotHeading < -0.45 ? 0.25 : 0);
+            : effYawedHalfWidth(other, other.lateralVelocity);
+        const minClear = myYawHalfW + otherHalfLat + (minClearPad ?? 0.22) + (dotHeading < -0.45 ? 0.25 : 0);
         if (Math.abs(candOtherLat) < minClear && Math.abs(candOtherLat) < Math.abs(curOtherLat)) {
           return false;
         }
@@ -626,7 +650,6 @@ function resolveArmBucketLateralGuard(
       const halfMedian = armGeom?.halfMedian ?? 0;
       const laneIdxA = isApproach ? a.laneIndex : (a.destLaneIndex ?? a.laneIndex);
       const lwA = (isApproach ? armGeom?.def.inLaneWidths[laneIdxA] : armGeom?.def.outLaneWidths[laneIdxA]) ?? lw;
-      const effWA = effClearanceWidth(a);
 
       for (let j = i + 1; j < bucket.length; j++) {
         const db = bucket[j];
@@ -654,7 +677,7 @@ function resolveArmBucketLateralGuard(
         const candLatA = getGlobalLat(laneIdxA, da.nextLat, lwA, laneCenters);
         const candLatB = getGlobalLat(laneIdxB, db.nextLat, lwB, laneCenters);
 
-        const reqSep = (effWA + effClearanceWidth(b)) * 0.5 + minClearPad;
+        const reqSep = effYawedHalfWidth(a, da.nextLatVel) + effYawedHalfWidth(b, db.nextLatVel) + minClearPad;
         const candSep = Math.abs(candLatA - candLatB);
         const curSep = Math.abs(curLatA - curLatB);
         if (candSep >= reqSep || candSep >= curSep) continue;

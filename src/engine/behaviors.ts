@@ -216,10 +216,10 @@ export function findBlockingLeader(
           other.distanceAlongPath <= other.exitLineDist
           ? 0.85
           : other.turn !== 'straight' &&
-            Math.abs(other.lateralOffset) > 0.9 &&
-            other.distanceAlongPath > other.stopLineDist - 2.0 &&
+            Math.abs(other.lateralOffset) > 0.8 &&
+            other.distanceAlongPath > other.stopLineDist - 6.0 &&
             other.distanceAlongPath <= other.stopLineDist + 6.0
-            ? 0.16
+            ? Math.min(0.65, Math.abs(other.lateralOffset) * 0.36)
             : 0;
       if (
         latSep >= minLatNeed + tailSwingPad1 &&
@@ -338,7 +338,7 @@ export function findBlockingLeader(
       other.originArm === v.originArm &&
       v.laneIndex === other.laneIndex &&
       v.turn !== other.turn &&
-      (!turningAwayBox || Math.abs(otherCurLatBox - myGlobalLat) < minLatNeed + 0.3) &&
+      (!turningAwayBox || Math.abs(otherCurLatBox - myGlobalLat) < minLatNeed) &&
       other.distanceAlongPath > v.distanceAlongPath;
     const tailSwingPad =
       other.vClass === 'heavy' &&
@@ -348,18 +348,21 @@ export function findBlockingLeader(
         other.distanceAlongPath <= other.exitLineDist
         ? 1.05
         : other.turn !== 'straight' &&
-          Math.abs(other.lateralOffset) > 0.9 &&
+          Math.abs(other.lateralOffset) > 0.8 &&
           other.originArm === v.originArm &&
-          other.distanceAlongPath > other.stopLineDist - 2.0 &&
+          other.distanceAlongPath > other.stopLineDist - 6.0 &&
           other.distanceAlongPath <= other.stopLineDist + 6.0
-          ? 0.16
+          ? Math.min(0.65, Math.abs(other.lateralOffset) * 0.36)
           : 0;
     const sameArmBottleneckMerge =
       other.originArm === v.originArm &&
       other.destArm === v.destArm &&
       other.laneIndex !== v.laneIndex &&
       other.destLaneIndex !== undefined &&
-      other.destLaneIndex === v.destLaneIndex &&
+      v.destLaneIndex !== undefined &&
+      (other.destLaneIndex === v.destLaneIndex ||
+        (Math.abs(other.destLaneIndex - v.destLaneIndex) === 1 &&
+          (Math.abs(other.lateralOffset) > 1.15 || Math.abs(v.lateralOffset) > 1.15))) &&
       v.distanceAlongPath > v.stopLineDist - 6.0 &&
       !v.hasExitedIntersection;
     const slipSplitPad =
@@ -549,14 +552,21 @@ export function updateMotorcycleSeepage(
         o.distanceAlongPath < v.stopLineDist &&
         o.speed < 0.6
     );
+  const narrowUndividedInnerPad =
+    !armHasMedian && inLanes === 1 && armInWidth <= 3.3 && v.distanceAlongPath >= v.stopLineDist - 14.0
+      ? 1.02
+      : 0.42;
   if (
-    myGlobalLat < halfMedian + 0.42 &&
+    myGlobalLat < halfMedian + narrowUndividedInnerPad &&
     (nearestOncomingDist < reqClearDist ||
       nearestOncomingTTC < 3.2 ||
       v.distanceAlongPath >= v.stopLineDist - 22.0 ||
       hasPackedQueueAhead)
   ) {
-    const safeInnerTarget = Math.max(halfMedian + 0.46, laneCenters[v.laneIndex] ?? halfMedian + armLw * 0.5);
+    const safeInnerTarget = Math.max(
+      halfMedian + narrowUndividedInnerPad + 0.04,
+      laneCenters[v.laneIndex] ?? halfMedian + armLw * 0.5
+    );
     v.targetLateralOffset = safeInnerTarget - (laneCenters[v.laneIndex] ?? 0);
     return;
   }
@@ -656,7 +666,10 @@ export function updateMotorcycleSeepage(
     maxLane === inLanes - 1;
   const shoulderExtra = canUseShoulder ? Math.min(0.6, markingPropensity * 0.58) : 0;
 
-  const rightTurnEdgePad = v.turn === 'right' && v.distanceAlongPath >= v.stopLineDist - 14.0 && minLane === 0 ? 0.72 : 0.42;
+  const rightTurnEdgePad = Math.max(
+    narrowUndividedInnerPad,
+    v.turn === 'right' && v.distanceAlongPath >= v.stopLineDist - 14.0 && minLane === 0 ? 0.72 : 0.42
+  );
   const minBound = canCrossCenterHere && minLane === 0
     ? halfMedian - centerCrossDepth
     : Math.max(halfMedian + rightTurnEdgePad, minLaneEdge + 0.42);
