@@ -384,19 +384,11 @@ export function evaluatePredictiveConflict2D(
     const vRem = v.exitLineDist - v.distanceAlongPath;
     const oRem = other.exitLineDist - other.distanceAlongPath;
 
-    const otherAlreadyOccupyingBox =
-      !sameArm &&
-      other.distanceAlongPath > other.stopLineDist + 1.5 &&
-      v.distanceAlongPath < v.stopLineDist + 5.0 &&
-      fwd > 1.0;
-
     let yieldForBrake = true;
-    if (!otherAlreadyOccupyingBox) {
-      if (vPriorityBoost > oPriorityBoost && other.speed < v.speed * 1.1) {
-        yieldForBrake = false;
-      } else if (vPriorityBoost === oPriorityBoost && vRem < oRem - 1.0) {
-        yieldForBrake = false;
-      }
+    if (vPriorityBoost > oPriorityBoost && other.speed < v.speed * 1.1) {
+      yieldForBrake = false;
+    } else if (vPriorityBoost === oPriorityBoost && vRem < oRem - 1.0) {
+      yieldForBrake = false;
     }
 
     if (allowBraking && other.speed >= 0.7 && pred.willCollide && pred.ttc <= ttcBrakeCap && yieldForBrake) {
@@ -591,7 +583,7 @@ export function isLateralMoveSafeAgainstNeighbors(
         const otherHalfLat =
           other.isSlipLane || v.isSlipLane || dotHeading < 0.92
             ? Math.abs(-cosO * sinH + sinO * cosH) * (other.length * 0.5) +
-              Math.abs(sinO * sinH + cosO * cosH) * oHalfW
+            Math.abs(sinO * sinH + cosO * cosH) * oHalfW
             : effYawedHalfWidth(other, other.lateralVelocity);
         const minClear = myYawHalfW + otherHalfLat + (minClearPad ?? 0.22) + (dotHeading < -0.45 ? 0.25 : 0);
         if (Math.abs(candOtherLat) < minClear && Math.abs(candOtherLat) < Math.abs(curOtherLat)) {
