@@ -33,6 +33,13 @@ export interface SimVehicle extends Vehicle {
   reverseSteerDir?: number;
   frustration?: number;
   markedCrossCounted?: boolean;
+  svoAngle?: number;
+  isConnected?: boolean;
+  turnSignalActive?: 'left' | 'right' | null;
+  signalLeadTimer?: number;
+  pendingLaneChangeDir?: 'left' | 'right' | null;
+  wideSwingState?: 'none' | 'pre_swing' | 'turning';
+  occlusionPeekActive?: boolean;
 }
 
 export function getGlobalLat(laneIndex: number, lateralOffset: number, lw: number, laneCenters?: readonly number[]): number {

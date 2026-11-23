@@ -895,3 +895,75 @@ export function enforceParallelLateralSeparation(
     if (!anyAdjusted) break;
   }
 }
+
+/**
+ * Wide-Turn Off-Tracking & Pre-Swing Kinematics (Phase 4) for long heavy vehicles (bus/truck).
+ * Gently swings away from the turn apex 2-15m before the stop line when adjacent lateral space is clear
+ * to increase effective turning radius and reduce curb/inner-corner off-tracking, then tapers cleanly
+ * back to lane center inside the turning arc.
+ */
+export function computeHeavyWideTurnTargetOffset(
+  v: SimVehicle,
+  armGeom: CompiledArmGeometry | undefined,
+  nearby: readonly SimVehicle[],
+  lw: number
+): { wideOffset: number; state: 'none' | 'pre_swing' | 'turning' } {
+  if (v.vClass !== 'heavy' || v.isSlipLane || v.isUTurn || (v.turn !== 'left' && v.turn !== 'right')) {
+    return { wideOffset: 0, state: 'none' };
+  }
+  if (v.hasExitedIntersection || v.distanceAlongPath >= v.exitLineDist) {
+    return { wideOffset: 0, state: 'none' };
+  }
+
+  const distToStop = v.stopLineDist - v.distanceAlongPath;
+  if (v.distanceAlongPath >= v.stopLineDist - 1.0) {
+    return { wideOffset: 0, state: 'turning' };
+  }
+  if (distToStop > 16.0 || !armGeom) {
+    return { wideOffset: 0, state: 'none' };
+  }
+
+  const armLw = armGeom.def.inLaneWidths[v.laneIndex] ?? lw;
+  const laneCenter = armGeom.inLaneCenters[v.laneIndex] ?? getGlobalLat(v.laneIndex, 0, armLw);
+  const myHalfW = effClearanceWidth(v) * 0.5 + 0.18;
+  const minGlobal = armGeom.halfMedian + myHalfW;
+  const maxGlobal = armGeom.halfMedian + armGeom.inWidth - myHalfW;
+  if (maxGlobal <= minGlobal + 0.25) {
+    return { wideOffset: 0, state: 'none' };
+  }
+
+  // Left turn (curb-hugging in LHT) swings slightly inward (-); Right turn swings slightly outward (+)
+  const swingDir = v.turn === 'left' ? -1 : 1;
+  const desiredSwingMag = armGeom.def.inLanes >= 2 ? 0.52 : 0.36;
+  const ramp =
+    distToStop > 4.0
+      ? Math.max(0, Math.min(1, (16.0 - distToStop) / 10.0))
+      : Math.max(0.25, (distToStop - 1.0) / 3.0);
+  const rawGlobalTarget = laneCenter + swingDir * desiredSwingMag * ramp;
+  const clampedGlobal = Math.max(minGlobal, Math.min(maxGlobal, rawGlobalTarget));
+  const candOffset = clampedGlobal - laneCenter;
+  if (Math.abs(candOffset) < 0.08) {
+    return { wideOffset: 0, state: 'none' };
+  }
+
+  // Verify no nearby same-arm vehicle occupies the swing-out corridor
+  const bandMin = Math.min(laneCenter + v.lateralOffset, clampedGlobal);
+  const bandMax = Math.max(laneCenter + v.lateralOffset, clampedGlobal);
+  for (let i = 0; i < nearby.length; i++) {
+    const other = nearby[i];
+    if (other.id === v.id || other.originArm !== v.originArm) continue;
+    if (other.distanceAlongPath >= other.stopLineDist + 1.0) continue;
+    if (Math.abs(other.distanceAlongPath - v.distanceAlongPath) > (v.length + other.length) * 0.5 + 3.5) {
+      continue;
+    }
+    const oLw = armGeom.def.inLaneWidths[other.laneIndex] ?? lw;
+    const oGlobal = getGlobalLat(other.laneIndex, other.lateralOffset, oLw, armGeom.inLaneCenters);
+    const minSep = (effClearanceWidth(v) + effClearanceWidth(other)) * 0.5 + 0.32;
+    if (oGlobal >= bandMin - minSep && oGlobal <= bandMax + minSep) {
+      // Keep current partial swing if already shifted, otherwise abort pre-swing cleanly
+      return { wideOffset: 0, state: 'none' };
+    }
+  }
+
+  return { wideOffset: candOffset, state: 'pre_swing' };
+}

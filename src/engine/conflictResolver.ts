@@ -71,14 +71,62 @@ const CRITICAL_GAP_BASE: Record<SimVehicle['vClass'], number> = {
 };
 
 /**
+ * Computes Phase 3 game-theoretic critical gap scaling combining:
+ * - Social Value Orientation (SVO): prosocial drivers keep safer gaps, egoistic drivers accept tighter gaps
+ * - Optional external caution multiplier (`gapCautiousMult`) and Motor Swarm Shield (`hasSwarmShield`)
+ * - V2V connectedness (`isConnected`) for crisper arrival perception
+ * - Dynamic Gap Decay over box/yield waiting time and driver frustration
+ */
+function computeCriticalGapModifiers(
+  v: SimVehicle,
+  includeQueueWait: boolean,
+  options?: { hasSwarmShield?: boolean; gapCautiousMult?: number }
+): number {
+  const svoAngle = v.svoAngle ?? 0.35;
+  const svoFactor = Math.max(0.84, Math.min(1.2, 0.94 + 0.16 * (svoAngle / (Math.PI / 4))));
+  const gapCautiousMult = options?.gapCautiousMult ?? 1.0;
+  const swarmShieldMult = options?.hasSwarmShield && v.vClass === 'motor' ? 0.86 : 1.0;
+  const connectedMult = v.isConnected ? 0.9 : 1.0;
+
+  const frustration = v.frustration ?? 0;
+  const boxWait = v.boxWaitTime ?? 0;
+  const queueWait = includeQueueWait ? (v.waitingTime ?? 0) : 0;
+  const waitDecay = Math.min(
+    0.26,
+    Math.max(0, boxWait - 0.35) * 0.065 +
+      frustration * 0.24 +
+      Math.max(0, queueWait - 1.2) * 0.025
+  );
+  const dynamicGapDecay = Math.max(0.72, 1 - waitDecay);
+
+  return svoFactor * gapCautiousMult * swarmShieldMult * connectedMult * dynamicGapDecay;
+}
+
+/**
  * Projects opponent arrival time over distance `d` using current acceleration intent
  * (`prevAccel` and `brakingHard`) and harmonic/average speed between current and projected velocity.
  */
 function estimateKinematicArrivalTime(d: number, oppSpeed: number, other: SimVehicle): number {
   const dist = Math.max(0, d);
+  const rawAccel = other.prevAccel ?? 0;
+  const isDecelerating = Boolean(other.brakingHard) || rawAccel < -1.0;
   const oppAccel = other.brakingHard
-    ? Math.min(-1.2, other.prevAccel ?? -1.8)
-    : Math.max(-2.5, Math.min(2.0, other.prevAccel ?? 0));
+    ? Math.min(-1.2, rawAccel)
+    : Math.max(-2.8, Math.min(2.0, rawAccel));
+
+  if (isDecelerating && oppAccel < -0.5) {
+    const decelMag = Math.abs(oppAccel);
+    const stopDist = (oppSpeed * oppSpeed) / (2 * decelMag);
+    if (dist > stopDist && stopDist <= 24) {
+      const tStop = oppSpeed / decelMag;
+      const creepSpeed = Math.max(1.0, oppSpeed * 0.28);
+      return tStop + (dist - stopDist) / creepSpeed;
+    }
+    const vProj = Math.sqrt(Math.max(0, oppSpeed * oppSpeed + 2 * oppAccel * Math.min(dist, 24)));
+    const avgSpeed = Math.max(0.6, 0.5 * (oppSpeed + vProj));
+    return dist / avgSpeed;
+  }
+
   const vProj = Math.max(
     1.2,
     Math.sqrt(Math.max(0, oppSpeed * oppSpeed + 2 * oppAccel * Math.min(dist, 18)))
@@ -101,7 +149,8 @@ export function evaluatePriorityConflictYield(
   spatialHash: SpatialHashGrid,
   weather: WeatherPhysicsProfile,
   discipline: DisciplineParams,
-  queryBuf: SimVehicle[]
+  queryBuf: SimVehicle[],
+  options?: { hasSwarmShield?: boolean; gapCautiousMult?: number }
 ): ConflictYieldDecision {
   const none: ConflictYieldDecision = { shouldYield: false, yieldGap: Infinity, speedCap: Infinity, reason: 'none' };
 
@@ -116,10 +165,10 @@ export function evaluatePriorityConflictYield(
     const distToTurn = v.stopLineDist - frontBumper;
     if (distToTurn > -1.5 && distToTurn < 24) {
       const nearby = spatialHash.queryRadius(v.x, v.y, Math.min(48, weather.sightDistance), queryBuf);
-      const frustGapMult = 1 - Math.min(0.24, frustration * 0.24);
+      const gapModifiers = computeCriticalGapModifiers(v, true, options);
       const critGap = Math.max(
-        1.65,
-        CRITICAL_GAP_BASE[v.vClass] * weather.gapAcceptanceMult * (0.9 + 0.25 * discipline.discipline) * frustGapMult
+        1.3,
+        CRITICAL_GAP_BASE[v.vClass] * weather.gapAcceptanceMult * (0.9 + 0.25 * discipline.discipline) * gapModifiers
       );
       const originArmGeom = topology.armsById[v.originArm];
       const oneLaneOpp = (originArmGeom?.def.inLanes ?? 1) <= 1;
@@ -159,10 +208,10 @@ export function evaluatePriorityConflictYield(
         const mergePt = v.compiledPath?.sample(v.exitLineDist);
         if (mergePt) {
           const nearby = spatialHash.queryRadius(mergePt.x, mergePt.y, Math.min(42, weather.sightDistance), queryBuf);
-          const frustGapMult = 1 - Math.min(0.24, frustration * 0.24);
+          const gapModifiers = computeCriticalGapModifiers(v, true, options);
           const critGap = Math.max(
-            1.45,
-            CRITICAL_GAP_BASE[v.vClass] * 0.72 * weather.gapAcceptanceMult * frustGapMult
+            1.15,
+            CRITICAL_GAP_BASE[v.vClass] * 0.72 * weather.gapAcceptanceMult * gapModifiers
           );
           const destGeom = topology.armsById[v.destArm];
           const destOuterLane = Math.max(0, (destGeom?.def.outLanes ?? 1) - 1);
@@ -242,14 +291,14 @@ export function evaluatePriorityConflictYield(
 
   const nearby = spatialHash.queryRadius(v.x, v.y, Math.min(54, weather.sightDistance), queryBuf);
   const profileScale = v.profile === 'aggressive' ? 0.82 : v.profile === 'cautious' ? 1.18 : 1.0;
-  const frustGapMult = 1 - Math.min(0.24, frustration * 0.24);
+  const gapModifiers = computeCriticalGapModifiers(v, false, options);
   const critGap = Math.max(
-    1.55,
+    1.2,
     CRITICAL_GAP_BASE[v.vClass] *
       profileScale *
       weather.gapAcceptanceMult *
       (0.85 + 0.3 * discipline.discipline) *
-      frustGapMult
+      gapModifiers
   );
   // In-box creeping: waiting right-turners inch carefully toward turning arc while watching oncoming stream
   const creepOffset =
@@ -268,6 +317,8 @@ export function evaluatePriorityConflictYield(
     const myConflictS = amA ? cz.sA : cz.sB;
     const otherPathKey = amA ? cz.pathKeyB : cz.pathKeyA;
     const otherConflictS = amA ? cz.sB : cz.sA;
+    const expectedOtherArm = amA ? cz.originArmB : cz.originArmA;
+    const expectedOtherMovement = amA ? cz.movementB : cz.movementA;
 
     // Stage near box lip (creeping carefully toward the turning arc when waiting), never entering the opposing straight corridor
     const stagingS = Math.min(myConflictS - 2.15, v.stopLineDist + 0.6 + creepOffset);
@@ -278,9 +329,38 @@ export function evaluatePriorityConflictYield(
     // Scan nearby vehicles on the prioritized conflicting movement
     for (const other of nearby) {
       if (other.id === v.id) continue;
-      const sameOtherArm = other.originArm === (amA ? cz.originArmB : cz.originArmA);
-      if (!sameOtherArm) continue;
-      if (other.pathKey !== otherPathKey && other.turn !== (amA ? cz.movementB : cz.movementA)) continue;
+      if (other.originArm !== expectedOtherArm) continue;
+      if (other.pathKey !== otherPathKey && other.turn !== expectedOtherMovement) continue;
+
+      // Opposing Blinker Intent Reading (LHT):
+      // Opposing left-turners exit to the opponent's left (= v's right side) before the intersection center.
+      // Only skip if `other.turn === 'left'` wasn't supposed to share `otherPathKey` (non-merge),
+      // or if an opposing straight vehicle past stop line is genuinely turning away from `cz.point`.
+      if ((other.turn === 'left' || other.turnSignalActive === 'left') && other.originArm !== v.originArm) {
+        if (other.turn === 'left' && expectedOtherMovement !== 'left' && other.pathKey !== otherPathKey) {
+          continue;
+        }
+        if (other.turn === 'left' && cz.type !== 'merge' && other.destArm !== v.destArm) {
+          continue;
+        }
+        const isLaneChanging = Boolean(other.pendingLaneChangeDir || other.laneChangeDir);
+        if (
+          other.turnSignalActive === 'left' &&
+          !isLaneChanging &&
+          other.distanceAlongPath > other.stopLineDist - 1.5
+        ) {
+          const toCzX = cz.point.x - other.x;
+          const toCzY = cz.point.y - other.y;
+          const distToCz = Math.hypot(toCzX, toCzY);
+          if (distToCz > 1.5) {
+            const headingDot =
+              (toCzX * Math.cos(other.heading) + toCzY * Math.sin(other.heading)) / distToCz;
+            if (headingDot < 0.65) {
+              continue;
+            }
+          }
+        }
+      }
 
       const otherFront = other.distanceAlongPath + other.length * 0.5;
       const otherRear = other.distanceAlongPath - other.length * 0.5;
@@ -293,10 +373,11 @@ export function evaluatePriorityConflictYield(
       if (other.speed < 0.4 && distOtherToConflict > 6.0) continue;
       if (boxWait > 3.2 && other.speed < 0.35 && distOtherToConflict > 2.5) continue;
 
-      // Project opponent arrival using current velocity and kinematic acceleration intent
+      // Project opponent arrival using current velocity and smooth deceleration intent
+      const oppDecelerating = Boolean(other.brakingHard) || (other.prevAccel ?? 0) < -1.0;
       const baseOppMin =
-        other.brakingHard || (other.speed < 2.6 && distOtherToConflict > 8.0)
-          ? Math.max(1.3, other.speed * 0.95)
+        oppDecelerating || (other.speed < 2.6 && distOtherToConflict > 8.0)
+          ? Math.max(1.1, other.speed * 0.95)
           : distOtherToConflict < 14
             ? 4.2
             : 2.5;
@@ -568,6 +649,164 @@ export function evaluateZipperMergeGiveWay(
     if (gap < bestGap) {
       bestGap = gap;
       const cap = Math.max(1.5, Math.min(v.maxSpeed * 0.68, other.speed + 0.85)) * weather.speedMult[v.vClass];
+      bestCap = Math.min(bestCap, cap);
+    }
+  }
+
+  return { yieldGap: bestGap, speedCap: bestCap };
+}
+
+/**
+ * SVO-Weighted Game-Theoretic Courtesy Yielding (Phase 3):
+ * Prosocial straight vehicles approaching during `permissive-green` (or a shared merge)
+ * smoothly yield space before the stop line—without slam braking—for cross-turning
+ * (`right` / `uturn`) vehicles already staged inside or at the box lip.
+ */
+export function evaluateSvoCourtesyYield(
+  v: SimVehicle,
+  signalState: MovementSignalState,
+  nearby: readonly SimVehicle[],
+  topology: CompiledTopology,
+  weather: WeatherPhysicsProfile,
+  discipline: DisciplineParams
+): { shouldYield: boolean; speedCap: number; yieldGap: number } {
+  const none = { shouldYield: false, speedCap: Infinity, yieldGap: Infinity };
+  if (signalState !== 'permissive-green' && signalState !== 'protected-green') return none;
+  if (v.turn !== 'straight' || v.isSlipLane || v.isUTurn || !v.pathKey) return none;
+  if (v.isReversing || (v.overtakeState && v.overtakeState !== 'none')) return none;
+  if (v.distanceAlongPath >= v.stopLineDist - 2.0) return none;
+
+  const svoAngle = v.svoAngle ?? 0.35;
+  if (Math.sin(svoAngle) < 0.32) return none;
+
+  const frontBumper = v.distanceAlongPath + v.length * 0.5;
+  const distToStop = v.stopLineDist - frontBumper;
+  if (distToStop <= 0.5 || distToStop >= 24.0) return none;
+
+  const effComfortDecel = Math.max(0.8, v.comfortDecel * weather.comfortDecelMult);
+  const reactTime = 0.75 * weather.reactionMult * (1.05 - 0.15 * discipline.discipline);
+  const comfortStopDist = v.speed * reactTime + (v.speed * v.speed) / (2 * effComfortDecel);
+  if (distToStop <= comfortStopDist * 0.95) return none;
+
+  const zones = topology.conflictsByPathKey[v.pathKey];
+  if (!zones || zones.length === 0) return none;
+
+  for (let z = 0; z < zones.length; z++) {
+    const cz = zones[z];
+    if (signalState === 'protected-green' && cz.type !== 'merge') continue;
+
+    const amA = cz.pathKeyA === v.pathKey;
+    const myConflictS = amA ? cz.sA : cz.sB;
+    if (myConflictS < v.stopLineDist - 2.0) continue;
+
+    const expectedOtherArm = amA ? cz.originArmB : cz.originArmA;
+    const otherPathKey = amA ? cz.pathKeyB : cz.pathKeyA;
+    const expectedOtherMovement = amA ? cz.movementB : cz.movementA;
+    const otherConflictS = amA ? cz.sB : cz.sA;
+
+    for (let i = 0; i < nearby.length; i++) {
+      const other = nearby[i];
+      if (other.id === v.id || other.originArm === v.originArm) continue;
+      if (other.isSlipLane || other.hasExitedIntersection) continue;
+      if (other.turn !== 'right' && other.turn !== 'uturn') continue;
+
+      const isWaitingCrossTurn =
+        (other.boxWaitTime ?? 0) >= 0.9 || (other.frustration ?? 0) >= 0.35;
+      if (!isWaitingCrossTurn || other.speed > 2.5) continue;
+
+      const otherFront = other.distanceAlongPath + other.length * 0.5;
+      const otherRear = other.distanceAlongPath - other.length * 0.5;
+      if (otherFront < other.stopLineDist - 1.5) continue;
+
+      const matchesZone =
+        other.originArm === expectedOtherArm &&
+        (other.pathKey === otherPathKey || other.turn === expectedOtherMovement);
+      const nearZoneByS =
+        matchesZone &&
+        otherRear <= otherConflictS + 1.8 &&
+        Math.abs(otherConflictS - otherFront) <= 14.0;
+      const nearZoneByPoint =
+        (matchesZone || other.turn === 'uturn') &&
+        Math.hypot(other.x - cz.point.x, other.y - cz.point.y) <= 14.0;
+
+      if (nearZoneByS || nearZoneByPoint) {
+        return {
+          shouldYield: true,
+          speedCap: Math.max(4.4, 5.8 * weather.speedMult[v.vClass]),
+          yieldGap: Math.max(0.5, distToStop),
+        };
+      }
+    }
+  }
+
+  return none;
+}
+
+/**
+ * Blinker Intent Pocket Opening (Phase 3):
+ * Cooperative or V2V-connected vehicles smoothly open a 1-car zipper pocket when an
+ * adjacent same-leg vehicle ahead signals intent (`turnSignalActive`, `pendingLaneChangeDir`,
+ * or `laneChangeDir`) to change lanes into `v`'s lane.
+ */
+export function evaluateBlinkerIntentPocket(
+  v: SimVehicle,
+  nearby: readonly SimVehicle[],
+  lw: number,
+  weather: WeatherPhysicsProfile
+): { yieldGap: number; speedCap: number } {
+  const none = { yieldGap: Infinity, speedCap: Infinity };
+  if (v.isReversing || v.isSlipLane || v.isUTurn) return none;
+  if (v.overtakeState && v.overtakeState !== 'none') return none;
+  if (v.speed < 0.8) return none;
+  if (v.distanceAlongPath > v.stopLineDist - 3.5 && !v.hasExitedIntersection) return none;
+
+  const svoAngle = v.svoAngle ?? 0.35;
+  if (Math.sin(svoAngle) < 0.24 && !v.isConnected) return none;
+
+  const cosH = Math.cos(v.heading);
+  const sinH = Math.sin(v.heading);
+  let bestGap = Infinity;
+  let bestCap = Infinity;
+
+  for (let i = 0; i < nearby.length; i++) {
+    const other = nearby[i];
+    if (other.id === v.id || other.isReversing || other.isSlipLane || other.isUTurn) continue;
+
+    const sameApproach =
+      !v.hasExitedIntersection &&
+      !other.hasExitedIntersection &&
+      other.originArm === v.originArm &&
+      other.distanceAlongPath < other.stopLineDist;
+    const sameExit =
+      v.hasExitedIntersection &&
+      other.hasExitedIntersection &&
+      other.destArm === v.destArm;
+    if (!sameApproach && !sameExit) continue;
+
+    const cosO = Math.cos(other.heading);
+    const sinO = Math.sin(other.heading);
+    if (cosH * cosO + sinH * sinO <= 0.65) continue;
+
+    const dx = other.x - v.x;
+    const dy = other.y - v.y;
+    const fwd = dx * cosH + dy * sinH;
+    if (fwd < 1.0 || fwd > 14.0) continue;
+
+    // In Canvas 2D Y-down LHT, outward-left normal is (sinH, -cosH) -> latSigned > 0 means other is to v's LEFT
+    const latSigned = dx * sinH - dy * cosH;
+    const absLat = Math.abs(latSigned);
+    if (absLat < 0.55 || absLat > lw * 1.15) continue;
+
+    const sig = other.turnSignalActive ?? other.pendingLaneChangeDir ?? other.laneChangeDir;
+    if (!sig) continue;
+    const pointingTowardMe = (latSigned > 0 && sig === 'right') || (latSigned < 0 && sig === 'left');
+    if (!pointingTowardMe) continue;
+
+    const gap = Math.max(1.0, fwd - (v.length + other.length) * 0.5 - 0.6);
+    if (gap < bestGap) {
+      bestGap = gap;
+      const cap =
+        Math.max(2.2, Math.min(v.maxSpeed * 0.72, other.speed + 1.0)) * weather.speedMult[v.vClass];
       bestCap = Math.min(bestCap, cap);
     }
   }

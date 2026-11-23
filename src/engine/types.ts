@@ -52,6 +52,7 @@ export interface SimConfig {
   driverDiscipline?: number;     // 0.0 (chaotic) .. 1.0 (strictly disciplined), default 0.72
   smartOvertaking?: boolean;     // MOBIL active car/motor overtaking (default true)
   oncomingOvertaking?: boolean;  // Allow overtaking via oncoming lane when no physical median (default true)
+  connectedVehicleRatio?: number; // 0.0 .. 1.0 share of V2V/CAV-equipped vehicles (default 0.0)
   environment?: EnvironmentConfig; // Time-of-Day demand curve + Weather physics
   customTopology?: IntersectionTopology; // Optional custom topology created in Draw page or Giwangan blueprint
 
