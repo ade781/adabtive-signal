@@ -11,17 +11,21 @@ import {
   Sun,
   Clock,
   Settings,
+  Box,
+  Layers,
 } from 'lucide-react';
 import {
   EnvironmentTelemetry,
   SignalState,
   SimConfig,
 } from '../engine/types';
-import { AppView } from '../App';
+import { AppView, RenderDimension } from '../App';
 
 interface TopBarProps {
   activeView: AppView;
   onViewChange: (view: AppView) => void;
+  renderDimension: RenderDimension;
+  onRenderDimensionChange: (dimension: RenderDimension) => void;
   running: boolean;
   onToggleRun: () => void;
   onReset: () => void;
@@ -55,9 +59,21 @@ const PROGRESS_BAR: Record<string, string> = {
   red: 'bg-rose-500',
 };
 
+const DIMENSION_OPTIONS: ReadonlyArray<{
+  id: RenderDimension;
+  label: string;
+  title: string;
+  Icon: React.ComponentType<{ className?: string }>;
+}> = [
+  { id: '2d', label: '2D', title: 'Tampilan Peta 2D Top-Down', Icon: Layers },
+  { id: '3d', label: '3D', title: 'Tampilan Peta 3D Interaktif', Icon: Box },
+];
+
 export const TopBar: React.FC<TopBarProps> = ({
   activeView,
   onViewChange,
+  renderDimension,
+  onRenderDimensionChange,
   running,
   onToggleRun,
   onReset,
@@ -244,6 +260,33 @@ export const TopBar: React.FC<TopBarProps> = ({
               ))}
             </div>
 
+            <div
+              role="group"
+              aria-label="Mode tampilan peta"
+              className="flex items-center bg-slate-100 p-0.5 rounded-md border border-slate-200 ml-1"
+            >
+              {DIMENSION_OPTIONS.map(({ id, label, title, Icon }) => {
+                const active = renderDimension === id;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => onRenderDimensionChange(id)}
+                    title={title}
+                    className={`inline-flex items-center gap-1 px-2 py-1 text-[11px] font-mono font-semibold rounded transition-colors duration-100 ${
+                      active
+                        ? 'bg-slate-900 text-white shadow-sm'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Icon className="w-3 h-3" />
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+
             <button
               type="button"
               onClick={onDownloadReport}
@@ -312,7 +355,7 @@ export const TopBar: React.FC<TopBarProps> = ({
 
               <div className="w-16 h-1.5 bg-slate-100 rounded-full overflow-hidden">
                 <div
-                  className={`h-full transition-all duration-100 ${PROGRESS_BAR[signal.activeColor]}`}
+                  className={`h-full transition-colors duration-100 ${PROGRESS_BAR[signal.activeColor]}`}
                   style={{ width: `${pct}%` }}
                 />
               </div>

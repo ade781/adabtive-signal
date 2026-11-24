@@ -10,9 +10,11 @@
     "test": "tsx src/engine/test_sim.ts && tsx src/engine/test_adaptive_and_export.ts && tsx src/engine/test_v2_features.ts && tsx src/engine/test_driver_intelligence.ts"
   },
   "dependencies": {
+    "@types/three": "^0.187.0",
     "lucide-react": "^0.469.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "three": "^0.187.0",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {

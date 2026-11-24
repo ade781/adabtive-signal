@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import {
   Activity,
   BarChart3,
+  Box,
   CarFront,
   CloudSun,
   Download,
@@ -12,6 +13,7 @@ import {
   TrafficCone,
   ZoomIn,
 } from 'lucide-react';
+import { RenderDimension } from '../App';
 import {
   ARCHETYPE_ORDER,
   ARCHETYPE_TRAITS,
@@ -42,6 +44,8 @@ interface SettingsPageProps {
   onDownloadReport: () => void;
   isExporting?: boolean;
   stats: SimStats;
+  renderDimension: RenderDimension;
+  onRenderDimensionChange: (dimension: RenderDimension) => void;
   zoom: number;
   onZoomChange: (nextZoom: number) => void;
   onZoomReset: () => void;
@@ -62,7 +66,7 @@ const SECTIONS: ReadonlyArray<{
   {
     id: 'display',
     label: 'Tampilan & Layer Peta',
-    desc: 'Layer AI, grid, zoom & sorotan tipe',
+    desc: 'Mode 2D/3D, layer AI, grid & zoom',
     icon: Layers,
   },
   {
@@ -165,6 +169,26 @@ const INSPECTOR_TAB_MAP: Partial<Record<SettingsSectionId, InspectorTabId>> = {
   environment: 'environment',
 };
 
+const RENDER_DIMENSION_OPTIONS: ReadonlyArray<{
+  id: RenderDimension;
+  label: string;
+  desc: string;
+  Icon: React.ComponentType<{ className?: string }>;
+}> = [
+  {
+    id: '2d',
+    label: '2D Datar',
+    desc: 'Top-down presisi & blueprint',
+    Icon: Layers,
+  },
+  {
+    id: '3d',
+    label: '3D Interaktif',
+    desc: 'Perspektif & kamera bebas',
+    Icon: Box,
+  },
+];
+
 export const SettingsPage: React.FC<SettingsPageProps> = ({
   config,
   onChangeConfig,
@@ -174,6 +198,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   onDownloadReport,
   isExporting = false,
   stats,
+  renderDimension,
+  onRenderDimensionChange,
   zoom,
   onZoomChange,
   onZoomReset,
@@ -365,6 +391,56 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     <h3 className="text-sm font-semibold text-slate-900">
                       Kanvas, Zoom & Grid Blueprint
                     </h3>
+
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="flex items-center gap-1.5 font-medium text-slate-700">
+                          <Box className="w-3.5 h-3.5 text-slate-500" />
+                          Mode Tampilan Peta
+                        </span>
+                        <span className="font-mono text-[11px] font-semibold text-slate-900">
+                          {renderDimension === '3d' ? '3D Interaktif' : '2D Datar'}
+                        </span>
+                      </div>
+                      <div
+                        role="group"
+                        aria-label="Mode Tampilan Peta"
+                        className="grid grid-cols-2 gap-2"
+                      >
+                        {RENDER_DIMENSION_OPTIONS.map(({ id, label, desc, Icon }) => {
+                          const active = renderDimension === id;
+                          return (
+                            <button
+                              key={id}
+                              type="button"
+                              aria-pressed={active}
+                              onClick={() => onRenderDimensionChange(id)}
+                              className={`flex items-start gap-2.5 px-3 py-2.5 rounded-lg border text-left transition-colors duration-100 ${
+                                active
+                                  ? 'bg-slate-900 text-white border-slate-900'
+                                  : 'bg-slate-50 text-slate-800 border-slate-200 hover:bg-slate-100'
+                              }`}
+                            >
+                              <Icon
+                                className={`w-4 h-4 mt-0.5 shrink-0 ${
+                                  active ? 'text-white' : 'text-slate-500'
+                                }`}
+                              />
+                              <div className="min-w-0">
+                                <div className="text-xs font-semibold leading-tight">{label}</div>
+                                <div
+                                  className={`text-[10px] mt-0.5 leading-snug ${
+                                    active ? 'text-slate-300' : 'text-slate-500'
+                                  }`}
+                                >
+                                  {desc}
+                                </div>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
 
                     <div className="space-y-2">
                       <div className="flex items-center justify-between text-xs">

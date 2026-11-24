@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { IntersectionCanvas } from './canvas/IntersectionCanvas';
+import { IntersectionCanvas3D } from './canvas/IntersectionCanvas3D';
 import { QuickSidebar } from './components/QuickSidebar';
 import { SettingsPage } from './components/SettingsPage';
 import { TelemetryStrip } from './components/TelemetryStrip';
@@ -15,6 +16,7 @@ import { IntersectionTopology } from './engine/topologyTypes';
 import { DriverArchetype, MapOverlayLayers, SimConfig, SimSnapshot } from './engine/types';
 
 export type AppView = 'simulator' | 'draw' | 'settings';
+export type RenderDimension = '2d' | '3d';
 
 const UI_THROTTLE_MS = 80;
 
@@ -66,6 +68,7 @@ interface ExportStatus {
 
 function AppContent() {
   const [activeView, setActiveView] = useState<AppView>('simulator');
+  const [renderDimension, setRenderDimension] = useState<RenderDimension>('3d');
   const [drawSeedTopology, setDrawSeedTopology] = useState<IntersectionTopology>(() =>
     cloneTopology(GIWANGAN_TOPOLOGY)
   );
@@ -323,11 +326,30 @@ function AppContent() {
       ? uiSnapshot.config.yellowDuration
       : Math.max(0.5, uiSnapshot.config.allRedDuration);
 
+  const sharedCanvasProps = {
+    snapshotRef,
+    uiSnapshot,
+    config: inspectorConfig,
+    compiledTopology,
+    running,
+    drawTick,
+    zoom,
+    onZoomChange: handleZoomChange,
+    showGrid,
+    overlayLayers,
+    focusedArchetype,
+    onSelectArchetype: handleSelectArchetype,
+    selectedVehicleId,
+    onSelectVehicle: handleSelectVehicle,
+  };
+
   return (
     <div className="min-h-screen lg:h-screen w-full flex flex-col bg-slate-50 text-slate-900 overflow-x-hidden">
       <MemoTopBar
         activeView={activeView}
         onViewChange={setActiveView}
+        renderDimension={renderDimension}
+        onRenderDimensionChange={setRenderDimension}
         running={running}
         onToggleRun={handleToggleRun}
         onReset={handleReset}
@@ -360,6 +382,8 @@ function AppContent() {
           onDownloadReport={handleDownloadReport}
           isExporting={isExporting}
           stats={uiSnapshot.stats}
+          renderDimension={renderDimension}
+          onRenderDimensionChange={setRenderDimension}
           zoom={zoom}
           onZoomChange={handleZoomChange}
           onZoomReset={handleZoomReset}
@@ -376,22 +400,11 @@ function AppContent() {
         <main className="flex-1 min-h-0 p-2.5 flex flex-col gap-2.5 overflow-y-auto">
           <div className="flex-1 min-h-0 flex flex-col lg:flex-row gap-2.5">
             <div className="flex-1 min-h-[360px] min-w-0">
-              <IntersectionCanvas
-                snapshotRef={snapshotRef}
-                uiSnapshot={uiSnapshot}
-                config={inspectorConfig}
-                compiledTopology={compiledTopology}
-                running={running}
-                drawTick={drawTick}
-                zoom={zoom}
-                onZoomChange={handleZoomChange}
-                showGrid={showGrid}
-                overlayLayers={overlayLayers}
-                focusedArchetype={focusedArchetype}
-                onSelectArchetype={handleSelectArchetype}
-                selectedVehicleId={selectedVehicleId}
-                onSelectVehicle={handleSelectVehicle}
-              />
+              {renderDimension === '3d' ? (
+                <IntersectionCanvas3D {...sharedCanvasProps} />
+              ) : (
+                <IntersectionCanvas {...sharedCanvasProps} />
+              )}
             </div>
             <QuickSidebar
               config={inspectorConfig}
