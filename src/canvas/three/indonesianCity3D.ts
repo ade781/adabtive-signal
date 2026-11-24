@@ -82,6 +82,8 @@ interface CityPalette {
   accentGold: THREE.MeshStandardMaterial;
   whiteTrim: THREE.MeshStandardMaterial;
   safetyBand: THREE.MeshStandardMaterial;
+  pondWater: THREE.MeshStandardMaterial;
+  parkingPad: THREE.MeshStandardMaterial;
 }
 
 interface CityBuildCtx {
@@ -210,6 +212,105 @@ function makeWorldMatrix(cx: number, cz: number, rotRad: number): THREE.Matrix4 
   return _mat4Parent.clone().compose(_vecPos, _quatRot, _vecScale);
 }
 
+/**
+ * Adds a clean concrete roof cap slab, raised perimeter parapet walls,
+ * and optional rooftop MEP equipment (AC chillers & water tank) so no
+ * flat-roofed building ever displays facade window tiles on its +Y face.
+ */
+function addFlatRoofCap(
+  ctx: CityBuildCtx,
+  m: THREE.Matrix4,
+  cx: number,
+  topY: number,
+  cz: number,
+  bw: number,
+  bd: number,
+  includeEquipment = true
+): void {
+  const p = ctx.palette;
+  const capH = 0.24;
+  const capW = bw + 0.22;
+  const capD = bd + 0.22;
+  addLocalBox(ctx, m, cx, topY, cz, capW, capH, capD, p.concrete);
+
+  const paraH = 0.35;
+  const paraT = 0.22;
+  const paraY = topY + capH;
+  addLocalBox(ctx, m, cx, paraY, cz - capD * 0.5 + paraT * 0.5, capW, paraH, paraT, p.concrete);
+  addLocalBox(ctx, m, cx, paraY, cz + capD * 0.5 - paraT * 0.5, capW, paraH, paraT, p.concrete);
+  addLocalBox(
+    ctx,
+    m,
+    cx - capW * 0.5 + paraT * 0.5,
+    paraY,
+    cz,
+    paraT,
+    paraH,
+    Math.max(0.2, capD - paraT * 2),
+    p.concrete
+  );
+  addLocalBox(
+    ctx,
+    m,
+    cx + capW * 0.5 - paraT * 0.5,
+    paraY,
+    cz,
+    paraT,
+    paraH,
+    Math.max(0.2, capD - paraT * 2),
+    p.concrete
+  );
+
+  if (includeEquipment && bw >= 5.5 && bd >= 5.5) {
+    // Rooftop AC chiller units
+    addLocalBox(ctx, m, cx - bw * 0.22, paraY, cz - bd * 0.14, 2.1, 0.95, 1.5, p.darkSlate);
+    addLocalBox(ctx, m, cx - bw * 0.22, paraY + 0.95, cz - bd * 0.14, 1.6, 0.12, 1.1, p.whiteTrim);
+    // Water tank on stand
+    addLocalBox(ctx, m, cx + bw * 0.24, paraY, cz + bd * 0.18, 1.2, 0.55, 1.2, p.darkSlate);
+    addLocalCyl(ctx, m, cx + bw * 0.24, paraY + 0.55, cz + bd * 0.18, 0.52, 1.15, p.accentBlue);
+  }
+}
+
+function createParkingLotTexture(): THREE.Texture {
+  if (typeof document === 'undefined') {
+    const tex = new THREE.DataTexture(new Uint8Array([43, 48, 56, 255]), 1, 1, THREE.RGBAFormat);
+    tex.needsUpdate = true;
+    return tex;
+  }
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const c2d = canvas.getContext('2d');
+  if (c2d) {
+    c2d.fillStyle = '#2B3038';
+    c2d.fillRect(0, 0, size, size);
+    // Subtle asphalt grain
+    let s = 409;
+    for (let i = 0; i < 1800; i++) {
+      s = (s * 1664525 + 1013904223) >>> 0;
+      const x = (s & 255);
+      const y = ((s >>> 8) & 255);
+      const v = 34 + ((s >>> 16) % 24);
+      c2d.fillStyle = `rgb(${v},${v + 3},${v + 7})`;
+      c2d.fillRect(x, y, 2, 2);
+    }
+    // Parking bay lines (2 rows of 4 stalls)
+    c2d.fillStyle = '#E2E8F0';
+    c2d.fillRect(8, size * 0.5 - 2, size - 16, 4);
+    for (let i = 0; i <= 4; i++) {
+      const lx = 12 + i * ((size - 24) / 4);
+      c2d.fillRect(lx - 2, 14, 4, size * 0.36);
+      c2d.fillRect(lx - 2, size * 0.64 - 14, 4, size * 0.36);
+    }
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  tex.needsUpdate = true;
+  return tex;
+}
+
 // =============================================================================
 // Indonesian Architectural Landmark Builders (Merged into Shared Material Buckets)
 // =============================================================================
@@ -229,7 +330,7 @@ function buildLandmarkGeometry(
   const p = ctx.palette;
 
   if (key.includes('masjid')) {
-    addLocalBox(ctx, m, 0, 0, 0, w, 0.22, d, p.concrete, 0, false);
+    addLocalBox(ctx, m, 0, 0, 0, w, 0.22, d, p.concrete);
     const hw = w * 0.62;
     const hd = d * 0.62;
     addLocalBox(ctx, m, 0, 0.22, 0, hw, 5.2, hd, p.facades.institutional);
@@ -245,21 +346,23 @@ function buildLandmarkGeometry(
     addLocalDome(ctx, m, mx, 13.7, mz, 1.05, 1.8, p.accentGreen);
     addLocalCyl(ctx, m, mx, 15.5, mz, 0.1, 1.1, p.accentGold);
   } else if (key.includes('terminal')) {
-    addLocalBox(ctx, m, 0, 0, 0, w, 0.18, d, p.darkSlate, 0, false);
+    addLocalBox(ctx, m, 0, 0, 0, w, 0.18, d, p.darkSlate);
     addLocalBox(ctx, m, 0, 0.18, -d * 0.22, w * 0.86, 5.4, d * 0.36, p.facades.institutional);
     addLocalHipRoof(ctx, m, 0, 5.58, -d * 0.22, w * 0.9, 2.1, d * 0.4, p.terracotta);
     // 3 sawtooth bus bay canopies
     for (let i = -1; i <= 1; i++) {
       const bx = i * (w * 0.27);
-      addLocalBox(ctx, m, bx, 0.18, d * 0.18, w * 0.22, 0.3, d * 0.36, p.concrete, 0, false);
+      addLocalBox(ctx, m, bx, 0.18, d * 0.18, w * 0.22, 0.3, d * 0.36, p.concrete);
       addLocalBox(ctx, m, bx, 3.6, d * 0.18, w * 0.24, 0.35, d * 0.38, p.accentBlue);
       addLocalCyl(ctx, m, bx - w * 0.08, 0.48, d * 0.18, 0.16, 3.12, p.whiteTrim);
       addLocalCyl(ctx, m, bx + w * 0.08, 0.48, d * 0.18, 0.16, 3.12, p.whiteTrim);
     }
-    // Control tower
+    // Control tower with clean concrete roof cap & parapet
     addLocalBox(ctx, m, w * 0.34, 5.58, -d * 0.22, 3.2, 4.2, 3.2, p.facades['glass-tower']);
+    addFlatRoofCap(ctx, m, w * 0.34, 9.78, -d * 0.22, 3.2, 3.2, false);
+    addLocalBox(ctx, m, w * 0.34, 10.02, -d * 0.22, 1.1, 0.55, 1.1, p.darkSlate);
   } else if (key.includes('spbu')) {
-    addLocalBox(ctx, m, 0, 0, 0, w, 0.16, d, p.concrete, 0, false);
+    addLocalBox(ctx, m, 0, 0, 0, w, 0.16, d, p.concrete);
     // Iconic Pertamina Red-White-Blue Canopy
     const cw = w * 0.68;
     const cd = d * 0.48;
@@ -273,10 +376,12 @@ function buildLandmarkGeometry(
       // Fuel dispenser islands
       addLocalBox(ctx, m, w * sx, 0.16, d * 0.08, 1.4, 1.6, 3.2, p.accentRed);
     }
-    // Bright Store office at rear
+    // Bright Store office at rear with clean concrete roof cap
     addLocalBox(ctx, m, 0, 0.16, -d * 0.32, w * 0.56, 3.8, d * 0.24, p.facades.ruko);
+    addFlatRoofCap(ctx, m, 0, 3.96, -d * 0.32, w * 0.56, d * 0.24, false);
+    addLocalBox(ctx, m, w * 0.14, 4.2, -d * 0.32, 1.1, 0.55, 0.85, p.darkSlate);
   } else if (key.includes('brimob')) {
-    addLocalBox(ctx, m, 0, 0, 0, w, 0.2, d, p.concrete, 0, false);
+    addLocalBox(ctx, m, 0, 0, 0, w, 0.2, d, p.concrete);
     addLocalBox(ctx, m, 0, 0.2, -d * 0.1, w * 0.76, 5.8, d * 0.48, p.facades.institutional);
     // Joglo tiered terracotta roof
     addLocalHipRoof(ctx, m, 0, 6.0, -d * 0.1, w * 0.82, 2.2, d * 0.54, p.terracotta);
@@ -286,24 +391,30 @@ function buildLandmarkGeometry(
     addLocalHipRoof(ctx, m, w * 0.28, 3.2, d * 0.32, 3.6, 1.1, 3.2, p.accentRed);
     addLocalCyl(ctx, m, -w * 0.28, 0.2, d * 0.3, 0.09, 9.5, p.whiteTrim);
   } else if (key.includes('helipad')) {
-    addLocalBox(ctx, m, 0, 0, 0, w, 0.2, d, p.concrete, 0, false);
+    addLocalBox(ctx, m, 0, 0, 0, w, 0.2, d, p.concrete);
     const bh = 11.5;
-    addLocalBox(ctx, m, 0, 0.2, 0, w * 0.78, bh, d * 0.74, p.facades.institutional);
+    const bw = w * 0.78;
+    const bd = d * 0.74;
+    addLocalBox(ctx, m, 0, 0.2, 0, bw, bh, bd, p.facades.institutional);
+    // Clean concrete roof cap & perimeter parapet (never expose window tiles on +Y)
+    addFlatRoofCap(ctx, m, 0, bh + 0.2, 0, bw, bd, false);
+    addLocalBox(ctx, m, -bw * 0.32, bh + 0.44, -bd * 0.3, 1.8, 0.8, 1.3, p.darkSlate);
     // Ambulance bay canopy
     addLocalBox(ctx, m, 0, 3.2, d * 0.4, w * 0.38, 0.35, 3.2, p.accentRed);
-    // Helipad deck
-    const r = Math.min(w, d) * 0.28;
-    addLocalCyl(ctx, m, 0, bh + 0.2, 0, r, 0.35, p.darkSlate);
-    addLocalCyl(ctx, m, 0, bh + 0.55, 0, r * 0.86, 0.06, p.accentGold);
-    addLocalCyl(ctx, m, 0, bh + 0.58, 0, r * 0.74, 0.06, p.darkSlate);
+    // Helipad deck sitting cleanly atop the concrete roof cap
+    const deckBaseY = bh + 0.44;
+    const r = Math.min(w, d) * 0.26;
+    addLocalCyl(ctx, m, 0, deckBaseY, 0, r, 0.26, p.darkSlate);
+    addLocalCyl(ctx, m, 0, deckBaseY + 0.26, 0, r * 0.86, 0.05, p.accentGold);
+    addLocalCyl(ctx, m, 0, deckBaseY + 0.29, 0, r * 0.74, 0.05, p.darkSlate);
     // Crisp White 'H'
     const hLen = r * 0.78;
     const hBar = r * 0.18;
-    addLocalBox(ctx, m, -r * 0.24, bh + 0.62, 0, hBar, 0.08, hLen, p.whiteTrim);
-    addLocalBox(ctx, m, r * 0.24, bh + 0.62, 0, hBar, 0.08, hLen, p.whiteTrim);
-    addLocalBox(ctx, m, 0, bh + 0.62, 0, r * 0.48, 0.08, hBar, p.whiteTrim);
+    addLocalBox(ctx, m, -r * 0.24, deckBaseY + 0.33, 0, hBar, 0.06, hLen, p.whiteTrim);
+    addLocalBox(ctx, m, r * 0.24, deckBaseY + 0.33, 0, hBar, 0.06, hLen, p.whiteTrim);
+    addLocalBox(ctx, m, 0, deckBaseY + 0.33, 0, r * 0.48, 0.06, hBar, p.whiteTrim);
   } else if (key.includes('kampus')) {
-    addLocalBox(ctx, m, 0, 0, 0, w, 0.16, d, p.accentGreen, 0, false);
+    addLocalBox(ctx, m, 0, 0, 0, w, 0.16, d, p.accentGreen);
     addLocalBox(ctx, m, 0, 0.16, -d * 0.2, w * 0.82, 6.4, d * 0.36, p.facades.institutional);
     addLocalHipRoof(ctx, m, 0, 6.56, -d * 0.2, w * 0.86, 2.4, d * 0.4, p.terracotta);
     // Side wings
@@ -312,7 +423,7 @@ function buildLandmarkGeometry(
     addLocalHipRoof(ctx, m, -w * 0.3, 5.36, d * 0.14, w * 0.25, 1.6, d * 0.42, p.terracotta);
     addLocalHipRoof(ctx, m, w * 0.3, 5.36, d * 0.14, w * 0.25, 1.6, d * 0.42, p.terracotta);
   } else if (key.includes('pasar')) {
-    addLocalBox(ctx, m, 0, 0, 0, w, 0.18, d, p.concrete, 0, false);
+    addLocalBox(ctx, m, 0, 0, 0, w, 0.18, d, p.concrete);
     // Twin market halls with tiered terracotta roofs & awnings
     for (const sz of [-d * 0.2, d * 0.18]) {
       addLocalBox(ctx, m, 0, 0.18, sz, w * 0.84, 4.2, d * 0.3, p.facades.market);
@@ -320,7 +431,7 @@ function buildLandmarkGeometry(
     }
     addLocalBox(ctx, m, 0, 2.4, d * 0.38, w * 0.78, 0.2, 2.0, p.accentBlue);
   } else if (key.includes('ruko')) {
-    addLocalBox(ctx, m, 0, 0, 0, w, 0.16, d, p.concrete, 0, false);
+    addLocalBox(ctx, m, 0, 0, 0, w, 0.16, d, p.concrete);
     const units = w >= 18 ? 3 : 2;
     const uw = (w * 0.86) / units;
     for (let i = 0; i < units; i++) {
@@ -338,22 +449,29 @@ function buildLandmarkGeometry(
       addLocalCyl(ctx, m, tx, h + 2.76, tz, 0.42, 0.2, p.darkSlate);
     }
   } else if (key.includes('mall')) {
-    addLocalBox(ctx, m, 0, 0, 0, w, 0.18, d, p.concrete, 0, false);
-    addLocalBox(ctx, m, 0, 0.18, 0, w * 0.84, 9.5, d * 0.76, p.facades.institutional);
+    addLocalBox(ctx, m, 0, 0, 0, w, 0.18, d, p.concrete);
+    const mw = w * 0.84;
+    const md = d * 0.76;
+    addLocalBox(ctx, m, 0, 0.18, 0, mw, 9.5, md, p.facades.institutional);
+    addFlatRoofCap(ctx, m, 0, 9.68, 0, mw, md, true);
+    // Glass atrium protrusion with its own clean concrete roof cap
     addLocalBox(ctx, m, 0, 1.2, d * 0.39, w * 0.36, 7.8, 1.8, p.facades['glass-tower']);
+    addFlatRoofCap(ctx, m, 0, 9.0, d * 0.39, w * 0.36, 1.8, false);
     addLocalBox(ctx, m, 0, 4.2, d * 0.45, w * 0.42, 0.4, 2.6, p.accentBlue);
-    addLocalBox(ctx, m, -w * 0.2, 9.68, 0, 3.6, 1.4, 3.6, p.darkSlate);
-    addLocalBox(ctx, m, w * 0.22, 9.68, -d * 0.1, 2.8, 1.1, 2.8, p.darkSlate);
   } else if (key.includes('tower')) {
-    addLocalBox(ctx, m, 0, 0, 0, w, 0.2, d, p.concrete, 0, false);
+    addLocalBox(ctx, m, 0, 0, 0, w, 0.2, d, p.concrete);
     addLocalBox(ctx, m, 0, 0.2, 0, w * 0.8, 4.8, d * 0.78, p.facades.institutional);
+    addFlatRoofCap(ctx, m, 0, 5.0, 0, w * 0.8, d * 0.78, false);
     const towerH = 18 + (seed % 3) * 4.5;
-    addLocalBox(ctx, m, 0, 5.0, 0, w * 0.56, towerH, d * 0.54, p.facades['glass-tower']);
-    addLocalBox(ctx, m, 0, 5.0 + towerH, 0, w * 0.42, 1.6, d * 0.4, p.accentBlue);
-    addLocalCyl(ctx, m, 0, 6.6 + towerH, 0, 0.12, 4.2, p.whiteTrim);
+    const tw = w * 0.56;
+    const td = d * 0.54;
+    addLocalBox(ctx, m, 0, 5.24, 0, tw, towerH, td, p.facades['glass-tower']);
+    addFlatRoofCap(ctx, m, 0, 5.24 + towerH, 0, tw, td, true);
+    addLocalBox(ctx, m, 0, 5.48 + towerH, 0, w * 0.42, 1.5, d * 0.4, p.accentBlue);
+    addLocalCyl(ctx, m, 0, 6.98 + towerH, 0, 0.12, 4.2, p.whiteTrim);
   } else if (key.includes('stadion')) {
-    addLocalBox(ctx, m, 0, 0, 0, w, 0.18, d, p.concrete, 0, false);
-    addLocalBox(ctx, m, 0, 0.18, 0, w * 0.6, 0.2, d * 0.56, p.accentGreen, 0, false);
+    addLocalBox(ctx, m, 0, 0, 0, w, 0.18, d, p.concrete);
+    addLocalBox(ctx, m, 0, 0.18, 0, w * 0.6, 0.2, d * 0.56, p.accentGreen);
     // Grandstand tiers
     addLocalBox(ctx, m, 0, 0.18, -d * 0.36, w * 0.86, 6.2, d * 0.18, p.whiteTrim);
     addLocalBox(ctx, m, 0, 6.38, -d * 0.32, w * 0.88, 0.45, d * 0.26, p.accentBlue);
@@ -367,7 +485,7 @@ function buildLandmarkGeometry(
       }
     }
   } else if (key.includes('bus-shelter') || key.includes('halte')) {
-    addLocalBox(ctx, m, 0, 0, 0, w, 0.45, d, p.concrete, 0, false);
+    addLocalBox(ctx, m, 0, 0, 0, w, 0.45, d, p.concrete);
     addLocalBox(ctx, m, 0, 2.75, 0, w * 0.96, 0.2, d * 0.92, p.accentBlue);
     addLocalBox(ctx, m, 0, 2.95, 0, w * 0.8, 0.28, d * 0.35, p.whiteTrim);
     for (const px of [-w * 0.38, 0, w * 0.38]) {
@@ -375,29 +493,112 @@ function buildLandmarkGeometry(
       addLocalCyl(ctx, m, px, 0.45, d * 0.32, 0.09, 2.3, p.darkSlate);
     }
   } else if (key.includes('park-pond')) {
-    addLocalBox(ctx, m, 0, 0, 0, w, 0.14, d, p.accentGreen, 0, false);
-    addLocalCyl(ctx, m, 0, 0.14, 0, Math.min(w, d) * 0.34, 0.12, p.accentBlue, false);
-  } else if (key.includes('park-plaza') || key.includes('planter')) {
-    addLocalBox(ctx, m, 0, 0, 0, w, 0.22, d, p.concrete, 0, false);
-    addLocalBox(ctx, m, 0, 0.22, 0, w * 0.78, 0.28, d * 0.72, p.accentGreen, 0, false);
+    // 3D Park Pond: grass surround + 12-segment raised natural stone rim + recessed reflective teal water + central fountain
+    addLocalBox(ctx, m, 0, 0, 0, w, 0.14, d, p.accentGreen);
+    const pondR = Math.min(w, d) * 0.34;
+    const segs = 12;
+    const segLen = (2 * Math.PI * pondR) / segs + 0.18;
+    for (let i = 0; i < segs; i++) {
+      const ang = (i / segs) * Math.PI * 2;
+      const sx = Math.cos(ang) * pondR;
+      const sz = Math.sin(ang) * pondR;
+      addLocalBox(ctx, m, sx, 0.14, sz, 0.42, 0.22, segLen, p.concrete, -ang);
+    }
+    // Recessed deep teal water (#0F5257, roughness 0.06, metalness 0.35)
+    addLocalCyl(ctx, m, 0, 0.14, 0, pondR * 0.96, 0.12, p.pondWater, false);
+    // Central fountain nozzle & subtle ripple ring
+    addLocalCyl(ctx, m, 0, 0.26, 0, 0.48, 0.28, p.concrete);
+    addLocalCyl(ctx, m, 0, 0.54, 0, 0.14, 0.32, p.darkSlate);
+    for (let i = 0; i < 8; i++) {
+      const ang = (i / 8) * Math.PI * 2;
+      addLocalBox(
+        ctx,
+        m,
+        Math.cos(ang) * (pondR * 0.42),
+        0.26,
+        Math.sin(ang) * (pondR * 0.42),
+        0.08,
+        0.03,
+        pondR * 0.24,
+        p.whiteTrim,
+        -ang
+      );
+    }
+  } else if (key.includes('planter')) {
+    addLocalBox(ctx, m, 0, 0, 0, w, 0.22, d, p.concrete);
+    addLocalBox(ctx, m, 0, 0.22, 0, w * 0.84, 0.24, d * 0.72, p.accentGreen);
+    const bushCount = Math.max(2, Math.floor(w / 2.6));
+    for (let i = 0; i < bushCount; i++) {
+      const bx = -w * 0.34 + (i / Math.max(1, bushCount - 1)) * (w * 0.68);
+      addLocalDome(ctx, m, bx, 0.44, 0, 0.55, 0.48, p.accentGreen);
+    }
+  } else if (key.includes('park-plaza')) {
+    // 3D Park Plaza: raised concrete border curb, intersecting konblok walkways, central planter bed & 3D benches
+    addLocalBox(ctx, m, 0, 0, 0, w, 0.18, d, p.concrete);
+    const curbH = 0.24;
+    const curbT = 0.36;
+    addLocalBox(ctx, m, 0, 0.18, -d * 0.5 + curbT * 0.5, w, curbH, curbT, p.concrete);
+    addLocalBox(ctx, m, 0, 0.18, d * 0.5 - curbT * 0.5, w, curbH, curbT, p.concrete);
+    addLocalBox(ctx, m, -w * 0.5 + curbT * 0.5, 0.18, 0, curbT, curbH, d - curbT * 2, p.concrete);
+    addLocalBox(ctx, m, w * 0.5 - curbT * 0.5, 0.18, 0, curbT, curbH, d - curbT * 2, p.concrete);
+    // Four lush lawn quadrants separated by intersecting konblok walkways
+    const qW = w * 0.32;
+    const qD = d * 0.32;
+    for (const qx of [-1, 1]) {
+      for (const qz of [-1, 1]) {
+        addLocalBox(ctx, m, qx * w * 0.24, 0.18, qz * d * 0.24, qW, 0.1, qD, p.accentGreen);
+      }
+    }
+    // Central raised planter bed with shrubs
+    const pr = Math.min(w, d) * 0.16;
+    addLocalCyl(ctx, m, 0, 0.18, 0, pr + 0.28, 0.32, p.concrete);
+    addLocalCyl(ctx, m, 0, 0.48, 0, pr, 0.12, p.accentGreen);
+    addLocalDome(ctx, m, 0, 0.58, 0, pr * 0.72, 0.75, p.accentGreen);
+    // 4 3D park benches facing the central plaza
+    const benchDist = Math.min(w, d) * 0.28;
+    const benchAngles = [0, Math.PI * 0.5, Math.PI, -Math.PI * 0.5];
+    for (const ang of benchAngles) {
+      const bx = Math.cos(ang) * benchDist;
+      const bz = Math.sin(ang) * benchDist;
+      addLocalBox(ctx, m, bx, 0.18, bz, 0.55, 0.32, 1.65, p.darkSlate, -ang);
+      addLocalBox(ctx, m, bx, 0.5, bz, 0.52, 0.1, 1.7, p.terracotta, -ang);
+      addLocalBox(
+        ctx,
+        m,
+        bx + Math.cos(ang) * 0.22,
+        0.6,
+        bz + Math.sin(ang) * 0.22,
+        0.1,
+        0.38,
+        1.7,
+        p.terracotta,
+        -ang
+      );
+    }
   } else if (key.includes('parking')) {
-    addLocalBox(ctx, m, 0, 0, 0, w, 0.1, d, p.darkSlate, 0, false);
-    for (let i = -2; i <= 2; i++) {
-      addLocalBox(ctx, m, i * (w * 0.18), 0.11, -d * 0.22, 0.18, 0.04, d * 0.32, p.whiteTrim, 0, false);
-      addLocalBox(ctx, m, i * (w * 0.18), 0.11, d * 0.22, 0.18, 0.04, d * 0.32, p.whiteTrim, 0, false);
+    addLocalBox(ctx, m, 0, 0, 0, w, 0.1, d, p.parkingPad, 0, false);
+    // 3D concrete wheel stops
+    for (let i = -1; i <= 1; i++) {
+      const sx = i * (w * 0.26);
+      addLocalBox(ctx, m, sx, 0.1, -d * 0.12, w * 0.16, 0.14, 0.24, p.concrete);
+      addLocalBox(ctx, m, sx, 0.1, d * 0.12, w * 0.16, 0.14, 0.24, p.concrete);
     }
   } else {
     // Generic Indonesian building-roof-1/2/3 & building-terrace-green
-    addLocalBox(ctx, m, 0, 0, 0, w, 0.16, d, p.concrete, 0, false);
+    addLocalBox(ctx, m, 0, 0, 0, w, 0.16, d, p.concrete);
     const h = 6.2 + (seed % 3) * 2.2;
     const style: FacadeStyle = key.includes('terrace') ? 'institutional' : 'ruko';
-    addLocalBox(ctx, m, 0, 0.16, 0, w * 0.76, h, d * 0.72, p.facades[style]);
+    const bw = w * 0.76;
+    const bd = d * 0.72;
+    addLocalBox(ctx, m, 0, 0.16, 0, bw, h, bd, p.facades[style]);
     if (key.includes('terrace')) {
-      addLocalBox(ctx, m, 0, h + 0.16, 0, w * 0.68, 0.35, d * 0.64, p.accentGreen);
+      addFlatRoofCap(ctx, m, 0, h + 0.16, 0, bw, bd, false);
+      addLocalBox(ctx, m, 0, h + 0.4, 0, w * 0.66, 0.26, d * 0.62, p.accentGreen);
+      addLocalCyl(ctx, m, w * 0.22, h + 0.66, -d * 0.18, 0.48, 1.05, p.accentBlue);
     } else {
       addLocalHipRoof(ctx, m, 0, h + 0.16, 0, w * 0.82, 2.4, d * 0.78, p.terracotta);
+      addLocalCyl(ctx, m, w * 0.24, h + 0.2, -d * 0.2, 0.5, 1.1, p.accentBlue);
     }
-    addLocalCyl(ctx, m, w * 0.24, h + 0.2, -d * 0.2, 0.5, 1.1, p.accentBlue);
   }
 
   return {
@@ -415,36 +616,39 @@ function buildLandmarkGeometry(
 
 function buildShadeTreeGeos(): { trunk: THREE.BufferGeometry; canopy: THREE.BufferGeometry } {
   const trunkParts: THREE.BufferGeometry[] = [];
-  const mainStem = new THREE.CylinderGeometry(0.18, 0.32, 3.6, 8);
-  mainStem.translate(0, 1.8, 0);
+  const mainStem = new THREE.CylinderGeometry(0.2, 0.36, 3.2, 8);
+  mainStem.translate(0, 1.6, 0);
   trunkParts.push(normalizeGeometryForMerge(mainStem));
   mainStem.dispose();
 
-  const b1 = new THREE.CylinderGeometry(0.09, 0.16, 2.2, 7);
-  b1.rotateZ(0.46);
-  b1.translate(-0.45, 3.4, 0.15);
-  trunkParts.push(normalizeGeometryForMerge(b1));
-  b1.dispose();
+  const branchSpecs: Array<[number, number, number, number, number]> = [
+    [0.48, 0.0, -0.52, 3.3, 0.18],
+    [-0.44, 1.8, 0.48, 3.25, -0.22],
+    [0.4, 3.9, 0.12, 3.35, 0.5],
+  ];
+  for (const [rz, ry, tx, ty, tz] of branchSpecs) {
+    const b = new THREE.CylinderGeometry(0.1, 0.18, 2.4, 7);
+    b.rotateZ(rz);
+    b.rotateY(ry);
+    b.translate(tx, ty, tz);
+    trunkParts.push(normalizeGeometryForMerge(b));
+    b.dispose();
+  }
 
-  const b2 = new THREE.CylinderGeometry(0.09, 0.16, 2.2, 7);
-  b2.rotateZ(-0.42);
-  b2.rotateY(1.2);
-  b2.translate(0.42, 3.35, -0.2);
-  trunkParts.push(normalizeGeometryForMerge(b2));
-  b2.dispose();
-
-  const trunk = mergeGeometries(trunkParts, false) ?? new THREE.CylinderGeometry(0.2, 0.3, 3.5, 8);
+  const trunk = mergeGeometries(trunkParts, false) ?? new THREE.CylinderGeometry(0.2, 0.34, 3.2, 8);
   for (const g of trunkParts) g.dispose();
 
-  // Crossed & layered alpha-tested leaf cards for lush organic Angsana/Trembesi crown
+  // 8 crossed & tilted alpha-tested leaf cards for lush Indonesian Angsana/Trembesi shade crown (radius 2.6-4.2m)
   const canopyParts: THREE.BufferGeometry[] = [];
   const cardConfigs: Array<[number, number, number, number, number, number]> = [
-    [0, 4.9, 0, 0, 0, 4.8],
-    [0, 5.1, 0, 0, Math.PI * 0.33, 4.6],
-    [0, 5.0, 0, 0, Math.PI * 0.66, 4.6],
-    [0, 4.5, 0, Math.PI * 0.5, 0, 4.9],
-    [0, 5.8, 0, Math.PI * 0.42, 0.4, 3.8],
-    [0, 5.6, 0, -Math.PI * 0.38, -0.5, 3.9],
+    [0, 5.1, 0, 0.08, 0, 7.2],
+    [0, 5.2, 0, -0.08, Math.PI * 0.33, 7.0],
+    [0, 5.05, 0, 0.06, Math.PI * 0.66, 7.0],
+    [0, 4.45, 0, Math.PI * 0.5, 0.2, 7.6],
+    [0, 5.65, 0, Math.PI * 0.48, 1.1, 6.8],
+    [0, 5.9, 0, Math.PI * 0.36, 0.45, 5.8],
+    [0, 5.75, 0, -Math.PI * 0.34, -0.55, 5.9],
+    [0, 6.35, 0, Math.PI * 0.22, 2.1, 5.4],
   ];
   for (const [x, y, z, rx, ry, size] of cardConfigs) {
     const card = new THREE.PlaneGeometry(size, size);
@@ -454,7 +658,7 @@ function buildShadeTreeGeos(): { trunk: THREE.BufferGeometry; canopy: THREE.Buff
     canopyParts.push(normalizeGeometryForMerge(card));
     card.dispose();
   }
-  const canopy = mergeGeometries(canopyParts, false) ?? new THREE.PlaneGeometry(4, 4);
+  const canopy = mergeGeometries(canopyParts, false) ?? new THREE.PlaneGeometry(6.4, 6.4);
   for (const g of canopyParts) g.dispose();
 
   return { trunk, canopy };
@@ -750,6 +954,18 @@ export function buildIndonesianCity3D(
     emissive: 0x713f12,
     emissiveIntensity: 0.12,
   });
+  const pondWater = new THREE.MeshStandardMaterial({
+    color: 0x0f5257,
+    roughness: 0.06,
+    metalness: 0.35,
+  });
+  const parkingLotTex = createParkingLotTexture();
+  trackedTexs.push(parkingLotTex);
+  const parkingPad = new THREE.MeshStandardMaterial({
+    map: parkingLotTex,
+    roughness: 0.85,
+    metalness: 0.05,
+  });
 
   trackedMats.push(
     terracotta,
@@ -760,7 +976,9 @@ export function buildIndonesianCity3D(
     accentGreen,
     accentGold,
     whiteTrim,
-    safetyBand
+    safetyBand,
+    pondWater,
+    parkingPad
   );
 
   const unitBox = new THREE.BoxGeometry(1, 1, 1);
@@ -783,6 +1001,8 @@ export function buildIndonesianCity3D(
       accentGold,
       whiteTrim,
       safetyBand,
+      pondWater,
+      parkingPad,
     },
     staticShadows: quality.staticShadows,
     unitBox,
@@ -798,7 +1018,9 @@ export function buildIndonesianCity3D(
 
   const queueTree = (x: number, z: number, isPalm: boolean, scale: number, seed: number) => {
     if (treeSpots.length >= quality.maxTrees) return;
-    treeSpots.push({ x, z, isPalm, scale, rotY: ((seed * 1.618) % 1) * Math.PI * 2 });
+    const h = (((seed * 1664525 + 1013904223) >>> 0) % 1000) / 1000;
+    const variedScale = isPalm ? scale * (0.9 + h * 0.24) : scale * (0.86 + h * 0.28);
+    treeSpots.push({ x, z, isPalm, scale: variedScale, rotY: ((seed * 1.618 + h) % 1) * Math.PI * 2 });
   };
 
   const queueLamp = (x: number, z: number, dirX: number, dirZ: number) => {
@@ -1198,7 +1420,77 @@ export function buildIndonesianCity3D(
     group.add(arrowInst);
   }
 
-  // 7. Optional 10m Blueprint Grid at y = 0.015m
+  // 7. Distant City Skyline (1 InstancedMesh, 1 draw call, outer ring 135m..245m)
+  {
+    const skylineCount = 72;
+    const skylineGeo = new THREE.BoxGeometry(1, 1, 1);
+    const skylineMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.9,
+      metalness: 0.06,
+    });
+    trackedGeos.push(skylineGeo);
+    trackedMats.push(skylineMat);
+
+    const skylineInst = new THREE.InstancedMesh(skylineGeo, skylineMat, skylineCount);
+    skylineInst.castShadow = false;
+    skylineInst.receiveShadow = false;
+
+    const skylineTones = [
+      new THREE.Color(0x64748b),
+      new THREE.Color(0x475569),
+      new THREE.Color(0x78716c),
+      new THREE.Color(0x526071),
+    ];
+
+    const isBlockingRoadCorridor = (px: number, pz: number): boolean => {
+      if (isCustomTopo) {
+        for (const armId of compiledTopology.armOrder) {
+          const arm = compiledTopology.armsById[armId];
+          const proj = px * arm.outDir.x + pz * arm.outDir.y;
+          const lat = Math.abs(px * arm.inLeftNormal.x + pz * arm.inLeftNormal.y);
+          if (proj > 0 && lat < 28) return true;
+        }
+        return false;
+      }
+      return Math.abs(px) < 34 || Math.abs(pz) < 34;
+    };
+
+    let rngState = 1337;
+    const nextRand = (): number => {
+      rngState = (rngState * 1664525 + 1013904223) >>> 0;
+      return rngState / 4294967296;
+    };
+
+    let placed = 0;
+    let attempts = 0;
+    while (placed < skylineCount && attempts < 400) {
+      attempts++;
+      const ang = (placed / skylineCount) * Math.PI * 2 + (nextRand() - 0.5) * 0.22;
+      const rad = 135 + nextRand() * 110;
+      const sx = Math.cos(ang) * rad;
+      const sz = Math.sin(ang) * rad;
+      if (isBlockingRoadCorridor(sx, sz)) continue;
+
+      const bw = 11 + nextRand() * 15;
+      const bd = 11 + nextRand() * 15;
+      const bh = 14 + Math.pow(nextRand(), 1.3) * 42;
+
+      instDummy.position.set(sx, bh * 0.5, sz);
+      instDummy.rotation.set(0, nextRand() * Math.PI, 0);
+      instDummy.scale.set(bw, bh, bd);
+      instDummy.updateMatrix();
+      skylineInst.setMatrixAt(placed, instDummy.matrix);
+      skylineInst.setColorAt(placed, skylineTones[placed % skylineTones.length]);
+      placed++;
+    }
+    skylineInst.count = placed;
+    skylineInst.instanceMatrix.needsUpdate = true;
+    if (skylineInst.instanceColor) skylineInst.instanceColor.needsUpdate = true;
+    group.add(skylineInst);
+  }
+
+  // 8. Optional 10m Blueprint Grid at y = 0.015m
   if (showGrid) {
     const halfBox = getEffectiveRoadWidth(config) + 2.0;
     const worldHalfExtent = isCustomTopo

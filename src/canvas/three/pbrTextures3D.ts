@@ -448,3 +448,156 @@ export function createSoftGlowBlobTexture(rgbaInner: string, rgbaOuter: string):
     [0, 0, 0, 128]
   );
 }
+
+export function createTropicalGrassTexture(): THREE.Texture {
+  const size = 512;
+  const c = makeCanvas(size, size);
+  if (c.ctx) {
+    const ctx = c.ctx;
+    const rng = makeSeededRng(1708);
+
+    // Rich natural Indonesian tropical grass base (#5D823F)
+    ctx.fillStyle = '#5D823F';
+    ctx.fillRect(0, 0, size, size);
+
+    const drawWrapped = (x: number, y: number, margin: number, drawAt: (ox: number, oy: number) => void) => {
+      const xs = [0];
+      const ys = [0];
+      if (x < margin) xs.push(size);
+      else if (x > size - margin) xs.push(-size);
+      if (y < margin) ys.push(size);
+      else if (y > size - margin) ys.push(-size);
+      for (const dx of xs) {
+        for (const dy of ys) {
+          drawAt(x + dx, y + dy);
+        }
+      }
+    };
+
+    // Organic lush/shaded turf patches (#6F964D sunlit, #4E7034 shaded)
+    const patchColors = ['#6F964D', '#4E7034', '#638A43', '#557A39'];
+    for (let i = 0; i < 48; i++) {
+      const cx = rng() * size;
+      const cy = rng() * size;
+      const r = 26 + rng() * 44;
+      const col = patchColors[Math.floor(rng() * patchColors.length)];
+      drawWrapped(cx, cy, r + 4, (ox, oy) => {
+        const g = ctx.createRadialGradient(ox, oy, 2, ox, oy, r);
+        g.addColorStop(0, col);
+        g.addColorStop(1, 'rgba(93,130,63,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(ox, oy, r, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+
+    // Subtle tropical soil & humus variation
+    for (let i = 0; i < 950; i++) {
+      const x = rng() * size;
+      const y = rng() * size;
+      const rx = 1.5 + rng() * 3.5;
+      const ry = 1.2 + rng() * 2.8;
+      const soilAlpha = 0.08 + rng() * 0.14;
+      ctx.fillStyle = rng() < 0.6
+        ? `rgba(74, 58, 38, ${soilAlpha})`
+        : `rgba(96, 78, 52, ${soilAlpha})`;
+      drawWrapped(x, y, 6, (ox, oy) => {
+        ctx.beginPath();
+        ctx.ellipse(ox, oy, rx, ry, rng() * Math.PI, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+
+    // Organic grass blade clusters
+    const bladePalette = ['#4E7034', '#5D823F', '#6F964D', '#7BA357', '#43612C'];
+    ctx.lineCap = 'round';
+    for (let i = 0; i < 1400; i++) {
+      const bx = rng() * size;
+      const by = rng() * size;
+      const bladesInCluster = 2 + Math.floor(rng() * 3);
+      drawWrapped(bx, by, 14, (ox, oy) => {
+        for (let b = 0; b < bladesInCluster; b++) {
+          const angle = -Math.PI * 0.5 + (rng() - 0.5) * 1.1;
+          const len = 4 + rng() * 8;
+          ctx.strokeStyle = bladePalette[Math.floor(rng() * bladePalette.length)];
+          ctx.lineWidth = 1 + rng() * 1.1;
+          ctx.beginPath();
+          ctx.moveTo(ox + (rng() - 0.5) * 4, oy + (rng() - 0.5) * 3);
+          ctx.lineTo(ox + Math.cos(angle) * len, oy + Math.sin(angle) * len);
+          ctx.stroke();
+        }
+      });
+    }
+  }
+
+  return finalizeTex(
+    c.canvas,
+    {
+      srgb: true,
+      wrapS: THREE.RepeatWrapping,
+      wrapT: THREE.RepeatWrapping,
+      repeatX: 0.08,
+      repeatY: 0.08,
+    },
+    [93, 130, 63, 255]
+  );
+}
+
+export function createParkingLotTexture(): THREE.Texture {
+  const size = 256;
+  const c = makeCanvas(size, size);
+  if (c.ctx) {
+    const ctx = c.ctx;
+    const rng = makeSeededRng(4096);
+
+    // Dark-grey asphalt/paving base
+    ctx.fillStyle = '#383D45';
+    ctx.fillRect(0, 0, size, size);
+
+    // Subtle aggregate grain for realistic paving texture
+    for (let i = 0; i < 2400; i++) {
+      const x = rng() * size;
+      const y = rng() * size;
+      const s = 1 + rng() * 1.6;
+      const v = 42 + Math.floor(rng() * 30);
+      ctx.fillStyle = `rgb(${v},${v + 2},${v + 5})`;
+      ctx.fillRect(x, y, s, s);
+    }
+
+    // Subtle tire-wear tracks in the central aisle
+    ctx.fillStyle = 'rgba(20, 24, 30, 0.16)';
+    ctx.fillRect(0, size * 0.42, size, size * 0.06);
+    ctx.fillRect(0, size * 0.54, size, size * 0.06);
+
+    // Crisp white parking bay lines
+    ctx.fillStyle = '#F8FAFC';
+    const lineW = 4;
+    const bayCols = 4;
+    const colW = size / bayCols;
+    const bayDepth = size * 0.34;
+
+    // Top and bottom bay stop/header lines
+    ctx.fillRect(0, 0, size, lineW);
+    ctx.fillRect(0, size - lineW, size, lineW);
+
+    // Vertical bay dividers (top row and bottom row)
+    for (let col = 0; col < bayCols; col++) {
+      const x = Math.round(col * colW);
+      ctx.fillRect(x, 0, lineW, bayDepth);
+      ctx.fillRect(x, size - bayDepth, lineW, bayDepth);
+    }
+  }
+
+  return finalizeTex(
+    c.canvas,
+    {
+      srgb: true,
+      wrapS: THREE.RepeatWrapping,
+      wrapT: THREE.RepeatWrapping,
+      repeatX: 1,
+      repeatY: 1,
+    },
+    [56, 61, 69, 255]
+  );
+}

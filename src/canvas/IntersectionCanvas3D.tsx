@@ -50,25 +50,25 @@ function computePresetPose(
   extentMeters: number,
   zoom: number
 ): { position: THREE.Vector3; target: THREE.Vector3 } {
-  const safeExt = Math.max(45, extentMeters);
+  const safeExt = Math.max(40, Math.min(115, extentMeters));
   const safeZoom = Math.max(0.5, Math.min(2.6, zoom || 1));
   const scale = 1 / safeZoom;
 
   if (preset === 'top') {
     return {
-      position: new THREE.Vector3(0, safeExt * 1.15 * scale, 0.01),
+      position: new THREE.Vector3(0, safeExt * 0.92 * scale, 0.01),
       target: new THREE.Vector3(0, 0, 0),
     };
   }
   if (preset === 'street') {
     return {
-      position: new THREE.Vector3(-24 * scale, 12.5 * scale, 28 * scale),
-      target: new THREE.Vector3(0, 2, 0),
+      position: new THREE.Vector3(-18 * scale, 8.5 * scale, 22 * scale),
+      target: new THREE.Vector3(0, 1.8, 0),
     };
   }
   return {
-    position: new THREE.Vector3(0, safeExt * 0.7 * scale, safeExt * 0.84 * scale),
-    target: new THREE.Vector3(0, 0, 0),
+    position: new THREE.Vector3(0, safeExt * 0.42 * scale, safeExt * 0.54 * scale),
+    target: new THREE.Vector3(0, 0.5, 0),
   };
 }
 
@@ -366,7 +366,7 @@ export const IntersectionCanvas3D: React.FC<IntersectionCanvas3DProps> = React.m
     const scene = new THREE.Scene();
     sceneRef.current = scene;
 
-    const camera = new THREE.PerspectiveCamera(45, initW / initH, 0.5, 950);
+    const camera = new THREE.PerspectiveCamera(45, initW / initH, 0.5, 1200);
     const initialPose = computePresetPose('iso', extentMetersRef.current, zoomRef.current);
     camera.position.copy(initialPose.position);
     cameraRef.current = camera;
@@ -376,7 +376,7 @@ export const IntersectionCanvas3D: React.FC<IntersectionCanvas3DProps> = React.m
     controls.dampingFactor = 0.08;
     controls.maxPolarAngle = Math.PI * 0.46;
     controls.minDistance = 12;
-    controls.maxDistance = 280;
+    controls.maxDistance = 320;
     controls.screenSpacePanning = false;
     controls.target.copy(initialPose.target);
     controls.update();

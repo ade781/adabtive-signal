@@ -202,7 +202,7 @@ export class SkyAndLighting3D {
     this.quality = quality;
 
     // 1. Atmospheric Sky Dome
-    this.skyGeo = new THREE.SphereGeometry(520, 24, 16);
+    this.skyGeo = new THREE.SphereGeometry(780, 24, 16);
     this.skyMat = new THREE.ShaderMaterial({
       vertexShader: SKY_VERTEX_SHADER,
       fragmentShader: SKY_FRAGMENT_SHADER,
@@ -573,7 +573,7 @@ export class SkyAndLighting3D {
 
     // Update FogExp2
     this.fog.color.copy(this.scratchHorizon);
-    this.fog.density = 0.0014 + rain * 0.0032 + darkness * 0.0008;
+    this.fog.density = 0.0018 + rain * 0.0032 + darkness * 0.0008;
 
     // On-demand PMREM IBL
     this.bakeIblIfNeeded(darkness, rain);

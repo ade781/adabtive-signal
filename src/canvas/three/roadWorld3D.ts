@@ -7,6 +7,7 @@ import {
   createDashedLineTexture,
   createKanstinTexture,
   createKonblokPbr,
+  createTropicalGrassTexture,
   createWeatheredAsphaltPbr,
 } from './pbrTextures3D';
 import {
@@ -94,6 +95,7 @@ function createRoadMaterials(
   const asphaltPbr = createWeatheredAsphaltPbr(isWet, isHeavyRain);
   const konblokPbr = createKonblokPbr();
   const kanstinTex = createKanstinTexture();
+  const tropicalGrassTex = createTropicalGrassTexture();
 
   const whiteDashTex = createDashedLineTexture('rgba(248, 250, 252, 0.85)', 0.47);
   const yellowDashTex = createDashedLineTexture('#FBBF24', 0.52);
@@ -116,7 +118,8 @@ function createRoadMaterials(
 
   const grass = track(
     new THREE.MeshStandardMaterial({
-      color: '#94AD74',
+      color: '#FFFFFF',
+      map: tropicalGrassTex,
       roughness: 0.94,
       metalness: 0.0,
     })
@@ -124,8 +127,9 @@ function createRoadMaterials(
 
   const parkGrass = track(
     new THREE.MeshStandardMaterial({
-      color: '#7FA25E',
-      roughness: 0.92,
+      color: '#EEF5E6',
+      map: tropicalGrassTex,
+      roughness: 0.94,
       metalness: 0.0,
     })
   );
@@ -461,6 +465,7 @@ function createRoadMaterials(
       asphaltPbr.dispose();
       konblokPbr.dispose();
       kanstinTex.dispose();
+      tropicalGrassTex.dispose();
       whiteDashTex.dispose();
       yellowDashTex.dispose();
       emeraldDashTex.dispose();
@@ -1145,22 +1150,23 @@ function buildCustomTopologyRoadWorld3D(
   staticShadows: boolean
 ): SignalPolePosition3D[] {
   const sigPositions: SignalPolePosition3D[] = [];
-  const extent = compiled.maxExtentMeters + 50;
+  const groundSize = Math.max(compiled.maxExtentMeters * 5, 960);
+  const groundHalf = groundSize * 0.5;
 
-  // 0. Base tropical grass ground plane
+  // 0. Huge horizon tropical grass ground plane (960m x 960m+)
   bc.addPart(
-    createBoundsBoxGeo(-extent, -0.08, -extent, extent, 0.0, extent),
+    createBoundsBoxGeo(-groundHalf, -0.08, -groundHalf, groundHalf, 0.0, groundHalf, true),
     bc.mats.grass,
     { receiveShadow: true }
   );
 
-  // 1. Sidewalk apron under arms (konblok, height = 0.16m)
+  // 1. Sidewalk apron under arms (konblok, height = 0.16m, ~3.0m wide hugging road edges)
   for (const armId of compiled.armOrder) {
     const arm: CompiledArmGeometry = compiled.armsById[armId];
     const inOuter = arm.halfMedian + arm.inWidth + (arm.def.curbFlareLeft ?? 0);
     const outOuter = arm.halfMedian + arm.outWidth;
     const totalLen = arm.setback + arm.def.length + 6;
-    const sidewalk = 2.6;
+    const sidewalk = 3.0;
     const rotY = -arm.angleRad;
 
     bc.addPart(
@@ -1565,7 +1571,7 @@ function buildStandard4ArmRoadWorld3D(
   const halfRoad = getEffectiveRoadWidth(config);
   const halfBox = halfRoad + 2.0;
   const armLen = halfBox + config.roadLength;
-  const sidewalkW = 3.4;
+  const sidewalkW = 3.0;
   const envKey = resolveEnvironmentKey(config);
   const isBanjarmasin = envKey === 'sulawesi-banjarmasin';
   const isParkNE = envKey === 'sulawesi-banjarmasin' || envKey === 'bondowoso-malang' || envKey === 'default';
@@ -1580,7 +1586,29 @@ function buildStandard4ArmRoadWorld3D(
   const riverX = bxEast + riverOffset;
   const riverW = Math.max(12, bw - riverOffset);
 
-  // 1. Corner grass plots, sidewalks (konblok 0.16m), soil strips, and Banjarmasin east river
+  // 0. Huge horizon tropical grass ground plane (960m x 960m+)
+  const groundSize = Math.max(extent * 5, 960);
+  const groundHalf = groundSize * 0.5;
+  if (isBanjarmasin) {
+    bc.addPart(
+      createBoundsBoxGeo(-groundHalf, -0.08, -groundHalf, riverX - 1.6, 0.0, groundHalf, true),
+      bc.mats.grass,
+      { receiveShadow: true }
+    );
+    bc.addPart(
+      createBoundsBoxGeo(riverX + riverW, -0.08, -groundHalf, groundHalf, 0.0, groundHalf, true),
+      bc.mats.grass,
+      { receiveShadow: true }
+    );
+  } else {
+    bc.addPart(
+      createBoundsBoxGeo(-groundHalf, -0.08, -groundHalf, groundHalf, 0.0, groundHalf, true),
+      bc.mats.grass,
+      { receiveShadow: true }
+    );
+  }
+
+  // 1. Corner grass plots, proportional sidewalks (konblok 0.16m hugging road edges only), soil strips, and Banjarmasin east river
   const corners: Array<{ sx: -1 | 1; sy: -1 | 1; isPark: boolean; riverEdge: boolean }> = [
     { sx: -1, sy: -1, isPark: false, riverEdge: false },
     { sx: 1, sy: -1, isPark: isParkNE, riverEdge: isBanjarmasin },
@@ -1596,21 +1624,38 @@ function buildStandard4ArmRoadWorld3D(
     const rz0 = c.sy < 0 ? bz - bw : bz;
     const rz1 = c.sy < 0 ? bz : bz + bw;
 
-    // Sidewalk apron (konblok 0.16m)
-    const swX0 = c.sx < 0 ? c.sx * halfRoad - bw - sidewalkW : c.sx * halfRoad;
-    const swX1 = c.sx < 0 ? c.sx * halfRoad : c.sx * halfRoad + bw + sidewalkW;
-    const swZ0 = c.sy < 0 ? c.sy * halfRoad - bw - sidewalkW : c.sy * halfRoad;
-    const swZ1 = c.sy < 0 ? c.sy * halfRoad : c.sy * halfRoad + bw + sidewalkW;
+    // Sidewalk strips (konblok 0.16m) strictly hugging the two road edges of this quadrant (~3.0m wide)
+    const nsX0 = c.sx < 0 ? -(halfRoad + sidewalkW) : halfRoad;
+    const nsX1 = c.sx < 0 ? -halfRoad : halfRoad + sidewalkW;
+    const nsZ0 = c.sy < 0 ? -armLen : halfRoad;
+    const nsZ1 = c.sy < 0 ? -halfRoad : armLen;
     bc.addPart(
-      createBoundsBoxGeo(swX0, 0.0, swZ0, swX1, 0.16, swZ1, true),
+      createBoundsBoxGeo(nsX0, 0.0, nsZ0, nsX1, 0.16, nsZ1, true),
       bc.mats.konblok,
       { receiveShadow: true }
     );
 
+    const ewX0 = c.sx < 0 ? -armLen : halfRoad + sidewalkW;
+    const ewX1 =
+      c.sx < 0
+        ? -(halfRoad + sidewalkW)
+        : c.riverEdge
+        ? Math.max(halfRoad + sidewalkW, riverX - 1.6)
+        : armLen;
+    const ewZ0 = c.sy < 0 ? -(halfRoad + sidewalkW) : halfRoad;
+    const ewZ1 = c.sy < 0 ? -halfRoad : halfRoad + sidewalkW;
+    if (ewX1 - ewX0 > 0.1) {
+      bc.addPart(
+        createBoundsBoxGeo(ewX0, 0.0, ewZ0, ewX1, 0.16, ewZ1, true),
+        bc.mats.konblok,
+        { receiveShadow: true }
+      );
+    }
+
     // Grass plot
     const grassEnd = c.riverEdge ? riverX - 1.6 : rx1;
     bc.addPart(
-      createBoundsBoxGeo(rx0, 0.0, rz0, grassEnd, 0.01, rz1),
+      createBoundsBoxGeo(rx0, 0.0, rz0, grassEnd, 0.01, rz1, true),
       c.isPark ? bc.mats.parkGrass : bc.mats.grass,
       { receiveShadow: true }
     );
