@@ -15,6 +15,10 @@ import {
 } from 'lucide-react';
 import { RenderDimension } from '../App';
 import {
+  GRAPHICS_QUALITY_PROFILES,
+  GraphicsQuality3D,
+} from '../canvas/three/qualityConfig3D';
+import {
   ARCHETYPE_ORDER,
   ARCHETYPE_TRAITS,
   MAP_OVERLAY_PRESETS,
@@ -46,6 +50,8 @@ interface SettingsPageProps {
   stats: SimStats;
   renderDimension: RenderDimension;
   onRenderDimensionChange: (dimension: RenderDimension) => void;
+  graphicsQuality: GraphicsQuality3D;
+  onGraphicsQualityChange: (q: GraphicsQuality3D) => void;
   zoom: number;
   onZoomChange: (nextZoom: number) => void;
   onZoomReset: () => void;
@@ -200,6 +206,8 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   stats,
   renderDimension,
   onRenderDimensionChange,
+  graphicsQuality,
+  onGraphicsQualityChange,
   zoom,
   onZoomChange,
   onZoomReset,
@@ -441,6 +449,41 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                         })}
                       </div>
                     </div>
+
+                    {renderDimension === '3d' && (
+                      <div className="space-y-2 pt-2 border-t border-slate-100">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-medium text-slate-700">Kualitas Grafis 3D</span>
+                          <span className="font-mono text-[11px] font-semibold text-indigo-700">
+                            {GRAPHICS_QUALITY_PROFILES[graphicsQuality].label}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-1.5">
+                          {(['low', 'balanced', 'ultra'] as const).map((qid) => {
+                            const prof = GRAPHICS_QUALITY_PROFILES[qid];
+                            const active = graphicsQuality === qid;
+                            return (
+                              <button
+                                key={qid}
+                                type="button"
+                                aria-pressed={active}
+                                onClick={() => onGraphicsQualityChange(qid)}
+                                className={`px-2.5 py-2 rounded-lg border text-left transition-colors duration-100 ${
+                                  active
+                                    ? 'bg-indigo-700 text-white border-indigo-700'
+                                    : 'bg-slate-50 text-slate-800 border-slate-200 hover:bg-slate-100'
+                                }`}
+                              >
+                                <div className="text-xs font-semibold leading-tight">{prof.label}</div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <p className="text-[11px] text-slate-500">
+                          {GRAPHICS_QUALITY_PROFILES[graphicsQuality].desc}
+                        </p>
+                      </div>
+                    )}
 
                     <div className="space-y-2">
                       <div className="flex items-center justify-between text-xs">

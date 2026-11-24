@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { IntersectionCanvas } from './canvas/IntersectionCanvas';
-import { IntersectionCanvas3D } from './canvas/IntersectionCanvas3D';
+import { GraphicsQuality3D } from './canvas/three/qualityConfig3D';
 import { QuickSidebar } from './components/QuickSidebar';
 import { SettingsPage } from './components/SettingsPage';
 import { TelemetryStrip } from './components/TelemetryStrip';
@@ -22,6 +22,9 @@ const UI_THROTTLE_MS = 80;
 
 const MemoTopBar = React.memo(TopBar);
 const MemoTelemetryStrip = React.memo(TelemetryStrip);
+const LazyIntersectionCanvas3D = React.lazy(() =>
+  import('./canvas/IntersectionCanvas3D').then((m) => ({ default: m.IntersectionCanvas3D }))
+);
 
 interface ErrorBoundaryState {
   hasError: boolean;
@@ -69,6 +72,7 @@ interface ExportStatus {
 function AppContent() {
   const [activeView, setActiveView] = useState<AppView>('simulator');
   const [renderDimension, setRenderDimension] = useState<RenderDimension>('3d');
+  const [graphicsQuality, setGraphicsQuality] = useState<GraphicsQuality3D>('balanced');
   const [drawSeedTopology, setDrawSeedTopology] = useState<IntersectionTopology>(() =>
     cloneTopology(GIWANGAN_TOPOLOGY)
   );
@@ -384,6 +388,8 @@ function AppContent() {
           stats={uiSnapshot.stats}
           renderDimension={renderDimension}
           onRenderDimensionChange={setRenderDimension}
+          graphicsQuality={graphicsQuality}
+          onGraphicsQualityChange={setGraphicsQuality}
           zoom={zoom}
           onZoomChange={handleZoomChange}
           onZoomReset={handleZoomReset}
@@ -401,7 +407,15 @@ function AppContent() {
           <div className="flex-1 min-h-0 flex flex-col lg:flex-row gap-2.5">
             <div className="flex-1 min-h-[360px] min-w-0">
               {renderDimension === '3d' ? (
-                <IntersectionCanvas3D {...sharedCanvasProps} />
+                <Suspense
+                  fallback={
+                    <div className="w-full h-full flex items-center justify-center rounded-lg border border-slate-200 bg-slate-100 text-xs font-medium text-slate-500">
+                      Memuat engine 3D...
+                    </div>
+                  }
+                >
+                  <LazyIntersectionCanvas3D {...sharedCanvasProps} graphicsQuality={graphicsQuality} />
+                </Suspense>
               ) : (
                 <IntersectionCanvas {...sharedCanvasProps} />
               )}

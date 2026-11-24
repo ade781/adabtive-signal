@@ -2,7 +2,6 @@ import * as THREE from 'three';
 import { ARCHETYPE_TRAITS } from '../../engine/driverIntelligence';
 import type {
   DriverArchetype,
-  EnvironmentTelemetry,
   FrictionHeatmapSnapshot,
   MapOverlayLayers,
   SignalColor,
@@ -13,400 +12,7 @@ import type {
 import { ARCHETYPE_COLORS } from '../MapHudOverlay';
 
 // ============================================================================
-// 1. EnvironmentRig3D — Sky, Fog, Sun/Moon Lighting, Street Lamps & 3D Rain
-// ============================================================================
-
-const RAIN_DEFAULT_COUNT = 600;
-const RAIN_SPAN_METERS = 112;
-const RAIN_CEILING_METERS = 34;
-
-function smoothstep(edge0: number, edge1: number, x: number): number {
-  const t = Math.max(0, Math.min(1, (x - edge0) / Math.max(1e-5, edge1 - edge0)));
-  return t * t * (3 - 2 * t);
-}
-
-/**
- * Generates a tiny reusable soft diagonal rain streak texture once at rig creation.
- */
-function createRainStreakTexture(): THREE.Texture {
-  if (typeof document === 'undefined') {
-    const data = new Uint8Array([226, 232, 240, 220]);
-    const fallback = new THREE.DataTexture(data, 1, 1, THREE.RGBAFormat);
-    fallback.needsUpdate = true;
-    return fallback;
-  }
-  const canvas = document.createElement('canvas');
-  canvas.width = 32;
-  canvas.height = 32;
-  const ctx = canvas.getContext('2d');
-  if (ctx) {
-    ctx.clearRect(0, 0, 32, 32);
-    const grad = ctx.createLinearGradient(18, 2, 14, 30);
-    grad.addColorStop(0.0, 'rgba(226, 232, 240, 0.0)');
-    grad.addColorStop(0.25, 'rgba(226, 232, 240, 0.65)');
-    grad.addColorStop(0.75, 'rgba(241, 245, 249, 0.92)');
-    grad.addColorStop(1.0, 'rgba(241, 245, 249, 0.0)');
-    ctx.strokeStyle = grad;
-    ctx.lineWidth = 2.6;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(18, 2);
-    ctx.lineTo(14, 30);
-    ctx.stroke();
-  }
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.needsUpdate = true;
-  return tex;
-}
-
-export interface EnvironmentRigOptions {
-  /** Half-extent (meters) of the directional light shadow camera frustum (default 95). */
-  shadowExtent?: number;
-  /** Number of reusable raindrop vertices in the 3D particle system (default 600). */
-  rainCount?: number;
-}
-
-/**
- * Manages 3D atmospheric sky, exponential fog, HemisphereLight + shadow-casting
- * DirectionalLight (daylight -> dusk -> moonlight), street-lamp emissives, and
- * a zero-allocation 3D diagonal rain particle field centered on the camera target.
- */
-export class EnvironmentRig3D {
-  readonly hemiLight: THREE.HemisphereLight;
-  readonly dirLight: THREE.DirectionalLight;
-  readonly fog: THREE.FogExp2;
-  readonly rainPoints: THREE.Points;
-
-  private readonly scene: THREE.Scene;
-  private readonly bgColor = new THREE.Color(0xdce7f3);
-  private readonly daySky = new THREE.Color(0xdce7f3);
-  private readonly overcastSky = new THREE.Color(0x9fb2c7);
-  private readonly duskSky = new THREE.Color(0x525e7a);
-  private readonly nightSky = new THREE.Color(0x0f172a);
-
-  private readonly sunColor = new THREE.Color(0xfff7ed);
-  private readonly daySun = new THREE.Color(0xfff7ed);
-  private readonly duskSun = new THREE.Color(0xfdba74);
-  private readonly moonLight = new THREE.Color(0x93c5fd);
-
-  private readonly hemiSkyDay = new THREE.Color(0xf0f7ff);
-  private readonly hemiSkyDusk = new THREE.Color(0x94a3b8);
-  private readonly hemiSkyNight = new THREE.Color(0x1e293b);
-  private readonly hemiGroundDay = new THREE.Color(0xcbd5e1);
-  private readonly hemiGroundNight = new THREE.Color(0x0f172a);
-
-  private readonly rainCount: number;
-  private readonly rainPositions: Float32Array;
-  private readonly rainSpeedScale: Float32Array;
-  private readonly rainGeometry: THREE.BufferGeometry;
-  private readonly rainMaterial: THREE.PointsMaterial;
-  private readonly rainTexture: THREE.Texture;
-  private readonly rainPosAttr: THREE.BufferAttribute;
-
-  private shadowExtent: number;
-  private smoothDarkness = 0;
-  private smoothRain = 0;
-  private smoothTwilight = 0;
-  private disposed = false;
-
-  constructor(scene: THREE.Scene, options?: EnvironmentRigOptions) {
-    this.scene = scene;
-    this.shadowExtent = Math.max(40, options?.shadowExtent ?? 95);
-    this.rainCount = Math.max(64, options?.rainCount ?? RAIN_DEFAULT_COUNT);
-
-    this.scene.background = this.bgColor;
-    this.fog = new THREE.FogExp2(0xdce7f3, 0.0013);
-    this.scene.fog = this.fog;
-
-    this.hemiLight = new THREE.HemisphereLight(0xf0f7ff, 0xcbd5e1, 0.95);
-    this.hemiLight.position.set(0, 60, 0);
-    this.scene.add(this.hemiLight);
-
-    this.dirLight = new THREE.DirectionalLight(0xfff7ed, 1.55);
-    this.dirLight.position.set(48, 76, 36);
-    this.dirLight.castShadow = true;
-    this.dirLight.shadow.mapSize.set(2048, 2048);
-    this.dirLight.shadow.camera.near = 5;
-    this.dirLight.shadow.camera.far = 260;
-    this.dirLight.shadow.bias = -0.0005;
-    this.dirLight.shadow.normalBias = 0.03;
-    this.applyShadowExtent();
-    this.scene.add(this.dirLight);
-    this.scene.add(this.dirLight.target);
-
-    // Pre-allocate reusable raindrop buffer (zero per-frame GC)
-    this.rainPositions = new Float32Array(this.rainCount * 3);
-    this.rainSpeedScale = new Float32Array(this.rainCount);
-    for (let i = 0; i < this.rainCount; i++) {
-      const hx = ((i * 73.137) % 1 + 1) % 1;
-      const hy = ((i * 19.713) % 1 + 1) % 1;
-      const hz = ((i * 41.389) % 1 + 1) % 1;
-      const idx = i * 3;
-      this.rainPositions[idx] = (hx - 0.5) * RAIN_SPAN_METERS;
-      this.rainPositions[idx + 1] = hy * RAIN_CEILING_METERS;
-      this.rainPositions[idx + 2] = (hz - 0.5) * RAIN_SPAN_METERS;
-      this.rainSpeedScale[i] = 0.84 + ((i * 29.17) % 1) * 0.34;
-    }
-
-    this.rainGeometry = new THREE.BufferGeometry();
-    this.rainPosAttr = new THREE.BufferAttribute(this.rainPositions, 3);
-    this.rainPosAttr.setUsage(THREE.DynamicDrawUsage);
-    this.rainGeometry.setAttribute('position', this.rainPosAttr);
-
-    this.rainTexture = createRainStreakTexture();
-    this.rainMaterial = new THREE.PointsMaterial({
-      color: 0xe2e8f0,
-      map: this.rainTexture,
-      size: 0.95,
-      sizeAttenuation: true,
-      transparent: true,
-      opacity: 0.52,
-      depthWrite: false,
-    });
-
-    this.rainPoints = new THREE.Points(this.rainGeometry, this.rainMaterial);
-    this.rainPoints.frustumCulled = false;
-    this.rainPoints.visible = false;
-    this.rainPoints.renderOrder = 10;
-    this.scene.add(this.rainPoints);
-  }
-
-  private applyShadowExtent(): void {
-    const ext = this.shadowExtent;
-    const cam = this.dirLight.shadow.camera;
-    cam.left = -ext;
-    cam.right = ext;
-    cam.top = ext;
-    cam.bottom = -ext;
-    cam.updateProjectionMatrix();
-  }
-
-  /**
-   * Adjusts the directional shadow frustum half-extent when intersection bounds change.
-   */
-  setShadowExtent(extent: number): void {
-    const clamped = Math.max(40, extent);
-    if (Math.abs(clamped - this.shadowExtent) < 1) return;
-    this.shadowExtent = clamped;
-    this.applyShadowExtent();
-  }
-
-  /**
-   * Advances lighting, sky/fog transitions, street-lamp emissives, and rain particles.
-   */
-  update(
-    dt: number,
-    env: EnvironmentTelemetry | undefined,
-    targetX: number,
-    targetZ: number,
-    streetLampEmissives?: readonly THREE.MeshStandardMaterial[]
-  ): void;
-  update(
-    snap: SimSnapshot,
-    dt: number,
-    streetLampEmissives?: readonly THREE.MeshStandardMaterial[],
-    targetX?: number,
-    targetZ?: number
-  ): void;
-  update(
-    dtOrSnap: number | SimSnapshot,
-    envOrDt: EnvironmentTelemetry | undefined | number,
-    targetXOrLamps?: number | readonly THREE.MeshStandardMaterial[],
-    targetZOrX?: number,
-    streetLampEmissivesOrZ?: readonly THREE.MeshStandardMaterial[] | number
-  ): void {
-    if (this.disposed) return;
-
-    let dt: number;
-    let env: EnvironmentTelemetry | undefined;
-    let targetX = 0;
-    let targetZ = 0;
-    let streetLampEmissives: readonly THREE.MeshStandardMaterial[] | undefined;
-
-    if (typeof dtOrSnap === 'number') {
-      dt = dtOrSnap;
-      env = typeof envOrDt === 'object' ? envOrDt : undefined;
-      targetX = typeof targetXOrLamps === 'number' ? targetXOrLamps : 0;
-      targetZ = typeof targetZOrX === 'number' ? targetZOrX : 0;
-      streetLampEmissives =
-        typeof streetLampEmissivesOrZ === 'object' ? streetLampEmissivesOrZ : undefined;
-    } else {
-      env = dtOrSnap.stats.environment;
-      dt = typeof envOrDt === 'number' ? envOrDt : 1 / 60;
-      streetLampEmissives = typeof targetXOrLamps === 'object' ? targetXOrLamps : undefined;
-      targetX = typeof targetZOrX === 'number' ? targetZOrX : 0;
-      targetZ = typeof streetLampEmissivesOrZ === 'number' ? streetLampEmissivesOrZ : 0;
-    }
-
-    const clampedDt = Math.max(0, Math.min(0.1, dt));
-    const lerpAlpha = clampedDt > 0 ? 1 - Math.exp(-clampedDt * 4.5) : 1;
-
-    const targetRawDark = Math.max(0, Math.min(0.38, env?.ambientDarkness ?? 0));
-    const targetRain = Math.max(0, Math.min(1, env?.rainIntensity ?? 0));
-
-    let targetTwilight = 0;
-    if (env && env.timeMode !== 'static') {
-      const h = env.clockHour;
-      const eveningBell = Math.max(0, 1 - Math.abs(h - 18.4) / 1.4);
-      const dawnBell = Math.max(0, 1 - Math.abs(h - 5.2) / 0.9);
-      targetTwilight = Math.max(eveningBell, dawnBell);
-    } else if (targetRawDark > 0.16) {
-      targetTwilight =
-        smoothstep(0.15, 0.25, targetRawDark) * (1 - smoothstep(0.28, 0.36, targetRawDark));
-    }
-
-    this.smoothDarkness += (targetRawDark - this.smoothDarkness) * lerpAlpha;
-    this.smoothRain += (targetRain - this.smoothRain) * lerpAlpha;
-    this.smoothTwilight += (targetTwilight - this.smoothTwilight) * lerpAlpha;
-
-    const darkNorm = Math.max(0, Math.min(1, this.smoothDarkness / 0.34));
-    const nightWeight = smoothstep(0.42, 0.96, darkNorm);
-    const duskWeight = Math.max(
-      this.smoothTwilight * (1 - nightWeight * 0.65),
-      smoothstep(0.18, 0.55, darkNorm) * (1 - smoothstep(0.55, 0.95, darkNorm)) * 0.75
-    );
-    const stormWeight = Math.min(1, this.smoothRain * 0.85) * (1 - nightWeight);
-
-    // Sky & fog color: #DCE7F3 (day) -> storm/dusk -> #0F172A (night)
-    this.bgColor.copy(this.daySky);
-    if (stormWeight > 0.001) {
-      this.bgColor.lerp(this.overcastSky, stormWeight * 0.72);
-    }
-    if (duskWeight > 0.001) {
-      this.bgColor.lerp(this.duskSky, Math.min(1, duskWeight));
-    }
-    if (nightWeight > 0.001) {
-      this.bgColor.lerp(this.nightSky, nightWeight);
-    }
-    this.fog.color.copy(this.bgColor);
-    this.fog.density = 0.0013 + this.smoothRain * 0.0036 + nightWeight * 0.0011;
-
-    // Sun / Moon directional light
-    this.sunColor.copy(this.daySun);
-    if (duskWeight > 0.001) {
-      this.sunColor.lerp(this.duskSun, Math.min(1, duskWeight * 0.9));
-    }
-    if (nightWeight > 0.001) {
-      this.sunColor.lerp(this.moonLight, nightWeight);
-    }
-    this.dirLight.color.copy(this.sunColor);
-
-    const rainDim = 1 - this.smoothRain * 0.36;
-    const dayIntensity = 1.55 * rainDim;
-    const nightIntensity = 0.54;
-    this.dirLight.intensity = dayIntensity + (nightIntensity - dayIntensity) * nightWeight;
-
-    // Keep shadow frustum centered on camera target (snapped to texel grid to prevent shadow shimmer)
-    const texelSize = (this.shadowExtent * 2) / 2048;
-    const snapX = Math.round(targetX / texelSize) * texelSize;
-    const snapZ = Math.round(targetZ / texelSize) * texelSize;
-    const sunElev = 76 - duskWeight * 22;
-    const sunOffsetX = 48 + duskWeight * 26 - nightWeight * 65;
-    const sunOffsetZ = 36 - nightWeight * 54;
-    this.dirLight.target.position.set(snapX, 0, snapZ);
-    this.dirLight.position.set(snapX + sunOffsetX, sunElev, snapZ + sunOffsetZ);
-
-    // Hemisphere sky/ground bounce
-    this.hemiLight.color.copy(this.hemiSkyDay);
-    if (duskWeight > 0.001) {
-      this.hemiLight.color.lerp(this.hemiSkyDusk, Math.min(1, duskWeight));
-    }
-    if (nightWeight > 0.001) {
-      this.hemiLight.color.lerp(this.hemiSkyNight, nightWeight);
-    }
-    this.hemiLight.groundColor.copy(this.hemiGroundDay).lerp(this.hemiGroundNight, nightWeight);
-    this.hemiLight.intensity = (0.95 - this.smoothRain * 0.18) * (1 - nightWeight * 0.54);
-
-    // Street-lamp emissive ramp at dusk/night or heavy storm
-    if (streetLampEmissives && streetLampEmissives.length > 0) {
-      const lampDrive = Math.max(
-        smoothstep(0.14, 0.72, darkNorm),
-        this.smoothRain > 0.55 ? (this.smoothRain - 0.55) * 1.15 : 0
-      );
-      const emissiveIntensity = lampDrive * 2.35;
-      for (let i = 0; i < streetLampEmissives.length; i++) {
-        streetLampEmissives[i].emissiveIntensity = emissiveIntensity;
-      }
-    }
-
-    // 3D Rain particles (zero allocations)
-    if (targetRain > 0.05 || this.smoothRain > 0.05) {
-      const rainStrength = Math.max(targetRain, this.smoothRain);
-      const activeDrops = Math.min(
-        this.rainCount,
-        Math.max(40, Math.round(this.rainCount * Math.min(1, rainStrength * 1.15)))
-      );
-      this.rainPoints.visible = true;
-      this.rainGeometry.setDrawRange(0, activeDrops);
-      this.rainMaterial.opacity = 0.24 + rainStrength * 0.44;
-      this.rainMaterial.size = 0.8 + rainStrength * 0.4;
-
-      const fallSpeed = 24 + rainStrength * 14;
-      const windX = -fallSpeed * 0.22;
-      const windZ = fallSpeed * 0.08;
-      const halfSpan = RAIN_SPAN_METERS * 0.5;
-      const pos = this.rainPositions;
-
-      for (let i = 0; i < activeDrops; i++) {
-        const idx = i * 3;
-        const speedMul = this.rainSpeedScale[i];
-        let x = pos[idx] + windX * speedMul * clampedDt;
-        let y = pos[idx + 1] - fallSpeed * speedMul * clampedDt;
-        let z = pos[idx + 2] + windZ * speedMul * clampedDt;
-
-        if (y < 0) {
-          y = RAIN_CEILING_METERS + (y % RAIN_CEILING_METERS);
-        }
-
-        const dx = x - targetX;
-        if (dx > halfSpan || dx < -halfSpan) {
-          x =
-            targetX +
-            ((((dx + halfSpan) % RAIN_SPAN_METERS) + RAIN_SPAN_METERS) % RAIN_SPAN_METERS) -
-            halfSpan;
-        }
-        const dz = z - targetZ;
-        if (dz > halfSpan || dz < -halfSpan) {
-          z =
-            targetZ +
-            ((((dz + halfSpan) % RAIN_SPAN_METERS) + RAIN_SPAN_METERS) % RAIN_SPAN_METERS) -
-            halfSpan;
-        }
-
-        pos[idx] = x;
-        pos[idx + 1] = y;
-        pos[idx + 2] = z;
-      }
-      this.rainPosAttr.needsUpdate = true;
-    } else {
-      this.rainPoints.visible = false;
-    }
-  }
-
-  /**
-   * Releases GPU resources and removes lighting/particles from the scene.
-   */
-  dispose(): void {
-    if (this.disposed) return;
-    this.disposed = true;
-
-    this.scene.remove(this.hemiLight);
-    this.scene.remove(this.dirLight);
-    this.scene.remove(this.dirLight.target);
-    this.scene.remove(this.rainPoints);
-    if (this.scene.fog === this.fog) {
-      this.scene.fog = null;
-    }
-
-    this.rainGeometry.dispose();
-    this.rainMaterial.dispose();
-    this.rainTexture.dispose();
-  }
-}
-
-// ============================================================================
-// 2. FrictionHeatmap3D — Dynamic RGBA DataTexture Plane on 3D Asphalt
+// 1. FrictionHeatmap3D — Dynamic RGBA DataTexture Plane on 3D Asphalt (y=0.048m)
 // ============================================================================
 
 const HEAT_STOPS_RGB = [
@@ -418,8 +24,8 @@ const HEAT_STOPS_RGB = [
 ] as const;
 
 /**
- * Renders the simulation's 28x28 geospatial driver-friction grid onto the 3D road
- * via a single linearly-filtered RGBA DataTexture plane at y = 0.05m (zero GC).
+ * Renders the simulation's geospatial driver-friction grid onto the 3D road
+ * via a single linearly-filtered RGBA DataTexture plane at y = 0.048m (zero GC).
  */
 export class FrictionHeatmap3D {
   readonly mesh: THREE.Mesh;
@@ -449,7 +55,7 @@ export class FrictionHeatmap3D {
 
     this.mesh = new THREE.Mesh(this.geometry, this.material);
     this.mesh.rotation.x = -Math.PI / 2;
-    this.mesh.position.set(0, 0.05, 0);
+    this.mesh.position.set(0, 0.048, 0);
     this.mesh.renderOrder = 2;
     this.mesh.visible = false;
 
@@ -580,7 +186,7 @@ export class FrictionHeatmap3D {
 }
 
 // ============================================================================
-// 3. drawProjected2DOverlays — Zero-GC 3D-to-2D Projected HUD Overlays
+// 2. SignalHead3DInput & OverlayProjectionScratch
 // ============================================================================
 
 const SIGNAL_COLORS: Record<SignalColor, string> = {
@@ -589,17 +195,12 @@ const SIGNAL_COLORS: Record<SignalColor, string> = {
   red: '#EF4444',
 };
 
-export interface SignalHead3DAnchor {
+export type SignalHead3DInput = {
   armId: string;
-  /** World X coordinate (meters). */
   x: number;
-  /** Optional explicit world vertical height of the signal head (meters). */
-  y?: number;
-  /** World Z coordinate (meters, corresponds to 2D world Y). */
   z: number;
-  /** Optional outward arm angle (radians); shifts projection anchor onto the overhanging cantilever head. */
   angleRad?: number;
-}
+};
 
 export interface OverlayProjectionScratch {
   projA: THREE.Vector3;
@@ -629,25 +230,11 @@ export function createOverlayProjectionScratch(): OverlayProjectionScratch {
 }
 
 const DEFAULT_SCRATCH = createOverlayProjectionScratch();
+const DEFAULT_VEHICLE_PILL_HEIGHT = 2.2;
 
-export interface Projected2DOverlaysParams {
-  ctx: CanvasRenderingContext2D;
-  width: number;
-  height: number;
-  dpr?: number;
-  clear?: boolean;
-  camera: THREE.Camera;
-  vehicles: readonly Vehicle[];
-  signal: SignalState;
-  signalHeads: readonly SignalHead3DAnchor[];
-  layers: MapOverlayLayers;
-  focusedArchetype: DriverArchetype | null;
-  selectedVehicleId: number | null;
-  simTime: number;
-  scratch?: OverlayProjectionScratch;
-  /** Base height (meters) above ground for floating pills on cars/motors (default 2.2m). */
-  vehiclePillHeight?: number;
-}
+// ============================================================================
+// 3. Projection & Coordinate Helpers (Zero-GC)
+// ============================================================================
 
 function getVehicleAnchorHeight(v: Vehicle, baseCarHeight: number): number {
   if (v.vClass === 'heavy') return Math.max(3.45, baseCarHeight + 1.35);
@@ -835,20 +422,23 @@ function drawLocalGroundArc(
   }
 }
 
+// ============================================================================
+// 4. Projected Overlay Sub-Passes
+// ============================================================================
+
 function drawProjectedTacticalCues(
   ctx: CanvasRenderingContext2D,
   camera: THREE.Camera,
   vehicles: readonly Vehicle[],
-  width: number,
   height: number,
+  halfW: number,
+  halfH: number,
   pulseWave: number,
   focusedArchetype: DriverArchetype | null,
   selectedVehicleId: number | null,
   baseCarHeight: number,
   scratch: OverlayProjectionScratch
 ): void {
-  const halfW = width * 0.5;
-  const halfH = height * 0.5;
   const { projA, projB, projC, projD, camTmp } = scratch;
 
   for (let i = 0; i < vehicles.length; i++) {
@@ -864,7 +454,7 @@ function drawProjectedTacticalCues(
     ctx.save();
     if (dimmed) ctx.globalAlpha = 0.22;
 
-    // 1. Occlusion Peek rays (4.5m forward cone)
+    // 1. Occlusion Peek cone (4.5m forward)
     if (v.occlusionPeekActive) {
       setLocalVehiclePoint3D(projA, v, 0, -halfLVeh, 0.14);
       setLocalVehiclePoint3D(projB, v, -1.85, -halfLVeh - 4.5, 0.14);
@@ -1229,15 +819,13 @@ function drawProjectedSocialVectors(
   camera: THREE.Camera,
   vehicles: readonly Vehicle[],
   vMap: Map<number, Vehicle>,
-  width: number,
-  height: number,
+  halfW: number,
+  halfH: number,
   pulseWave: number,
   focusedArchetype: DriverArchetype | null,
   selectedVehicleId: number | null,
   scratch: OverlayProjectionScratch
 ): void {
-  const halfW = width * 0.5;
-  const halfH = height * 0.5;
   const { projA, projB, projC } = scratch;
 
   for (let i = 0; i < vehicles.length; i++) {
@@ -1370,13 +958,11 @@ function drawProjectedSelectedReticleAndLinks(
   camera: THREE.Camera,
   sel: Vehicle,
   vMap: Map<number, Vehicle>,
-  width: number,
-  height: number,
+  halfW: number,
+  halfH: number,
   pulseWave: number,
   scratch: OverlayProjectionScratch
 ): void {
-  const halfW = width * 0.5;
-  const halfH = height * 0.5;
   const { projA, projB, projC } = scratch;
 
   const drawLink = (targetId: number | undefined, color: string, dash: [number, number]) => {
@@ -1470,14 +1056,14 @@ function drawProjectedEmotionBars(
   vehicles: readonly Vehicle[],
   width: number,
   height: number,
+  halfW: number,
+  halfH: number,
   pulseWave: number,
   focusedArchetype: DriverArchetype | null,
   selectedVehicleId: number | null,
   baseCarHeight: number,
   scratch: OverlayProjectionScratch
 ): void {
-  const halfW = width * 0.5;
-  const halfH = height * 0.5;
   const { projA, camTmp } = scratch;
 
   if (scratch.emotionHeightBuf.length < vehicles.length) {
@@ -1572,14 +1158,14 @@ function drawProjectedArchetypePills(
   vehicles: readonly Vehicle[],
   width: number,
   height: number,
+  halfW: number,
+  halfH: number,
   focusedArchetype: DriverArchetype | null,
   selectedVehicleId: number | null,
   hasEmotionBars: boolean,
   baseCarHeight: number,
   scratch: OverlayProjectionScratch
 ): void {
-  const halfW = width * 0.5;
-  const halfH = height * 0.5;
   const { projA, camTmp, pillPosBuf, emotionHeightBuf } = scratch;
   const pillW = 26;
   const pillH = 13;
@@ -1663,17 +1249,17 @@ function drawProjectedArchetypePills(
 
 function projectSignalHeadAnchor(
   camera: THREE.Camera,
-  head: SignalHead3DAnchor,
+  head: SignalHead3DInput,
   halfW: number,
   halfH: number,
   out: THREE.Vector3
 ): boolean {
   let wx = head.x;
   let wz = head.z;
-  let wy = head.y ?? 6.05;
+  let wy = 6.05;
 
-  // Offset onto the overhanging cantilever signal head (local x=2.65m, y=5.82m) when angleRad is supplied
-  if (head.y === undefined && typeof head.angleRad === 'number' && Number.isFinite(head.angleRad)) {
+  // Offset onto the overhanging cantilever signal head (local x=2.65m, y=6.08m) when angleRad is supplied
+  if (typeof head.angleRad === 'number' && Number.isFinite(head.angleRad)) {
     wx += 2.65 * Math.sin(head.angleRad) + 0.04 * Math.cos(head.angleRad);
     wz += -2.65 * Math.cos(head.angleRad) + 0.04 * Math.sin(head.angleRad);
     wy = 6.08;
@@ -1686,9 +1272,11 @@ function drawProjectedSignalCountdowns(
   ctx: CanvasRenderingContext2D,
   camera: THREE.Camera,
   signal: SignalState,
-  signalHeads: readonly SignalHead3DAnchor[],
+  signalHeads: readonly SignalHead3DInput[],
   width: number,
   height: number,
+  halfW: number,
+  halfH: number,
   scratch: OverlayProjectionScratch
 ): void {
   if (signalHeads.length === 0) return;
@@ -1697,8 +1285,6 @@ function drawProjectedSignalCountdowns(
   const arrowColors: Record<string, SignalColor | undefined> =
     signal.multiPhase?.armRightArrowColors ?? {};
 
-  const halfW = width * 0.5;
-  const halfH = height * 0.5;
   const { projA } = scratch;
   const label = `${Math.ceil(Math.max(0, signal.phaseRemaining))}s`;
 
@@ -1833,99 +1419,34 @@ function drawDynamicNorthCompass(
   ctx.restore();
 }
 
+// ============================================================================
+// 5. Public Entry Point — drawProjected2DOverlays
+// ============================================================================
+
 /**
  * Projects 3D simulation state onto a transparent 2D HUD canvas layered above the WebGL view.
- * Accepts either a structured params object or positional arguments matching `IntersectionCanvas3D`.
  * Uses pre-allocated scratch vectors and overlap buffers for strictly zero-GC 60 FPS rendering.
  */
-export function drawProjected2DOverlays(params: Projected2DOverlaysParams): void;
 export function drawProjected2DOverlays(
   ctx: CanvasRenderingContext2D,
   width: number,
   height: number,
   camera: THREE.Camera,
   snap: SimSnapshot,
-  signalHeads: readonly SignalHead3DAnchor[],
+  signalHeads: readonly SignalHead3DInput[],
   layers: MapOverlayLayers,
   focusedArchetype: DriverArchetype | null,
   selectedVehicleId: number | null,
-  scratch?: OverlayProjectionScratch
-): void;
-export function drawProjected2DOverlays(
-  ctxOrParams: CanvasRenderingContext2D | Projected2DOverlaysParams,
-  widthArg?: number,
-  heightArg?: number,
-  cameraArg?: THREE.Camera,
-  snapArg?: SimSnapshot,
-  signalHeadsArg?: readonly SignalHead3DAnchor[],
-  layersArg?: MapOverlayLayers,
-  focusedArchetypeArg?: DriverArchetype | null,
-  selectedVehicleIdArg?: number | null,
-  scratchArg?: OverlayProjectionScratch
+  scratch: OverlayProjectionScratch = DEFAULT_SCRATCH
 ): void {
-  let ctx: CanvasRenderingContext2D;
-  let width: number;
-  let height: number;
-  let dpr: number | undefined;
-  let clear: boolean;
-  let camera: THREE.Camera;
-  let vehicles: readonly Vehicle[];
-  let signal: SignalState;
-  let signalHeads: readonly SignalHead3DAnchor[];
-  let layers: MapOverlayLayers;
-  let focusedArchetype: DriverArchetype | null;
-  let selectedVehicleId: number | null;
-  let simTime: number;
-  let scratch: OverlayProjectionScratch;
-  let vehiclePillHeight: number;
-
-  if ('camera' in ctxOrParams) {
-    ctx = ctxOrParams.ctx;
-    width = ctxOrParams.width;
-    height = ctxOrParams.height;
-    dpr = ctxOrParams.dpr;
-    clear = ctxOrParams.clear ?? true;
-    camera = ctxOrParams.camera;
-    vehicles = ctxOrParams.vehicles;
-    signal = ctxOrParams.signal;
-    signalHeads = ctxOrParams.signalHeads;
-    layers = ctxOrParams.layers;
-    focusedArchetype = ctxOrParams.focusedArchetype;
-    selectedVehicleId = ctxOrParams.selectedVehicleId;
-    simTime = ctxOrParams.simTime;
-    scratch = ctxOrParams.scratch ?? DEFAULT_SCRATCH;
-    vehiclePillHeight = ctxOrParams.vehiclePillHeight ?? 2.2;
-  } else {
-    ctx = ctxOrParams;
-    width = widthArg ?? 0;
-    height = heightArg ?? 0;
-    dpr = undefined;
-    clear = false;
-    camera = cameraArg!;
-    vehicles = snapArg!.vehicles;
-    signal = snapArg!.signal;
-    signalHeads = signalHeadsArg!;
-    layers = layersArg!;
-    focusedArchetype = focusedArchetypeArg ?? null;
-    selectedVehicleId = selectedVehicleIdArg ?? null;
-    simTime = snapArg!.stats.simTime;
-    scratch = scratchArg ?? DEFAULT_SCRATCH;
-    vehiclePillHeight = 2.2;
-  }
-
   if (width <= 0 || height <= 0) return;
 
   camera.updateMatrixWorld();
 
-  ctx.save();
-  if (dpr !== undefined && dpr > 0) {
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  }
-  if (clear) {
-    ctx.clearRect(0, 0, width, height);
-  }
-
-  const pulseWave = 0.5 + 0.5 * Math.sin(simTime * 6.0);
+  const halfW = width * 0.5;
+  const halfH = height * 0.5;
+  const { vehicles, signal, stats } = snap;
+  const pulseWave = 0.5 + 0.5 * Math.sin(stats.simTime * 6.0);
 
   const needMap = layers.socialVectors || selectedVehicleId !== null;
   const vMap = scratch.vehicleMap;
@@ -1936,17 +1457,20 @@ export function drawProjected2DOverlays(
     }
   }
 
+  ctx.save();
+
   if (layers.tacticalCues) {
     drawProjectedTacticalCues(
       ctx,
       camera,
       vehicles,
-      width,
       height,
+      halfW,
+      halfH,
       pulseWave,
       focusedArchetype,
       selectedVehicleId,
-      vehiclePillHeight,
+      DEFAULT_VEHICLE_PILL_HEIGHT,
       scratch
     );
   }
@@ -1957,8 +1481,8 @@ export function drawProjected2DOverlays(
       camera,
       vehicles,
       vMap,
-      width,
-      height,
+      halfW,
+      halfH,
       pulseWave,
       focusedArchetype,
       selectedVehicleId,
@@ -1974,8 +1498,8 @@ export function drawProjected2DOverlays(
         camera,
         sel,
         vMap,
-        width,
-        height,
+        halfW,
+        halfH,
         pulseWave,
         scratch
       );
@@ -1989,10 +1513,12 @@ export function drawProjected2DOverlays(
       vehicles,
       width,
       height,
+      halfW,
+      halfH,
       pulseWave,
       focusedArchetype,
       selectedVehicleId,
-      vehiclePillHeight,
+      DEFAULT_VEHICLE_PILL_HEIGHT,
       scratch
     );
   }
@@ -2004,15 +1530,28 @@ export function drawProjected2DOverlays(
       vehicles,
       width,
       height,
+      halfW,
+      halfH,
       focusedArchetype,
       selectedVehicleId,
       layers.emotionBars,
-      vehiclePillHeight,
+      DEFAULT_VEHICLE_PILL_HEIGHT,
       scratch
     );
   }
 
-  drawProjectedSignalCountdowns(ctx, camera, signal, signalHeads, width, height, scratch);
+  drawProjectedSignalCountdowns(
+    ctx,
+    camera,
+    signal,
+    signalHeads,
+    width,
+    height,
+    halfW,
+    halfH,
+    scratch
+  );
+
   drawDynamicNorthCompass(ctx, camera, width - 36, 36);
 
   ctx.restore();

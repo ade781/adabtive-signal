@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { MAP_OVERLAY_PRESETS } from '../engine/driverIntelligence';
+import { getEffectiveRoadWidth } from '../engine/geometry';
 import { CompiledTopology } from '../engine/topologyTypes';
 import {
   DriverArchetype,
@@ -10,15 +11,20 @@ import {
   SimSnapshot,
 } from '../engine/types';
 import { Camera3DPreset, MapHudOverlay } from './MapHudOverlay';
-import { buildCityLandmarks3D } from './three/cityLandmarks3D';
 import {
+  createOverlayProjectionScratch,
   drawProjected2DOverlays,
-  EnvironmentRig3D,
   FrictionHeatmap3D,
-} from './three/overlays3D';
-import { buildRoadSurfaces3D } from './three/roadSurfaces3D';
-import { createTrafficSignals3D } from './three/trafficSignals3D';
-import { VehicleMeshPool3D } from './three/vehicleMeshes3D';
+  OverlayProjectionScratch,
+} from './three/hudProjection3D';
+import { buildIndonesianCity3D, IndonesianCity3DResult } from './three/indonesianCity3D';
+import { IndonesianFleet3D } from './three/indonesianFleet3D';
+import {
+  GRAPHICS_QUALITY_PROFILES,
+  GraphicsQuality3D,
+} from './three/qualityConfig3D';
+import { buildRoadWorld3D, RoadWorld3DResult } from './three/roadWorld3D';
+import { SkyAndLighting3D } from './three/skyAndLighting3D';
 
 export interface IntersectionCanvas3DProps {
   snapshotRef: React.MutableRefObject<SimSnapshot>;
@@ -35,69 +41,35 @@ export interface IntersectionCanvas3DProps {
   onSelectArchetype?: (arch: DriverArchetype | null) => void;
   selectedVehicleId?: number | null;
   onSelectVehicle?: (id: number | null) => void;
-  /** Optional legacy toggle retained for parity with IntersectionCanvasProps. */
   showDriverOverlay?: boolean;
+  graphicsQuality?: GraphicsQuality3D;
 }
-
-type RoadSurfaceBundle = ReturnType<typeof buildRoadSurfaces3D>;
-type CityLandmarksBundle = ReturnType<typeof buildCityLandmarks3D>;
-type TrafficSignalsBundle = ReturnType<typeof createTrafficSignals3D>;
-
-const PRESET_LABELS: Record<Camera3DPreset, string> = {
-  iso: 'Iso',
-  top: 'Atas',
-  street: 'Jalan',
-  follow: 'Ikuti',
-};
-
-const CLICK_DRAG_THRESHOLD_PX = 5;
 
 function computePresetPose(
   preset: Exclude<Camera3DPreset, 'follow'>,
   extentMeters: number,
   zoom: number
 ): { position: THREE.Vector3; target: THREE.Vector3 } {
-  const extent = Math.max(36, extentMeters);
-  const zoomScale = 1 / Math.max(0.5, Math.min(2.8, zoom || 1));
+  const safeExt = Math.max(45, extentMeters);
+  const safeZoom = Math.max(0.5, Math.min(2.6, zoom || 1));
+  const scale = 1 / safeZoom;
 
-  switch (preset) {
-    case 'top':
-      return {
-        position: new THREE.Vector3(0, extent * 1.15 * zoomScale, 0.01),
-        target: new THREE.Vector3(0, 0, 0),
-      };
-    case 'street':
-      return {
-        position: new THREE.Vector3(
-          -24 * zoomScale,
-          14 * Math.max(0.75, zoomScale),
-          28 * zoomScale
-        ),
-        target: new THREE.Vector3(0, 2, 0),
-      };
-    case 'iso':
-    default:
-      return {
-        position: new THREE.Vector3(
-          0,
-          extent * 0.72 * zoomScale,
-          extent * 0.85 * zoomScale
-        ),
-        target: new THREE.Vector3(0, 0, 0),
-      };
+  if (preset === 'top') {
+    return {
+      position: new THREE.Vector3(0, safeExt * 1.15 * scale, 0.01),
+      target: new THREE.Vector3(0, 0, 0),
+    };
   }
-}
-
-function extractVehicleId(hitObject: THREE.Object3D): number | null {
-  let cur: THREE.Object3D | null = hitObject;
-  while (cur) {
-    const rawId = cur.userData?.vehicleId;
-    if (typeof rawId === 'number' && Number.isFinite(rawId)) {
-      return rawId;
-    }
-    cur = cur.parent;
+  if (preset === 'street') {
+    return {
+      position: new THREE.Vector3(-24 * scale, 12.5 * scale, 28 * scale),
+      target: new THREE.Vector3(0, 2, 0),
+    };
   }
-  return null;
+  return {
+    position: new THREE.Vector3(0, safeExt * 0.7 * scale, safeExt * 0.84 * scale),
+    target: new THREE.Vector3(0, 0, 0),
+  };
 }
 
 export const IntersectionCanvas3D: React.FC<IntersectionCanvas3DProps> = React.memo(({
@@ -116,15 +88,17 @@ export const IntersectionCanvas3D: React.FC<IntersectionCanvas3DProps> = React.m
   selectedVehicleId = null,
   onSelectVehicle,
   showDriverOverlay = false,
+  graphicsQuality = 'balanced',
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const webglCanvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
 
+  const [webglError, setWebglError] = useState<string | null>(null);
   const [cameraPreset, setCameraPreset] = useState<Camera3DPreset>('iso');
   const [hasUserCameraMoved, setHasUserCameraMoved] = useState(false);
-  const [isGrabbing, setIsGrabbing] = useState(false);
-  const [webglError, setWebglError] = useState<string | null>(null);
+
+  const qualityProfile = GRAPHICS_QUALITY_PROFILES[graphicsQuality] ?? GRAPHICS_QUALITY_PROFILES.balanced;
 
   const resolvedLayers = useMemo<MapOverlayLayers>(() => {
     if (overlayLayers) return overlayLayers;
@@ -132,43 +106,53 @@ export const IntersectionCanvas3D: React.FC<IntersectionCanvas3DProps> = React.m
     return MAP_OVERLAY_PRESETS.off;
   }, [overlayLayers, showDriverOverlay]);
 
-  // Mutable refs for zero-GC 60fps loop access
+  const halfRoad = getEffectiveRoadWidth(config);
+  const halfBox = halfRoad + 2.0;
+  const isCustomTopo = Boolean(config.customTopology);
+  const extentMeters = isCustomTopo
+    ? compiledTopology.maxExtentMeters
+    : halfBox + config.roadLength;
+
+  // Latest reactive refs for zero-rebind 60fps RAF loop
   const runningRef = useRef(running);
   runningRef.current = running;
-  const zoomRef = useRef(zoom);
-  const prevZoomRef = useRef(zoom);
   const resolvedLayersRef = useRef(resolvedLayers);
   resolvedLayersRef.current = resolvedLayers;
   const focusedArchetypeRef = useRef(focusedArchetype);
   focusedArchetypeRef.current = focusedArchetype;
   const selectedVehicleIdRef = useRef(selectedVehicleId);
   selectedVehicleIdRef.current = selectedVehicleId;
-  const cameraPresetRef = useRef(cameraPreset);
+  const cameraPresetRef = useRef<Camera3DPreset>(cameraPreset);
   cameraPresetRef.current = cameraPreset;
-  const hasUserCameraMovedRef = useRef(hasUserCameraMoved);
-  hasUserCameraMovedRef.current = hasUserCameraMoved;
-  const extentMetersRef = useRef<number>(
-    config.customTopology
-      ? Math.max(40, compiledTopology.maxExtentMeters)
-      : Math.max(40, config.roadLength + 12)
-  );
+  const extentMetersRef = useRef(extentMeters);
+  extentMetersRef.current = extentMeters;
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
+  const qualityProfileRef = useRef(qualityProfile);
+  qualityProfileRef.current = qualityProfile;
 
-  // Three.js lifecycle refs
-  const sceneRef = useRef<THREE.Scene | null>(null);
+  // Three.js object refs
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
-  const roadRef = useRef<RoadSurfaceBundle | null>(null);
-  const cityRef = useRef<CityLandmarksBundle | null>(null);
-  const signalsRef = useRef<TrafficSignalsBundle | null>(null);
-  const vehiclePoolRef = useRef<VehicleMeshPool3D | null>(null);
-  const environmentRigRef = useRef<EnvironmentRig3D | null>(null);
+  const roadRef = useRef<RoadWorld3DResult | null>(null);
+  const cityRef = useRef<IndonesianCity3DResult | null>(null);
+  const fleetRef = useRef<IndonesianFleet3D | null>(null);
+  const skyRigRef = useRef<SkyAndLighting3D | null>(null);
   const frictionHeatmapRef = useRef<FrictionHeatmap3D | null>(null);
 
   const sizeRef = useRef({ width: 800, height: 600, dpr: 1 });
-  const loopRafRef = useRef<number>(0);
-  const idleRafRef = useRef<number>(0);
-  const lastFrameTimeRef = useRef<number>(0);
+  const overlayScratchRef = useRef<OverlayProjectionScratch>(createOverlayProjectionScratch());
+  const lastOverlayDrawRef = useRef(0);
+
+  const raycasterRef = useRef(new THREE.Raycaster());
+  const ndcPointerRef = useRef(new THREE.Vector2());
+  const pointerDownPosRef = useRef<{ x: number; y: number; active: boolean }>({
+    x: 0,
+    y: 0,
+    active: false,
+  });
 
   const transitionRef = useRef<{
     active: boolean;
@@ -180,53 +164,22 @@ export const IntersectionCanvas3D: React.FC<IntersectionCanvas3DProps> = React.m
     targetLook: new THREE.Vector3(),
   });
 
-  // Scratch vectors to keep per-frame tracking strictly zero-allocation
+  const scratchFollowPos = useRef(new THREE.Vector3());
   const scratchPrevTarget = useRef(new THREE.Vector3());
-  const scratchDesiredTarget = useRef(new THREE.Vector3());
   const scratchDelta = useRef(new THREE.Vector3());
-  const scratchOffset = useRef(new THREE.Vector3());
-  const raycasterRef = useRef(new THREE.Raycaster());
-  const pointerNdcRef = useRef(new THREE.Vector2());
 
-  const pointerDragRef = useRef<{
-    active: boolean;
-    pointerId: number;
-    startX: number;
-    startY: number;
-    moved: boolean;
-  }>({
-    active: false,
-    pointerId: -1,
-    startX: 0,
-    startY: 0,
-    moved: false,
-  });
+  const idleRafRef = useRef<number | null>(null);
+  const lastFrameTimeRef = useRef<number>(0);
 
-  // Auto-exit 'follow' if user closes vehicle inspector
-  useEffect(() => {
-    if (selectedVehicleId === null && cameraPresetRef.current === 'follow') {
-      cameraPresetRef.current = 'iso';
-      setCameraPreset('iso');
-    }
-  }, [selectedVehicleId]);
-
-  const renderSingleFrame = useCallback((nowMs: number): boolean => {
+  const renderFrameNow = useCallback((nowMs: number, forceOverlay = false): boolean => {
     const renderer = rendererRef.current;
     const scene = sceneRef.current;
     const camera = cameraRef.current;
     const controls = controlsRef.current;
-    const vehiclePool = vehiclePoolRef.current;
-    const environmentRig = environmentRigRef.current;
+    const fleet = fleetRef.current;
+    const skyRig = skyRigRef.current;
     const frictionHeatmap = frictionHeatmapRef.current;
-    if (
-      !renderer ||
-      !scene ||
-      !camera ||
-      !controls ||
-      !vehiclePool ||
-      !environmentRig ||
-      !frictionHeatmap
-    ) {
+    if (!renderer || !scene || !camera || !controls || !fleet || !skyRig || !frictionHeatmap) {
       return false;
     }
 
@@ -239,52 +192,42 @@ export const IntersectionCanvas3D: React.FC<IntersectionCanvas3DProps> = React.m
     const layers = resolvedLayersRef.current;
     const focusedArch = focusedArchetypeRef.current;
     const selId = selectedVehicleIdRef.current;
+    const qProf = qualityProfileRef.current;
 
-    // 1. Update dynamic 3D world entities
     const env = snap.stats.environment;
     const headlightsOn = (env?.ambientDarkness ?? 0) > 0.1 || (env?.rainIntensity ?? 0) > 0.5;
-    vehiclePool.syncFrame(
-      snap.vehicles,
-      snap.stats.simTime,
-      headlightsOn,
-      layers,
-      focusedArch,
-      selId
-    );
-    signalsRef.current?.update(snap.signal, env?.ambientDarkness ?? 0);
-    environmentRig.update(snap, dt, cityRef.current?.streetLampEmissives);
+
+    // 1. Update Instanced Fleet, Signals, Sky/PMREM IBL & Heatmap
+    fleet.syncFrame(snap.vehicles, snap.stats.simTime, headlightsOn, layers, focusedArch, selId);
+    cityRef.current?.updateSignals(snap.signal, env?.ambientDarkness ?? 0);
+    skyRig.update(snap, dt, {
+      targetX: controls.target.x,
+      targetZ: controls.target.z,
+      streetLampEmissives: cityRef.current?.streetLampEmissives,
+      nightFacadeMats: cityRef.current?.nightFacadeMats,
+      lightPoolMat: cityRef.current?.lightPoolMat,
+    });
     frictionHeatmap.update(snap.frictionGrid, layers.frictionHeatmap, focusedArch);
 
-    // 2. Update camera preset transitions or 'follow' vehicle tracking
+    // 2. Camera preset transition or vehicle follow
     const preset = cameraPresetRef.current;
     const transition = transitionRef.current;
-
     if (preset === 'follow' && selId !== null) {
-      const rigPos = vehiclePool.getRigPosition(selId);
-      if (rigPos) {
-        const prevTarget = scratchPrevTarget.current.copy(controls.target);
-        const desiredTarget = scratchDesiredTarget.current.set(
-          rigPos.x,
-          Math.max(0.8, rigPos.y),
-          rigPos.z
-        );
+      if (fleet.getVehiclePosition(selId, snap.vehicles, scratchFollowPos.current)) {
+        const prevT = scratchPrevTarget.current.copy(controls.target);
         const followAlpha = 1 - Math.exp(-10 * dt);
-        controls.target.lerp(desiredTarget, followAlpha);
-        const delta = scratchDelta.current.subVectors(controls.target, prevTarget);
+        controls.target.lerp(scratchFollowPos.current, followAlpha);
+        const delta = scratchDelta.current.subVectors(controls.target, prevT);
         camera.position.add(delta);
-        if (camera.position.y < 1.5) {
-          camera.position.y = 1.5;
-        }
       }
-      transition.active = false;
     } else if (transition.active) {
-      const lerpAlpha = 1 - Math.exp(-9 * dt);
-      camera.position.lerp(transition.targetPos, lerpAlpha);
-      controls.target.lerp(transition.targetLook, lerpAlpha);
-
-      const posDone = camera.position.distanceToSquared(transition.targetPos) < 0.01;
-      const lookDone = controls.target.distanceToSquared(transition.targetLook) < 0.01;
-      if (posDone && lookDone) {
+      const alpha = 1 - Math.exp(-9 * dt);
+      camera.position.lerp(transition.targetPos, alpha);
+      controls.target.lerp(transition.targetLook, alpha);
+      if (
+        camera.position.distanceToSquared(transition.targetPos) < 0.04 &&
+        controls.target.distanceToSquared(transition.targetLook) < 0.01
+      ) {
         camera.position.copy(transition.targetPos);
         controls.target.copy(transition.targetLook);
         transition.active = false;
@@ -292,49 +235,54 @@ export const IntersectionCanvas3D: React.FC<IntersectionCanvas3DProps> = React.m
     }
 
     const controlsMoved = controls.update();
-
-    // 3. Render 3D scene
     renderer.render(scene, camera);
 
-    // 4. Render synchronized screen-space 2D overlay canvas
+    // 3. Throttled 2D Screen-Space HUD/AI Overlay Projection
     const overlayCanvas = overlayCanvasRef.current;
-    if (overlayCanvas) {
+    const minOverlayInterval = 1000 / Math.max(15, qProf.overlayFps);
+    if (
+      overlayCanvas &&
+      (forceOverlay ||
+        nowMs - lastOverlayDrawRef.current >= minOverlayInterval ||
+        !runningRef.current)
+    ) {
+      lastOverlayDrawRef.current = nowMs;
       const ctx = overlayCanvas.getContext('2d');
       if (ctx) {
         const { width, height, dpr } = sizeRef.current;
+        ctx.save();
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, width, height);
+        const sigHeads = roadRef.current?.sigPositions ?? [];
         drawProjected2DOverlays(
           ctx,
           width,
           height,
           camera,
           snap,
-          roadRef.current?.sigPositions ?? [],
+          sigHeads,
           layers,
           focusedArch,
-          selId
+          selId,
+          overlayScratchRef.current
         );
+        ctx.restore();
       }
     }
 
-    return Boolean(controlsMoved) || transition.active;
+    return Boolean(controlsMoved || transition.active);
   }, [snapshotRef]);
 
   const scheduleIdleRender = useCallback(() => {
-    if (runningRef.current || idleRafRef.current !== 0) return;
-
-    const tickIdle = (now: number) => {
-      idleRafRef.current = 0;
-      if (runningRef.current) return;
-      const keepGoing = renderSingleFrame(now);
-      if (keepGoing && !runningRef.current) {
-        idleRafRef.current = requestAnimationFrame(tickIdle);
+    if (runningRef.current || idleRafRef.current !== null) return;
+    idleRafRef.current = requestAnimationFrame((now) => {
+      idleRafRef.current = null;
+      const needsMore = renderFrameNow(now, true);
+      if (needsMore && !runningRef.current) {
+        scheduleIdleRender();
       }
-    };
-
-    idleRafRef.current = requestAnimationFrame(tickIdle);
-  }, [renderSingleFrame]);
+    });
+  }, [renderFrameNow]);
 
   const applyCameraPreset = useCallback(
     (preset: Camera3DPreset, immediate = false) => {
@@ -354,7 +302,6 @@ export const IntersectionCanvas3D: React.FC<IntersectionCanvas3DProps> = React.m
         extentMetersRef.current,
         zoomRef.current
       );
-
       if (!camera || !controls) return;
 
       if (immediate) {
@@ -372,54 +319,54 @@ export const IntersectionCanvas3D: React.FC<IntersectionCanvas3DProps> = React.m
     [scheduleIdleRender]
   );
 
-  // Initialize Three.js WebGLRenderer, Scene, Camera, OrbitControls, Dynamic Pools & ResizeObserver
+  // Initialize WebGLRenderer, Scene, OrbitControls, SkyAndLighting3D & Instanced Fleet
   useEffect(() => {
     const container = containerRef.current;
     const webglCanvas = webglCanvasRef.current;
     const overlayCanvas = overlayCanvasRef.current;
     if (!container || !webglCanvas) return;
 
+    const initQ = qualityProfileRef.current;
     let renderer: THREE.WebGLRenderer;
     try {
       renderer = new THREE.WebGLRenderer({
         canvas: webglCanvas,
-        antialias: true,
+        antialias: initQ.antialias,
         powerPreference: 'high-performance',
       });
     } catch (err) {
       setWebglError(
-        err instanceof Error
-          ? err.message
-          : 'WebGL tidak tersedia di perangkat atau browser ini.'
+        err instanceof Error ? err.message : 'WebGL tidak tersedia di perangkat atau browser ini.'
       );
       return;
     }
     setWebglError(null);
 
-    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
-    renderer.setPixelRatio(pixelRatio);
-    renderer.shadowMap.enabled = true;
+    const dpr = Math.min(window.devicePixelRatio || 1, initQ.maxDpr);
+    renderer.setPixelRatio(dpr);
+    renderer.shadowMap.enabled = initQ.staticShadows;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.autoUpdate = !initQ.staticShadows;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.0;
+    renderer.toneMappingExposure = 1.02;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     rendererRef.current = renderer;
 
     const rect = container.getBoundingClientRect();
     const initW = Math.max(1, Math.floor(rect.width));
     const initH = Math.max(1, Math.floor(rect.height));
-    sizeRef.current = { width: initW, height: initH, dpr: pixelRatio };
+    sizeRef.current = { width: initW, height: initH, dpr };
     renderer.setSize(initW, initH, false);
 
     if (overlayCanvas) {
-      overlayCanvas.width = Math.max(1, Math.floor(initW * pixelRatio));
-      overlayCanvas.height = Math.max(1, Math.floor(initH * pixelRatio));
+      overlayCanvas.width = Math.max(1, Math.floor(initW * dpr));
+      overlayCanvas.height = Math.max(1, Math.floor(initH * dpr));
     }
 
     const scene = new THREE.Scene();
     sceneRef.current = scene;
 
-    const camera = new THREE.PerspectiveCamera(45, initW / initH, 0.5, 900);
+    const camera = new THREE.PerspectiveCamera(45, initW / initH, 0.5, 950);
     const initialPose = computePresetPose('iso', extentMetersRef.current, zoomRef.current);
     camera.position.copy(initialPose.position);
     cameraRef.current = camera;
@@ -428,7 +375,7 @@ export const IntersectionCanvas3D: React.FC<IntersectionCanvas3DProps> = React.m
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
     controls.maxPolarAngle = Math.PI * 0.46;
-    controls.minDistance = 14;
+    controls.minDistance = 12;
     controls.maxDistance = 280;
     controls.screenSpacePanning = false;
     controls.target.copy(initialPose.target);
@@ -443,17 +390,17 @@ export const IntersectionCanvas3D: React.FC<IntersectionCanvas3DProps> = React.m
       }
     };
     const handleControlsChange = () => {
-      if (!runningRef.current) {
-        scheduleIdleRender();
-      }
+      if (!runningRef.current) scheduleIdleRender();
     };
     controls.addEventListener('start', handleControlsStart);
     controls.addEventListener('change', handleControlsChange);
 
-    const vehiclePool = new VehicleMeshPool3D(scene);
-    vehiclePoolRef.current = vehiclePool;
-    const environmentRig = new EnvironmentRig3D(scene);
-    environmentRigRef.current = environmentRig;
+    const skyRig = new SkyAndLighting3D(scene, renderer, initQ);
+    skyRigRef.current = skyRig;
+
+    const fleet = new IndonesianFleet3D(scene, config.environmentId ?? config.customTopology?.id);
+    fleetRef.current = fleet;
+
     const frictionHeatmap = new FrictionHeatmap3D(scene);
     frictionHeatmapRef.current = frictionHeatmap;
 
@@ -461,47 +408,32 @@ export const IntersectionCanvas3D: React.FC<IntersectionCanvas3DProps> = React.m
       const box = container.getBoundingClientRect();
       const w = Math.max(1, Math.floor(box.width));
       const h = Math.max(1, Math.floor(box.height));
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-
+      const nextDpr = Math.min(window.devicePixelRatio || 1, qualityProfileRef.current.maxDpr);
       const prev = sizeRef.current;
-      if (prev.width === w && prev.height === h && prev.dpr === dpr) {
-        return;
-      }
-      sizeRef.current = { width: w, height: h, dpr };
+      if (prev.width === w && prev.height === h && prev.dpr === nextDpr) return;
 
-      renderer.setPixelRatio(dpr);
+      sizeRef.current = { width: w, height: h, dpr: nextDpr };
+      renderer.setPixelRatio(nextDpr);
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
 
       if (overlayCanvas) {
-        const targetW = Math.max(1, Math.floor(w * dpr));
-        const targetH = Math.max(1, Math.floor(h * dpr));
-        if (overlayCanvas.width !== targetW || overlayCanvas.height !== targetH) {
-          overlayCanvas.width = targetW;
-          overlayCanvas.height = targetH;
-        }
+        overlayCanvas.width = Math.max(1, Math.floor(w * nextDpr));
+        overlayCanvas.height = Math.max(1, Math.floor(h * nextDpr));
       }
-
-      if (!runningRef.current) {
-        scheduleIdleRender();
-      }
+      renderFrameNow(performance.now(), true);
     };
 
     const ro = new ResizeObserver(syncSize);
     ro.observe(container);
 
     return () => {
-      if (loopRafRef.current !== 0) {
-        cancelAnimationFrame(loopRafRef.current);
-        loopRafRef.current = 0;
-      }
-      if (idleRafRef.current !== 0) {
-        cancelAnimationFrame(idleRafRef.current);
-        idleRafRef.current = 0;
-      }
-
       ro.disconnect();
+      if (idleRafRef.current !== null) {
+        cancelAnimationFrame(idleRafRef.current);
+        idleRafRef.current = null;
+      }
       controls.removeEventListener('start', handleControlsStart);
       controls.removeEventListener('change', handleControlsChange);
       controls.dispose();
@@ -512,21 +444,16 @@ export const IntersectionCanvas3D: React.FC<IntersectionCanvas3DProps> = React.m
         roadRef.current.dispose();
         roadRef.current = null;
       }
-      if (signalsRef.current) {
-        scene.remove(signalsRef.current.group);
-        signalsRef.current.dispose();
-        signalsRef.current = null;
-      }
       if (cityRef.current) {
         scene.remove(cityRef.current.group);
         cityRef.current.dispose();
         cityRef.current = null;
       }
 
-      vehiclePool.dispose();
-      vehiclePoolRef.current = null;
-      environmentRig.dispose();
-      environmentRigRef.current = null;
+      fleet.dispose();
+      fleetRef.current = null;
+      skyRig.dispose();
+      skyRigRef.current = null;
       frictionHeatmap.dispose();
       frictionHeatmapRef.current = null;
 
@@ -537,16 +464,43 @@ export const IntersectionCanvas3D: React.FC<IntersectionCanvas3DProps> = React.m
 
       renderer.dispose();
       rendererRef.current = null;
-      cameraRef.current = null;
       sceneRef.current = null;
-      lastFrameTimeRef.current = 0;
+      cameraRef.current = null;
     };
-  }, [scheduleIdleRender]);
+  }, [qualityProfile.antialias]); // Recreate WebGL context only if antialias capability changes
 
-  // Static Road Surfaces & Traffic Signals rebuild ONLY on geometry/topology/wetness changes
-  const weatherMode = config.environment?.weather ?? 'clear';
-  const isWet = weatherMode === 'light-rain' || weatherMode === 'heavy-rain';
+  // Apply runtime graphics quality changes without recreating WebGL context when antialias unchanged
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    const skyRig = skyRigRef.current;
+    const container = containerRef.current;
+    const overlayCanvas = overlayCanvasRef.current;
+    const camera = cameraRef.current;
+    if (!renderer || !skyRig || !container || !camera) return;
 
+    const dpr = Math.min(window.devicePixelRatio || 1, qualityProfile.maxDpr);
+    const box = container.getBoundingClientRect();
+    const w = Math.max(1, Math.floor(box.width));
+    const h = Math.max(1, Math.floor(box.height));
+    sizeRef.current = { width: w, height: h, dpr };
+
+    renderer.setPixelRatio(dpr);
+    renderer.setSize(w, h, false);
+    renderer.shadowMap.enabled = qualityProfile.staticShadows;
+    renderer.shadowMap.autoUpdate = !qualityProfile.staticShadows;
+    if (overlayCanvas) {
+      overlayCanvas.width = Math.max(1, Math.floor(w * dpr));
+      overlayCanvas.height = Math.max(1, Math.floor(h * dpr));
+    }
+
+    skyRig.setQuality(qualityProfile);
+    skyRig.setShadowFrustum(extentMetersRef.current, qualityProfile);
+    skyRig.requestShadowBake();
+    renderFrameNow(performance.now(), true);
+  }, [qualityProfile, renderFrameNow]);
+
+  // Rebuild merged Road + City + Signals when geometry, topology, weather wetness, grid or quality changes
+  const isWet = (config.environment?.weather ?? 'clear') !== 'clear';
   useEffect(() => {
     const scene = sceneRef.current;
     if (!scene) return;
@@ -556,40 +510,31 @@ export const IntersectionCanvas3D: React.FC<IntersectionCanvas3DProps> = React.m
       roadRef.current.dispose();
       roadRef.current = null;
     }
-    if (signalsRef.current) {
-      scene.remove(signalsRef.current.group);
-      signalsRef.current.dispose();
-      signalsRef.current = null;
+    if (cityRef.current) {
+      scene.remove(cityRef.current.group);
+      cityRef.current.dispose();
+      cityRef.current = null;
     }
 
-    const road = buildRoadSurfaces3D(config, compiledTopology);
+    const road = buildRoadWorld3D(config, compiledTopology, qualityProfile);
     roadRef.current = road;
-    extentMetersRef.current = road.extentMeters;
     scene.add(road.group);
 
-    const signals = createTrafficSignals3D(road.sigPositions);
-    signalsRef.current = signals;
-    scene.add(signals.group);
+    const city = buildIndonesianCity3D(
+      config,
+      compiledTopology,
+      road.sigPositions,
+      showGrid,
+      qualityProfile
+    );
+    cityRef.current = city;
+    scene.add(city.group);
 
-    const snap = snapshotRef.current;
-    signals.update(snap.signal, snap.stats.environment?.ambientDarkness ?? 0);
+    fleetRef.current?.setEnvironmentId(config.environmentId ?? config.customTopology?.id);
 
-    // If user hasn't manually orbited/switched away from default iso, frame new map cleanly
-    if (cameraPresetRef.current === 'iso' && !hasUserCameraMovedRef.current) {
-      const camera = cameraRef.current;
-      const controls = controlsRef.current;
-      if (camera && controls) {
-        const pose = computePresetPose('iso', road.extentMeters, zoomRef.current);
-        camera.position.copy(pose.position);
-        controls.target.copy(pose.target);
-        controls.update();
-      }
-    }
-
-    if (!runningRef.current) {
-      scheduleIdleRender();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    skyRigRef.current?.setShadowExtent(road.extentMeters);
+    skyRigRef.current?.requestShadowBake();
+    renderFrameNow(performance.now(), true);
   }, [
     compiledTopology,
     config.lanesPerDirection,
@@ -600,255 +545,129 @@ export const IntersectionCanvas3D: React.FC<IntersectionCanvas3DProps> = React.m
     config.hasMedian,
     config.leftTurnOnRed,
     config.yellowBoxEnabled,
-    config.customTopology,
     config.environmentId,
     config.scenarioName,
-    isWet,
-    scheduleIdleRender,
-  ]);
-
-  // Static City Landmarks & Grid rebuild ONLY when geometry/topology/scenario/grid changes
-  useEffect(() => {
-    const scene = sceneRef.current;
-    if (!scene) return;
-
-    if (cityRef.current) {
-      scene.remove(cityRef.current.group);
-      cityRef.current.dispose();
-      cityRef.current = null;
-    }
-
-    const city = buildCityLandmarks3D(config, compiledTopology, showGrid);
-    cityRef.current = city;
-    scene.add(city.group);
-
-    if (!runningRef.current) {
-      scheduleIdleRender();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    compiledTopology,
-    config.lanesPerDirection,
-    config.laneWidth,
-    config.roadLength,
-    config.roadWidthPerDirection,
     config.customTopology,
-    config.environmentId,
-    config.scenarioName,
     config.armNames?.north,
     config.armNames?.east,
     config.armNames?.south,
     config.armNames?.west,
+    isWet,
     showGrid,
-    scheduleIdleRender,
+    qualityProfile,
+    renderFrameNow,
   ]);
 
-  // Reset camera back to default isometric framing when switching maps/blueprints
+  // Reset camera cleanly when active map / topology changes
+  const hasUserCameraMovedRef = useRef(false);
   useEffect(() => {
-    setHasUserCameraMoved(false);
     hasUserCameraMovedRef.current = false;
+    setHasUserCameraMoved(false);
     applyCameraPreset('iso', true);
   }, [config.environmentId, compiledTopology, applyCameraPreset]);
 
-  // Sync external zoom prop changes (e.g. from SettingsPage slider) without fighting OrbitControls
+  // Auto-exit 'follow' if selected vehicle is cleared
   useEffect(() => {
-    const prevZoom = prevZoomRef.current;
-    prevZoomRef.current = zoom;
-    zoomRef.current = zoom;
-
-    if (Math.abs(zoom - prevZoom) < 1e-4) return;
-    const camera = cameraRef.current;
-    const controls = controlsRef.current;
-    if (!camera || !controls) return;
-
-    const offset = scratchOffset.current.subVectors(camera.position, controls.target);
-    const currentDist = offset.length();
-    if (currentDist > 1e-4) {
-      const ratio = Math.max(0.35, Math.min(2.8, prevZoom / Math.max(0.4, zoom)));
-      const nextDist = Math.max(
-        controls.minDistance,
-        Math.min(controls.maxDistance, currentDist * ratio)
-      );
-      offset.setLength(nextDist);
-      camera.position.copy(controls.target).add(offset);
-      controls.update();
-      if (!runningRef.current) {
-        scheduleIdleRender();
-      }
+    if (selectedVehicleId === null && cameraPresetRef.current === 'follow') {
+      applyCameraPreset('iso', false);
     }
-  }, [zoom, scheduleIdleRender]);
+  }, [selectedVehicleId, applyCameraPreset]);
 
-  // Continuous 60fps render loop while running === true
+  // 60fps WebGL loop when running
   useEffect(() => {
-    if (!running) {
-      if (loopRafRef.current !== 0) {
-        cancelAnimationFrame(loopRafRef.current);
-        loopRafRef.current = 0;
-      }
-      return;
-    }
-
-    if (idleRafRef.current !== 0) {
-      cancelAnimationFrame(idleRafRef.current);
-      idleRafRef.current = 0;
-    }
-    lastFrameTimeRef.current = performance.now();
-
+    if (!running) return;
+    let rafId = 0;
     const loop = (now: number) => {
-      renderSingleFrame(now);
-      loopRafRef.current = requestAnimationFrame(loop);
+      renderFrameNow(now, false);
+      rafId = requestAnimationFrame(loop);
     };
-    loopRafRef.current = requestAnimationFrame(loop);
+    rafId = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(rafId);
+  }, [running, renderFrameNow]);
 
-    return () => {
-      if (loopRafRef.current !== 0) {
-        cancelAnimationFrame(loopRafRef.current);
-        loopRafRef.current = 0;
-      }
-    };
-  }, [running, renderSingleFrame]);
-
-  // On-demand render when paused and drawTick or visual props change
+  // Render on-demand when paused and state/layers change
   useEffect(() => {
     if (!running) {
-      scheduleIdleRender();
+      renderFrameNow(performance.now(), true);
     }
-  }, [
-    running,
-    drawTick,
-    showGrid,
-    resolvedLayers,
-    focusedArchetype,
-    selectedVehicleId,
-    cameraPreset,
-    config,
-    compiledTopology,
-    scheduleIdleRender,
-  ]);
+  }, [running, drawTick, zoom, showGrid, resolvedLayers, focusedArchetype, selectedVehicleId, renderFrameNow]);
 
-  const handleSelectCameraPreset = useCallback(
-    (preset: Camera3DPreset) => {
-      applyCameraPreset(preset, false);
-    },
-    [applyCameraPreset]
-  );
-
-  const handleResetView = useCallback(() => {
-    setHasUserCameraMoved(false);
-    hasUserCameraMovedRef.current = false;
-    zoomRef.current = 1;
-    prevZoomRef.current = 1;
-    if (Math.abs(zoom - 1) > 0.01) {
-      onZoomChange?.(1);
-    }
-    applyCameraPreset('iso', false);
-  }, [zoom, onZoomChange, applyCameraPreset]);
-
-  // Click-to-inspect Raycaster (< 5px pointer travel distinguishes clicks from orbiting/panning)
   const handlePointerDown = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     if (e.button !== 0) return;
-    const drag = pointerDragRef.current;
-    drag.active = true;
-    drag.pointerId = e.pointerId;
-    drag.startX = e.clientX;
-    drag.startY = e.clientY;
-    drag.moved = false;
-    setIsGrabbing(true);
+    pointerDownPosRef.current = { x: e.clientX, y: e.clientY, active: true };
   }, []);
 
-  const handlePointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
-    const drag = pointerDragRef.current;
-    if (!drag.active || drag.pointerId !== e.pointerId || drag.moved) return;
-    if (Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) >= CLICK_DRAG_THRESHOLD_PX) {
-      drag.moved = true;
-    }
-  }, []);
-
-  const finishPointer = useCallback(
-    (e: React.PointerEvent<HTMLCanvasElement>, cancelled: boolean) => {
-      const drag = pointerDragRef.current;
-      if (!drag.active || drag.pointerId !== e.pointerId) return;
-      const dist = Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY);
-      const wasClick = !cancelled && !drag.moved && dist < CLICK_DRAG_THRESHOLD_PX;
-      drag.active = false;
-      drag.pointerId = -1;
-      drag.moved = false;
-      setIsGrabbing(false);
-
-      if (!wasClick || !onSelectVehicle) return;
+  const handlePointerUp = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>) => {
+      const down = pointerDownPosRef.current;
+      if (!down.active) return;
+      down.active = false;
+      if (Math.hypot(e.clientX - down.x, e.clientY - down.y) >= 5) return;
 
       const canvas = webglCanvasRef.current;
       const camera = cameraRef.current;
-      const vehiclePool = vehiclePoolRef.current;
-      if (!canvas || !camera || !vehiclePool) return;
+      const fleet = fleetRef.current;
+      if (!canvas || !camera || !fleet || !onSelectVehicle) return;
 
       const rect = canvas.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
-
-      const ndc = pointerNdcRef.current;
-      ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-
-      camera.updateMatrixWorld();
-      const raycaster = raycasterRef.current;
-      raycaster.setFromCamera(ndc, camera);
-
-      const pickables = vehiclePool.getPickableMeshes();
-      const hits = raycaster.intersectObjects(pickables, true);
-      let hitVehicleId: number | null = null;
-      for (let i = 0; i < hits.length; i++) {
-        const foundId = extractVehicleId(hits[i].object);
-        if (foundId !== null) {
-          hitVehicleId = foundId;
-          break;
-        }
-      }
-
-      onSelectVehicle(hitVehicleId);
+      ndcPointerRef.current.set(
+        ((e.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1,
+        -((e.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1
+      );
+      raycasterRef.current.setFromCamera(ndcPointerRef.current, camera);
+      const hitId = fleet.pickVehicleByRay(
+        raycasterRef.current.ray,
+        snapshotRef.current.vehicles,
+        focusedArchetypeRef.current
+      );
+      onSelectVehicle(hitId);
     },
-    [onSelectVehicle]
+    [onSelectVehicle, snapshotRef]
   );
 
-  const showResetView =
-    cameraPreset !== 'iso' || hasUserCameraMoved || Math.abs(zoom - 1) > 0.02;
+  const handleResetView = useCallback(() => {
+    hasUserCameraMovedRef.current = false;
+    setHasUserCameraMoved(false);
+    onZoomChange?.(1);
+    applyCameraPreset('iso', false);
+  }, [applyCameraPreset, onZoomChange]);
 
+  const showResetView =
+    hasUserCameraMoved || cameraPreset !== 'iso' || Math.abs(zoom - 1) > 0.02;
   const liveSnap = uiSnapshot ?? snapshotRef.current;
 
   return (
     <div
       ref={containerRef}
-      className="relative w-full h-full overflow-hidden bg-[#DCE7F2] rounded-lg border border-slate-200 select-none"
+      className="relative w-full h-full overflow-hidden bg-[#DCE7F3] rounded-lg border border-slate-200 select-none"
     >
-      <canvas
-        ref={webglCanvasRef}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={(e) => finishPointer(e, false)}
-        onPointerCancel={(e) => finishPointer(e, true)}
-        className={`block w-full h-full touch-none outline-none ${
-          isGrabbing ? 'cursor-grabbing' : 'cursor-grab'
-        }`}
-        role="img"
-        aria-label={
-          config.scenarioName
-            ? `Simulasi simpang 3D: ${config.scenarioName}`
-            : 'Kanvas simulasi simpang 3D interaktif'
-        }
-      />
-
-      <canvas
-        ref={overlayCanvasRef}
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-0 w-full h-full"
-      />
-
-      {webglError && (
-        <div className="absolute inset-0 flex items-center justify-center bg-slate-900/90 p-6 text-center">
-          <div className="max-w-sm rounded-lg border border-slate-700 bg-slate-800 p-4 text-slate-100 shadow-sm space-y-2">
-            <div className="text-xs font-semibold text-amber-300">Mode 3D WebGL Tidak Tersedia</div>
-            <p className="text-[11px] text-slate-300 font-mono break-words">{webglError}</p>
+      {webglError ? (
+        <div className="flex h-full w-full items-center justify-center p-6 text-center text-slate-700">
+          <div className="max-w-sm rounded-lg border border-slate-200 bg-white p-4 shadow-sm space-y-1.5">
+            <div className="text-xs font-semibold text-rose-700">
+              Gagal Menginisialisasi Tampilan 3D
+            </div>
+            <p className="text-[11px] text-slate-500">{webglError}</p>
           </div>
         </div>
+      ) : (
+        <>
+          <canvas
+            ref={webglCanvasRef}
+            onPointerDown={handlePointerDown}
+            onPointerUp={handlePointerUp}
+            className="block w-full h-full touch-none cursor-grab active:cursor-grabbing"
+            aria-label={
+              config.scenarioName
+                ? `Simulasi 3D simpang lalu lintas: ${config.scenarioName}`
+                : 'Simulasi 3D simpang lalu lintas'
+            }
+          />
+          <canvas
+            ref={overlayCanvasRef}
+            className="pointer-events-none absolute inset-0 block w-full h-full"
+          />
+        </>
       )}
 
       <MapHudOverlay
@@ -861,11 +680,10 @@ export const IntersectionCanvas3D: React.FC<IntersectionCanvas3DProps> = React.m
         selectedVehicleId={selectedVehicleId}
         onSelectVehicle={onSelectVehicle}
         showResetView={showResetView}
-        resetViewLabel={cameraPreset !== 'iso' ? PRESET_LABELS[cameraPreset] : undefined}
         onResetView={handleResetView}
         is3D
         cameraPreset={cameraPreset}
-        onSelectCameraPreset={handleSelectCameraPreset}
+        onSelectCameraPreset={(p) => applyCameraPreset(p, false)}
       />
     </div>
   );
