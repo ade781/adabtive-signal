@@ -96,3 +96,4 @@ Detail lengkap rencana pengembangan bertahap tersedia di [BLUEPRINT.md](BLUEPRIN
 - **Fase 1 (Selesai):** UI *Light Architectural / Swiss Grid* & *Core Simulation Engine* LHT Indonesia.
 - **Fase 2:** Modul kalibrasi & perbandingan dengan data observasi persimpangan dunia nyata (*Ground Truth Matching*).
 - **Fase 3:** *Model training* & optimasi durasi lampu lalu lintas otomatis.
+sikatttttttt
