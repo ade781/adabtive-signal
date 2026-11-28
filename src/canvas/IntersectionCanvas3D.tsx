@@ -469,7 +469,7 @@ export const IntersectionCanvas3D: React.FC<IntersectionCanvas3DProps> = React.m
     };
   }, [qualityProfile.antialias]); // Recreate WebGL context only if antialias capability changes
 
-  // Apply runtime graphics quality changes without recreating WebGL context when antialias unchanged
+  // ahaha Apply runtime graphics quality changes without recreating WebGL context when antialias unchanged
   useEffect(() => {
     const renderer = rendererRef.current;
     const skyRig = skyRigRef.current;
